@@ -10,7 +10,6 @@
                 <field name="name"/>
                 <field name="target_kind"/>
                 <field name="description"/>
-                <field name="eco_count"/>
             </list>
         </field>
     </record>
