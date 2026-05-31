@@ -17,7 +17,7 @@
                 <filter name="open" string="Open" domain="[('state', '=', 'open')]"/>
                 <filter name="applied" string="Applied" domain="[('state', '=', 'applied')]"/>
                 <filter name="rejected" string="Rejected" domain="[('state', '=', 'rejected')]"/>
-                <group string="Group By">
+                <group name="group_by">
                     <filter name="grp_stage" string="Stage" context="{'group_by': 'stage_id'}"/>
                     <filter name="grp_type" string="Type" context="{'group_by': 'eco_type_id'}"/>
                     <filter name="grp_kind" string="Target Kind" context="{'group_by': 'target_kind'}"/>
