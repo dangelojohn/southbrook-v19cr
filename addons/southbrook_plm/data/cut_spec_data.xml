@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <!-- The seed active cut spec. Values mirror the NF14 code defaults in
+         southbrook_estimating/models/mrp_bom.py exactly, so activating it
+         on install produces byte-identical cut output. They are ASSUMED
+         until the canonical #8 workbook lands (NF14); revise via an ECO. -->
+
+    <record id="cut_spec_nf14_seed" model="southbrook.cut.spec">
+        <field name="name">NF14 Baseline (seed)</field>
+        <field name="state">active</field>
+        <field name="note">Seed spec — values mirror the NF14 code defaults. ASSUMED until the canonical #8 workbook lands. Revise via a Cut-Geometry Revision ECO, never by hand.</field>
+        <field name="box_th">15.875</field>
+        <field name="back_th">6.35</field>
+        <field name="rabbet">6.35</field>
+        <field name="door_th">18.0</field>
+        <field name="door_reveal">3.0</field>
+        <field name="shelf_tol">1.5</field>
+        <field name="shelf_vent_gap">12.7</field>
+        <field name="toekick_h">101.6</field>
+    </record>
+
+</odoo>

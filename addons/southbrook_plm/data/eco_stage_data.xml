@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- noupdate is intentionally OFF so stage flags can be tuned on upgrade.
+         Admins may add/reorder stages freely after install. -->
+
+    <record id="stage_draft" model="southbrook.eco.stage">
+        <field name="name">Draft</field>
+        <field name="sequence">10</field>
+    </record>
+
+    <record id="stage_review" model="southbrook.eco.stage">
+        <field name="name">Under Review</field>
+        <field name="sequence">20</field>
+        <field name="approval_required">1</field>
+    </record>
+
+    <record id="stage_approved" model="southbrook.eco.stage">
+        <field name="name">Approved</field>
+        <field name="sequence">30</field>
+    </record>
+
+    <record id="stage_applied" model="southbrook.eco.stage">
+        <field name="name">Applied</field>
+        <field name="sequence">40</field>
+        <field name="is_applied_stage">1</field>
+        <field name="is_final">1</field>
+        <field name="fold">1</field>
+    </record>
+
+    <record id="stage_rejected" model="southbrook.eco.stage">
+        <field name="name">Rejected</field>
+        <field name="sequence">50</field>
+        <field name="is_final">1</field>
+        <field name="fold">1</field>
+    </record>
+
+</odoo>

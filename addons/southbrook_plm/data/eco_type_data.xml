@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <record id="eco_type_bom" model="southbrook.eco.type">
+        <field name="name">Template BoM Revision</field>
+        <field name="sequence">10</field>
+        <field name="target_kind">bom</field>
+        <field name="description">Version one of the 12 canonical cabinet template BoMs.</field>
+    </record>
+
+    <record id="eco_type_cut_spec" model="southbrook.eco.type">
+        <field name="name">Cut-Geometry Revision</field>
+        <field name="sequence">20</field>
+        <field name="target_kind">cut_spec</field>
+        <field name="description">Revise the NF14 parametric cut constants (panel thicknesses, reveals, rabbet, etc.). Highest-leverage change: shifts every cabinet's cut list.</field>
+    </record>
+
+    <record id="eco_type_rule" model="southbrook.eco.type">
+        <field name="name">Construction-Rule Change</field>
+        <field name="sequence">30</field>
+        <field name="target_kind">rule</field>
+        <field name="description">A change to config_rules.xml or model code. The change lands via git; the ECO records the commit/PR reference for the audit trail.</field>
+    </record>
+
+    <record id="eco_type_document" model="southbrook.eco.type">
+        <field name="name">Engineering Document Update</field>
+        <field name="sequence">40</field>
+        <field name="target_kind">document</field>
+        <field name="description">Update vendor cut sheets, hardware spec PDFs, or shop drawings.</field>
+    </record>
+
+</odoo>

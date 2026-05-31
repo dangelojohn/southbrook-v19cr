@@ -1,0 +1,9 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_eco_user,southbrook.eco user,model_southbrook_eco,group_southbrook_plm_user,1,1,1,0
+access_eco_approver,southbrook.eco approver,model_southbrook_eco,group_southbrook_plm_approver,1,1,1,1
+access_eco_type_user,southbrook.eco.type user,model_southbrook_eco_type,group_southbrook_plm_user,1,0,0,0
+access_eco_type_approver,southbrook.eco.type approver,model_southbrook_eco_type,group_southbrook_plm_approver,1,1,1,1
+access_eco_stage_user,southbrook.eco.stage user,model_southbrook_eco_stage,group_southbrook_plm_user,1,0,0,0
+access_eco_stage_approver,southbrook.eco.stage approver,model_southbrook_eco_stage,group_southbrook_plm_approver,1,1,1,1
+access_cut_spec_user,southbrook.cut.spec user,model_southbrook_cut_spec,group_southbrook_plm_user,1,0,0,0
+access_cut_spec_approver,southbrook.cut.spec approver,model_southbrook_cut_spec,group_southbrook_plm_approver,1,1,1,1

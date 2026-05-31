@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_cut_spec_list" model="ir.ui.view">
+        <field name="name">southbrook.cut.spec.list</field>
+        <field name="model">southbrook.cut.spec</field>
+        <field name="arch" type="xml">
+            <list decoration-success="state == 'active'" decoration-muted="state == 'superseded'">
+                <field name="name"/>
+                <field name="state" widget="badge"
+                       decoration-success="state == 'active'"
+                       decoration-info="state == 'draft'"/>
+                <field name="box_th"/>
+                <field name="back_th"/>
+                <field name="door_th"/>
+                <field name="door_reveal"/>
+                <field name="create_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_cut_spec_form" model="ir.ui.view">
+        <field name="name">southbrook.cut.spec.form</field>
+        <field name="model">southbrook.cut.spec</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_activate" type="object" string="Activate"
+                            class="btn-primary" invisible="state == 'active'"
+                            groups="southbrook_plm.group_southbrook_plm_approver"
+                            confirm="Activate this cut spec? The current active spec will be superseded and all cabinet cut math will use these values."/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,active,superseded"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="e.g. 2026 Workbook Rev B"/></h1>
+                    </div>
+                    <group>
+                        <group string="Carcass (mm)">
+                            <field name="box_th"/>
+                            <field name="back_th"/>
+                            <field name="rabbet"/>
+                        </group>
+                        <group string="Door (mm)">
+                            <field name="door_th"/>
+                            <field name="door_reveal"/>
+                        </group>
+                        <group string="Shelf (mm)">
+                            <field name="shelf_tol"/>
+                            <field name="shelf_vent_gap"/>
+                        </group>
+                        <group string="Toe-Kick (mm)">
+                            <field name="toekick_h"/>
+                        </group>
+                    </group>
+                    <group string="Provenance">
+                        <field name="note" nolabel="1"/>
+                    </group>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_cut_spec" model="ir.actions.act_window">
+        <field name="name">Cut Specifications</field>
+        <field name="res_model">southbrook.cut.spec</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+</odoo>

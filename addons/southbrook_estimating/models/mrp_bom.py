@@ -112,6 +112,30 @@ class MrpBom(models.Model):
                 bom.produce_delay + bom.southbrook_lead_time_extra
             )
 
+    # ------------------------------------------------------------------
+    # Cut-constant seam (NF14)
+    # ------------------------------------------------------------------
+    # The panel-cut math reads its geometric constants through this method
+    # rather than the module-level globals directly. Standalone, it returns
+    # the code defaults (identical to the historic behaviour). The optional
+    # `southbrook_plm` addon overrides this seam to return the active,
+    # ECO-approved `southbrook.cut.spec` instead — so a shop lead can revise
+    # reveals / thicknesses through an approved change order with no deploy.
+    # Keys MUST match southbrook_plm.models.southbrook_cut_spec.CONSTANT_FIELDS.
+    # ------------------------------------------------------------------
+    @api.model
+    def _get_cut_constants(self):
+        return {
+            "box_th": BOX_TH,
+            "back_th": BACK_TH,
+            "rabbet": RABBET,
+            "door_th": DOOR_TH,
+            "door_reveal": DOOR_REVEAL,
+            "shelf_tol": SHELF_TOL,
+            "shelf_vent_gap": SHELF_VENT_GAP,
+            "toekick_h": TOEKICK_H,
+        }
+
     # ==================================================================
     # Custom routine #1 — `_compute_panel_dimensions` (Build Spec section 4)
     # ==================================================================
@@ -183,20 +207,29 @@ class MrpBom(models.Model):
               'hinge_pair_count', 'handle_count', 'drawer_slide_pair_count': integers
               'edge_banding_length_mm': integer, Phase-1 scalar perimeter sum
         """
-        inside_width = width_mm - 2 * BOX_TH
+        c = self._get_cut_constants()
+        box_th = c["box_th"]
+        back_th = c["back_th"]
+        rabbet = c["rabbet"]
+        door_th = c["door_th"]
+        door_reveal = c["door_reveal"]
+        shelf_tol = c["shelf_tol"]
+        shelf_vent_gap = c["shelf_vent_gap"]
+
+        inside_width = width_mm - 2 * box_th
 
         # ---- Side panels (L and R) — full height + depth.
-        side_L = (height_mm, depth_mm, BOX_TH)
-        side_R = (height_mm, depth_mm, BOX_TH)
+        side_L = (height_mm, depth_mm, box_th)
+        side_R = (height_mm, depth_mm, box_th)
 
         # ---- Top + bottom panels — capture between sides (frameless).
-        top = (inside_width, depth_mm, BOX_TH)
-        bottom = (inside_width, depth_mm, BOX_TH)
+        top = (inside_width, depth_mm, box_th)
+        bottom = (inside_width, depth_mm, box_th)
 
         # ---- Back panel — captures into rabbet on side/top/bottom.
-        back_l = inside_width + 2 * RABBET
-        back_w = (height_mm - 2 * BOX_TH) + 2 * RABBET
-        back = (back_l, back_w, BACK_TH)
+        back_l = inside_width + 2 * rabbet
+        back_w = (height_mm - 2 * box_th) + 2 * rabbet
+        back = (back_l, back_w, back_th)
 
         # ---- Shelf — quantity from height heuristic per NF14.
         if height_mm <= 600:
@@ -205,22 +238,22 @@ class MrpBom(models.Model):
             shelf_count = 2
         else:
             shelf_count = 3
-        shelf_l = inside_width - SHELF_TOL
-        shelf_w = depth_mm - BACK_TH - RABBET - SHELF_VENT_GAP
-        shelf = (shelf_l, shelf_w, BOX_TH) if shelf_count > 0 else None
+        shelf_l = inside_width - shelf_tol
+        shelf_w = depth_mm - back_th - rabbet - shelf_vent_gap
+        shelf = (shelf_l, shelf_w, box_th) if shelf_count > 0 else None
 
         # ---- Door — sized from door_count and reveal.
         if door_count == 1:
             door = (
-                height_mm - 2 * DOOR_REVEAL,
-                width_mm - 2 * DOOR_REVEAL,
-                DOOR_TH,
+                height_mm - 2 * door_reveal,
+                width_mm - 2 * door_reveal,
+                door_th,
             )
         elif door_count == 2:
             door = (
-                height_mm - 2 * DOOR_REVEAL,
-                (width_mm - 3 * DOOR_REVEAL) / 2,
-                DOOR_TH,
+                height_mm - 2 * door_reveal,
+                (width_mm - 3 * door_reveal) / 2,
+                door_th,
             )
         else:
             door = None
@@ -284,7 +317,7 @@ class MrpBom(models.Model):
             bands += side_perim
 
         # Top + bottom front edges — always visible, always banded.
-        inside_width = width_mm - 2 * BOX_TH
+        inside_width = width_mm - 2 * self._get_cut_constants()["box_th"]
         bands += 2 * inside_width
 
         return int(bands)

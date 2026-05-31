@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <menuitem id="menu_southbrook_plm_root"
+              name="Southbrook PLM"
+              sequence="92"
+              groups="southbrook_plm.group_southbrook_plm_user"/>
+
+    <menuitem id="menu_plm_eco"
+              name="Change Orders"
+              parent="menu_southbrook_plm_root"
+              action="action_eco"
+              sequence="10"/>
+
+    <menuitem id="menu_plm_cut_spec"
+              name="Cut Specifications"
+              parent="menu_southbrook_plm_root"
+              action="action_cut_spec"
+              sequence="20"/>
+
+    <menuitem id="menu_plm_config"
+              name="Configuration"
+              parent="menu_southbrook_plm_root"
+              sequence="90"
+              groups="southbrook_plm.group_southbrook_plm_approver"/>
+
+    <menuitem id="menu_plm_eco_type"
+              name="ECO Types"
+              parent="menu_plm_config"
+              action="action_eco_type"
+              sequence="10"/>
+
+    <menuitem id="menu_plm_eco_stage"
+              name="ECO Stages"
+              parent="menu_plm_config"
+              action="action_eco_stage"
+              sequence="20"/>
+
+</odoo>

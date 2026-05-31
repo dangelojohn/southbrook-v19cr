@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <record id="module_category_southbrook_plm" model="ir.module.category">
+        <field name="name">Southbrook PLM</field>
+        <field name="description">Engineering change control for Southbrook Cabinetry.</field>
+        <field name="sequence">90</field>
+    </record>
+
+    <record id="group_southbrook_plm_user" model="res.groups">
+        <field name="name">PLM User</field>
+        <field name="category_id" ref="module_category_southbrook_plm"/>
+        <field name="comment">Raise and edit Engineering Change Orders; cannot approve or apply.</field>
+    </record>
+
+    <record id="group_southbrook_plm_approver" model="res.groups">
+        <field name="name">PLM Approver</field>
+        <field name="category_id" ref="module_category_southbrook_plm"/>
+        <field name="implied_ids" eval="[(4, ref('group_southbrook_plm_user'))]"/>
+        <field name="comment">Approve, apply, and reject ECOs; manage stages, types and cut specs.</field>
+    </record>
+
+</odoo>

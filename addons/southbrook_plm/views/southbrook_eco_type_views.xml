@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_eco_type_list" model="ir.ui.view">
+        <field name="name">southbrook.eco.type.list</field>
+        <field name="model">southbrook.eco.type</field>
+        <field name="arch" type="xml">
+            <list editable="bottom">
+                <field name="sequence" widget="handle"/>
+                <field name="name"/>
+                <field name="target_kind"/>
+                <field name="description"/>
+                <field name="eco_count"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_eco_type" model="ir.actions.act_window">
+        <field name="name">ECO Types</field>
+        <field name="res_model">southbrook.eco.type</field>
+        <field name="view_mode">list</field>
+    </record>
+
+    <record id="view_eco_stage_list" model="ir.ui.view">
+        <field name="name">southbrook.eco.stage.list</field>
+        <field name="model">southbrook.eco.stage</field>
+        <field name="arch" type="xml">
+            <list editable="bottom">
+                <field name="sequence" widget="handle"/>
+                <field name="name"/>
+                <field name="approval_required"/>
+                <field name="is_applied_stage"/>
+                <field name="is_final"/>
+                <field name="fold"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_eco_stage" model="ir.actions.act_window">
+        <field name="name">ECO Stages</field>
+        <field name="res_model">southbrook.eco.stage</field>
+        <field name="view_mode">list</field>
+    </record>
+
+</odoo>

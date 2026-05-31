@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_eco_search" model="ir.ui.view">
+        <field name="name">southbrook.eco.search</field>
+        <field name="model">southbrook.eco</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="title"/>
+                <field name="eco_type_id"/>
+                <field name="bom_id"/>
+                <field name="user_id"/>
+                <filter name="my_ecos" string="My ECOs"
+                        domain="[('user_id', '=', uid)]"/>
+                <separator/>
+                <filter name="open" string="Open" domain="[('state', '=', 'open')]"/>
+                <filter name="applied" string="Applied" domain="[('state', '=', 'applied')]"/>
+                <filter name="rejected" string="Rejected" domain="[('state', '=', 'rejected')]"/>
+                <group expand="0" string="Group By">
+                    <filter name="grp_stage" string="Stage" context="{'group_by': 'stage_id'}"/>
+                    <filter name="grp_type" string="Type" context="{'group_by': 'eco_type_id'}"/>
+                    <filter name="grp_kind" string="Target Kind" context="{'group_by': 'target_kind'}"/>
+                    <filter name="grp_user" string="Responsible" context="{'group_by': 'user_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="view_eco_kanban" model="ir.ui.view">
+        <field name="name">southbrook.eco.kanban</field>
+        <field name="model">southbrook.eco</field>
+        <field name="arch" type="xml">
+            <kanban default_group_by="stage_id">
+                <field name="stage_id"/>
+                <field name="state"/>
+                <templates>
+                    <t t-name="card">
+                        <div class="oe_kanban_global_click">
+                            <div class="o_kanban_record_title">
+                                <strong><field name="name"/></strong> — <field name="title"/>
+                            </div>
+                            <div class="o_kanban_record_subtitle">
+                                <field name="eco_type_id"/>
+                            </div>
+                            <div class="o_kanban_record_bottom">
+                                <span><field name="target_kind"/></span>
+                                <field name="priority" widget="priority"/>
+                                <field name="user_id" widget="many2one_avatar_user"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="view_eco_list" model="ir.ui.view">
+        <field name="name">southbrook.eco.list</field>
+        <field name="model">southbrook.eco</field>
+        <field name="arch" type="xml">
+            <list decoration-success="state == 'applied'" decoration-muted="state == 'rejected'">
+                <field name="name"/>
+                <field name="title"/>
+                <field name="eco_type_id"/>
+                <field name="target_kind"/>
+                <field name="stage_id"/>
+                <field name="state" widget="badge"
+                       decoration-success="state == 'applied'"
+                       decoration-danger="state == 'rejected'"/>
+                <field name="user_id" widget="many2one_avatar_user"/>
+                <field name="applied_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_eco_form" model="ir.ui.view">
+        <field name="name">southbrook.eco.form</field>
+        <field name="model">southbrook.eco</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_approve" type="object" string="Approve"
+                            class="btn-primary" invisible="state != 'open'"
+                            groups="southbrook_plm.group_southbrook_plm_approver"/>
+                    <button name="action_apply" type="object" string="Apply Change"
+                            class="btn-primary" invisible="state != 'open'"
+                            groups="southbrook_plm.group_southbrook_plm_approver"
+                            confirm="Apply this ECO? This commits the change (BoM version bump or cut-spec activation) and cannot be auto-reverted."/>
+                    <button name="action_advance" type="object" string="Next Stage"
+                            invisible="state != 'open'"/>
+                    <button name="action_reject" type="object" string="Reject"
+                            invisible="state != 'open'"
+                            groups="southbrook_plm.group_southbrook_plm_approver"/>
+                    <button name="action_reset_draft" type="object" string="Reset to Draft"
+                            invisible="state == 'open'"
+                            groups="southbrook_plm.group_southbrook_plm_approver"/>
+                    <field name="stage_id" widget="statusbar" options="{'clickable': '1'}"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_open_documents" type="object"
+                                class="oe_stat_button" icon="fa-paperclip">
+                            <field name="document_count" widget="statinfo" string="Documents"/>
+                        </button>
+                    </div>
+                    <widget name="web_ribbon" title="Applied"
+                            invisible="state != 'applied'"/>
+                    <widget name="web_ribbon" title="Rejected" bg_color="text-bg-danger"
+                            invisible="state != 'rejected'"/>
+                    <div class="oe_title">
+                        <label for="title"/>
+                        <h1><field name="title" placeholder="One-line summary of the change"/></h1>
+                        <field name="name" class="text-muted"/>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="eco_type_id"/>
+                            <field name="target_kind" invisible="1"/>
+                            <field name="priority" widget="priority"/>
+                        </group>
+                        <group>
+                            <field name="user_id"/>
+                            <field name="approver_id" invisible="not approver_id"/>
+                            <field name="applied_date" invisible="not applied_date"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Target" name="target">
+                            <group>
+                                <field name="bom_id"
+                                       invisible="target_kind != 'bom'"
+                                       required="target_kind == 'bom'"/>
+                                <field name="new_bom_id" invisible="not new_bom_id"/>
+                                <field name="cut_spec_id"
+                                       invisible="target_kind != 'cut_spec'"
+                                       required="target_kind == 'cut_spec'"/>
+                                <field name="git_ref"
+                                       invisible="target_kind != 'rule'"
+                                       required="target_kind == 'rule'"/>
+                            </group>
+                            <field name="document_ids" widget="many2many_binary"
+                                   string="Engineering Documents"/>
+                        </page>
+                        <page string="Description" name="description">
+                            <field name="description"
+                                   placeholder="What is changing, and why."/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_eco" model="ir.actions.act_window">
+        <field name="name">Engineering Change Orders</field>
+        <field name="res_model">southbrook.eco</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="search_view_id" ref="view_eco_search"/>
+        <field name="context">{'search_default_open': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Raise your first Engineering Change Order</p>
+            <p>Version a template BoM, revise the parametric cut spec, or record a construction-rule change.</p>
+        </field>
+    </record>
+
+</odoo>
