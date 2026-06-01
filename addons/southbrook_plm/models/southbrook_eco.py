@@ -155,11 +155,39 @@ class SouthbrookEco(models.Model):
         return super().create(vals_list)
 
     # ------------------------------------------------------------------
-    # Approval gating on stage change
+    # Approval gating + terminal-stage write protection
     # ------------------------------------------------------------------
     def write(self, vals):
         if "stage_id" in vals:
             new_stage = self.env["southbrook.eco.stage"].browse(vals["stage_id"])
+            # Terminal-stage guard: Applied / Rejected are reachable
+            # only via action_apply / action_reject (both of which
+            # always co-write `state` to the matching terminal value).
+            # A direct write of stage_id to a terminal stage WITHOUT
+            # a matching state move is a workflow-bypass attempt —
+            # it would land the ECO in Applied without running any
+            # apply handler (no BoM copy, no cut-spec activation, no
+            # chatter audit), producing a paradoxical
+            # 'stage=Applied, state=open' record. Block it.
+            # Bug found by demo walkthrough 2026-06-01 part 9.
+            if new_stage.is_final:
+                expected_state = (
+                    "rejected" if new_stage.is_rejected_stage else "applied"
+                )
+                if vals.get("state") != expected_state:
+                    raise UserError(
+                        _(
+                            "Cannot write stage '%(stage)s' directly on ECO "
+                            "%(eco)s — terminal stages are reachable only "
+                            "via the Apply or Reject buttons, which run the "
+                            "ECO's change handlers + write the matching "
+                            "lifecycle state."
+                        )
+                        % {
+                            "stage": new_stage.name,
+                            "eco": ", ".join(self.mapped("name")) or "(new)",
+                        }
+                    )
             for eco in self:
                 if (
                     eco.stage_id

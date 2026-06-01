@@ -294,6 +294,66 @@ class TestSouthbrookPlm(TransactionCase):
         self.assertTrue(eco.approval_date)
         self.assertEqual(eco.state, "applied")
 
+    def test_direct_write_to_terminal_stage_is_blocked(self):
+        """Writing stage_id to Applied or Rejected without a matching
+        state move must raise — terminal stages are reachable only
+        via action_apply / action_reject. Bug found by demo
+        walkthrough 2026-06-01 part 9: direct write of stage_id
+        bypassed the apply handlers, leaving the ECO in a
+        paradoxical 'stage=Applied, state=open' state.
+        """
+        applied_stage = self.env.ref("southbrook_plm.stage_applied")
+        rejected_stage = self.env.ref("southbrook_plm.stage_rejected")
+        eco = self.Eco.create(
+            {
+                "title": "Bypass attempt",
+                "eco_type_id": self.type_rule.id,
+            }
+        )
+        # Block: direct write of stage_id=Applied.
+        with self.assertRaises(UserError):
+            eco.write({"stage_id": applied_stage.id})
+        # Block: direct write of stage_id=Rejected.
+        with self.assertRaises(UserError):
+            eco.write({"stage_id": rejected_stage.id})
+        # State unchanged.
+        self.assertNotEqual(eco.stage_id, applied_stage)
+        self.assertNotEqual(eco.stage_id, rejected_stage)
+
+    def test_action_apply_still_allowed_to_write_terminal(self):
+        """The action_apply / action_reject paths co-write
+        stage_id + state to matching terminal values, which the new
+        guard explicitly allows. Regression check: the bypass-block
+        from test_direct_write_to_terminal_stage_is_blocked must NOT
+        accidentally also block the legitimate apply flow.
+        """
+        eco = self.Eco.create(
+            {
+                "title": "Legit apply",
+                "eco_type_id": self.type_rule.id,
+                "git_ref": "abc1234",
+            }
+        )
+        # action_apply writes stage_id=Applied AND state=applied in
+        # the same write call — must succeed.
+        eco.with_user(self.approver).action_apply()
+        applied_stage = self.env.ref("southbrook_plm.stage_applied")
+        self.assertEqual(eco.stage_id, applied_stage)
+        self.assertEqual(eco.state, "applied")
+
+        # And action_reject writes stage_id=Rejected AND
+        # state=rejected — also must succeed.
+        eco2 = self.Eco.create(
+            {
+                "title": "Legit reject",
+                "eco_type_id": self.type_rule.id,
+            }
+        )
+        eco2.with_user(self.approver).action_reject()
+        rejected_stage = self.env.ref("southbrook_plm.stage_rejected")
+        self.assertEqual(eco2.stage_id, rejected_stage)
+        self.assertEqual(eco2.state, "rejected")
+
     def test_action_advance_blocked_at_applied_terminal(self):
         """action_advance from a terminal stage must raise. Bug found
         by demo walkthrough 2026-06-01: advancing from Applied
