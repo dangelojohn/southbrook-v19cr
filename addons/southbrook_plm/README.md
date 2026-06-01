@@ -66,6 +66,24 @@ suite). No Enterprise modules. License **LGPL-3**.
 
 ## Status
 
-Phase-4 deliverable. This is custom routine **#8** in the SAMI register; see
+**Release Candidate** (2026-05-31). Phase-4 deliverable; engine + integration
+surfaces complete:
+
+- Model + workflow (ECO + stage + type + cut spec + `mrp.bom` extension)
+- Cut-spec seam override on `mrp.bom._get_cut_constants()` (panel math
+  reflects the active spec; falls back to estimating code defaults when
+  no spec is active)
+- BoM versioning on apply (copy + archive + `southbrook_version` bump)
+- Approval gating (per-stage `approval_required` + `group_southbrook_plm_approver`)
+- Smart-button surface on `mrp.bom` form (ECO count → filtered list)
+- Symmetric smart-button surface on `southbrook.cut.spec` form
+- Demo seed — 4 example ECOs (one per `target_kind`) + 1 candidate cut spec
+- 16 test methods, 18-test suite green on Odoo 19 CE live install
+
+Pending (Phase-3 reservation): per-variant runtime-BoM versioning when the
+configurator-session-driven BoM flow lands. Today's BoM versioning targets
+template BoMs only.
+
+This is custom routine **#8** in the SAMI register; see
 `PUNCHLIST.md` for the boundary-rule justification and the reopening of the
 SAMI §0 "PLM Absent" decision.

@@ -28,7 +28,7 @@ The build operates entirely within Community Edition. Several Enterprise modules
 | Enterprise module | Status in Community | Replacement |
 |---|---|---|
 | Quality | Absent | **OCA `quality_control`** family |
-| PLM | Absent | None for v1. Engineering changes captured in `mrp.bom` versioning + git history of the addon |
+| PLM | Absent in CE | **Lightweight, ECO-governed** — `southbrook_plm` addon (routine #8, LGPL-3, RC 2026-05-31). Engineering Change Orders with stage pipeline + approval gating; ECO-applied template-BoM versioning + parametric cut-spec activation. NOT a CAD/PDM vault. |
 | Shop Floor / MES tablet | Absent | Work-order execution on standard MO views |
 | Studio | Absent | All view extensions via standard XML inheritance |
 | Documents | Absent | Standard `ir.attachment` + portal `/my/attachments/*` |
@@ -152,21 +152,22 @@ southbrook_estimating_website/        ← Three.js customer planner (Phase 3)
 
 ---
 
-## 4 · The custom code register — 7 routines, no more
+## 4 · The custom code register — 8 routines
 
-This is the **complete** list of genuinely custom code in `southbrook_estimating`. Everything else is data, configuration, or OCA module extension via `_inherit`. Adding an eighth routine requires a `PUNCHLIST.md` justification.
+This is the **complete** list of genuinely custom code in the Southbrook build. Everything else is data, configuration, or OCA module extension via `_inherit`. Adding a ninth routine requires a fresh `PUNCHLIST.md` justification.
 
 | # | Routine | Owns | Why it's custom |
 |---|---|---|---|
-| 1 | `models/mrp_bom.py::_compute_panel_dimensions` | Parametric panel cut sizes from W×H×D | Can't be a simple variant attribute |
-| 2 | `models/product_pricelist.py::_compute_refacing_price` | Refacing channel 35% margin-target | Live-cost-targeting can't be declarative |
-| 3 | `models/sale_order.py::_resolve_channel_pricelist` | Auto-assigns pricelist from `res.partner.channel` | Dispatch logic, ~10 lines |
-| 4 | `models/product_attribute_value.py::lead_time_extra` + rollup | Maple-box +2-week lead-time bump (Q3) | Mirror of `price_extra` for lead time, summed into `produce_delay` |
-| 5 | `static/src/js/parametric_carcass.esm.js` | Three.js procedural BufferGeometry | The whole point of the planner layer (Phase 3) |
-| 6 | `reports/shop_copy.xml`, `reports/door_order.xml`, `reports/signature_spec_sheet.xml` | Southbrook-format QWeb reports | Layout templates, not logic |
-| 7 | `controllers/accucutt_bridge.py` | Accucutt nest hand-off (Phase 4) | External-system integration |
+| 1 | `southbrook_estimating/models/mrp_bom.py::_compute_panel_dimensions` | Parametric panel cut sizes from W×H×D | Can't be a simple variant attribute |
+| 2 | `southbrook_estimating/models/product_pricelist.py::_compute_refacing_price` | Refacing channel 35% margin-target | Live-cost-targeting can't be declarative |
+| 3 | `southbrook_estimating/models/sale_order.py::_resolve_channel_pricelist` | Auto-assigns pricelist from `res.partner.channel` | Dispatch logic, ~10 lines |
+| 4 | `southbrook_estimating/models/product_attribute_value.py::lead_time_extra` + rollup | Maple-box +2-week lead-time bump (Q3) | Mirror of `price_extra` for lead time, summed into `produce_delay` |
+| 5 | `southbrook_estimating_website/static/src/js/parametric_carcass.esm.js` | Three.js procedural BufferGeometry | The whole point of the planner layer (Phase 3) |
+| 6 | `southbrook_estimating/reports/shop_copy.xml`, `reports/door_order.xml`, `reports/signature_spec_sheet.xml` | Southbrook-format QWeb reports | Layout templates, not logic |
+| 7 | `southbrook_estimating/controllers/accucutt_bridge.py` | Accucutt nest hand-off (Phase 4) | External-system integration |
+| 8 | `southbrook_plm/` (whole addon) | ECO workflow + template-BoM versioning + parametric cut-spec governance | Re-opens §0 "PLM Absent" — Odoo CE has no native PLM, and the mature free third-party option (OmniaSolutions OdooPLM) is a CAD/PDM suite that fights `product_configurator_mrp`. Boundary justification + Gap-Fit study in `docs/superpowers/specs/2026-05-31-southbrook-plm-gap-design.md`. RC 2026-05-31. |
 
-**Boundary rule:** if a feature would add an 8th file to this list, stop and raise the question in PUNCHLIST. The pattern almost always reveals that the feature belongs in `data/*.xml` (rule), in an OCA module extension via `_inherit` (behavior), or as a QWeb report (presentation).
+**Boundary rule:** if a feature would add a 9th file/addon to this list, stop and raise the question in PUNCHLIST. The pattern almost always reveals that the feature belongs in `data/*.xml` (rule), in an OCA module extension via `_inherit` (behavior), or as a QWeb report (presentation). Routine #8's justification — re-opening a §0 locked decision — is the canonical exception shape; future 9-or-more reopenings must clear the same bar.
 
 ---
 

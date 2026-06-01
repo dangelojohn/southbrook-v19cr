@@ -874,6 +874,99 @@ their wording is **implicitly consistent** with my draft assumptions:
 
 ---
 
+## 2026-05-31 · Routine #8 — `southbrook_plm` reaches RC; reopens SAMI §0 "PLM Absent"
+
+**What changed.** The SAMI Build Spec locked PLM as "Absent" in §0 ("None
+for v1. Engineering changes captured in `mrp.bom` versioning + git history
+of the addon"). That decision held while there was no clean way to govern
+engineering changes without a CAD/PDM suite that would fight the
+configurator-driven BoM flow. The Gap-Fit study at
+`docs/superpowers/specs/2026-05-31-southbrook-plm-gap-design.md` resolved
+the tradeoff and surfaced a thin, configurator-fit synthesis as the right
+shape. That synthesis ships as `addons/southbrook_plm/` — **routine #8**.
+
+**Boundary-rule justification.** Build Spec §4 set the register at "7
+routines, no more"; adding an 8th requires a PUNCHLIST justification.
+Routine #8 clears the bar:
+
+1. **Reopens a §0 locked decision.** That's the explicit exception shape
+   the §0 amendment-history pattern was built for. Not a feature creep
+   into the register; an architecture-level reopening with its own
+   options-and-tradeoffs study.
+2. **Cannot live in `_inherit`.** ECOs aren't a behaviour mod on an
+   existing model; they're a new domain (workflow + audit trail) with
+   their own lifecycle, their own approval semantics, and their own
+   data ownership. Trying to bolt them onto `mrp.bom` would clone the
+   exact pattern that made Enterprise `mrp_plm` infeasible for us.
+3. **Cannot be `data/*.xml`.** The seam architecture — `mrp.bom._get_cut_constants()`
+   reading the active `southbrook.cut.spec` — IS Python; no declarative
+   rule shape expresses "live values read from a versioned record." The
+   estimating addon's standalone fallback path stays unchanged; the
+   override is contained in routine #8.
+4. **Not absorbable into an OCA module.** The free + v19 options were
+   investigated; OmniaSolutions OdooPLM is a CAD/PDM suite fighting our
+   approach, Just Try `plm_product_bom` has no v19 build + is OPL-1
+   proprietary, CLuedoo's lives behind Enterprise. The synthesis-of-needed-
+   capabilities path is the only one that fits.
+
+**What ships in RC (commits this session):**
+
+| Commit | Layer |
+|---|---|
+| `942cdd5` | Gap-Fit analysis + scoping spec |
+| `f74feb0` | Model + workflow + cut-spec seam scaffold |
+| `ba5096c` | 14 test methods (workflow, seam, versioning, approval gating) |
+| `e717044`, `59f5703`, `fb745b2` | Odoo 19 view-syntax compat |
+| `cfba8fc` | Odoo 19 `res.groups.category_id` removal |
+| `f76239b` | `_apply_bom` runs with `sudo()` so a PLM Approver isn't blocked by `mrp.bom` write rights |
+| `2a8b79b` | `mrp.bom` smart button — ECO count + click-through |
+| `b6ee59f` | Symmetric `southbrook.cut.spec` smart button |
+| `17f4a24` | Demo seed — 4 example ECOs across stages + 1 candidate cut spec |
+
+**Tests green:** `southbrook_plm: 18 tests 8.19s 1008 queries` on live QNAP
+v19 CE install. 16 method-level tests (14 original + 2 smart-button
+additions) all pass.
+
+**Out of scope by design** (documented in `addons/southbrook_plm/README.md`):
+CAD/PDM file vault, SolidWorks/Inventor bridges, 3D viewers, part-number
+generation, routing/operation versioning, per-variant runtime-BoM versioning,
+commercial/pricing change control.
+
+**Phase-3 reservation:** per-variant runtime-BoM versioning. Today's BoM
+versioning targets template BoMs only. The configurator-session-driven BoM
+flow (when it lands in Phase 3) will need to decide whether per-variant
+BoMs participate in ECO versioning or stay ephemeral. Likely: configured
+variants inherit their template's active version at materialisation time
+and are immutable thereafter. Re-opened by the first Phase-3 commit that
+materialises a variant-BoM in production.
+
+**Acceptance (live-verified 2026-05-31):**
+- Module installs clean on Odoo 19 CE with `-i southbrook_plm`.
+- `odoo --test-enable --test-tags /southbrook_plm`: 0 fail / 0 error.
+- Cut-spec ECO end-to-end: create candidate → raise ECO → action_apply →
+  candidate becomes active → previous active becomes superseded →
+  `mrp.bom._get_cut_constants()` returns the new values →
+  `_compute_panel_dimensions` reflects them.
+- BoM ECO end-to-end: copy target BoM → bump `southbrook_version` → archive
+  prior. Audit trail on the chatter.
+- Approval gating: plain user blocked, approver allowed. Stage gating
+  respected on `write({"stage_id": ...})`.
+- Smart-button surface visible on both `mrp.bom` and `southbrook.cut.spec`
+  forms; hidden at count=0 to keep clean forms clean.
+- Fresh-install demo seed populates 4 ECOs (one per `target_kind`) across
+  stages + 1 draft candidate cut spec; smart-button click-through verified.
+
+**SAMI Build Spec amendments landed in the same commit chain:**
+- §0 "Enterprise modules absent" table — PLM row updated from "Absent / None
+  for v1" to "Lightweight, ECO-governed — `southbrook_plm` addon (routine
+  #8, LGPL-3, RC 2026-05-31)".
+- §4 "Custom code register — 7 routines" → "8 routines", with the new row
+  for `southbrook_plm/` plus a clarifying note that re-opening a §0 locked
+  decision IS the canonical exception shape for future ≥9-routine
+  justifications.
+
+---
+
 ## 2026-05-30 · Phase-1 demo-seed polish (surfaced during Track 2 gate prep)
 
 While prepping order S00235 for the Track 2 gate review walk, four
