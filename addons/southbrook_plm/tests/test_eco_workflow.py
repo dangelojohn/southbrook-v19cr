@@ -294,6 +294,48 @@ class TestSouthbrookPlm(TransactionCase):
         self.assertTrue(eco.approval_date)
         self.assertEqual(eco.state, "applied")
 
+    def test_document_eco_requires_attached_documents(self):
+        """A document-kind ECO with empty document_ids must raise on
+        action_apply. Symmetric to test_rule_eco_requires_git_ref +
+        test_cut_spec_eco_requires_candidate. Bug found by demo
+        walkthrough 2026-06-01 part 16: document ECOs were applying
+        with zero attachments and posting 'recorded 0 attachment(s)'.
+        """
+        eco = self.Eco.create(
+            {
+                "title": "Phantom document ECO",
+                "eco_type_id": self.env.ref(
+                    "southbrook_plm.eco_type_document"
+                ).id,
+            }
+        )
+        with self.assertRaises(ValidationError):
+            eco.with_user(self.approver).action_apply()
+
+    def test_document_eco_applies_with_attached_documents(self):
+        """Regression check: the new document validation must NOT
+        block legitimate document ECOs with attached files.
+        """
+        attachment = self.env["ir.attachment"].create(
+            {
+                "name": "test-spec.pdf",
+                "datas": "cGRm",  # 'pdf' base64
+                "mimetype": "application/pdf",
+            }
+        )
+        eco = self.Eco.create(
+            {
+                "title": "Real document ECO",
+                "eco_type_id": self.env.ref(
+                    "southbrook_plm.eco_type_document"
+                ).id,
+                "document_ids": [(4, attachment.id)],
+            }
+        )
+        eco.with_user(self.approver).action_apply()
+        self.assertEqual(eco.state, "applied")
+        self.assertEqual(eco.document_count, 1)
+
     def test_action_reject_blocked_on_already_applied(self):
         """Rejecting an applied ECO must raise. Bug found by demo
         walkthrough 2026-06-01 part 10: action_reject silently

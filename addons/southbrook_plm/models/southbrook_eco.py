@@ -471,6 +471,22 @@ class SouthbrookEco(models.Model):
 
     def _apply_document(self):
         self.ensure_one()
+        # Symmetry with the other three apply handlers: bom requires
+        # bom_id, cut_spec requires cut_spec_id, rule requires git_ref.
+        # A document ECO must carry at least one attached document or
+        # it's a meaningless apply. Bug found by demo walkthrough
+        # 2026-06-01 part 16: document-kind ECOs were applying with
+        # zero attachments and posting a 'recorded 0 attachment(s)'
+        # chatter line.
+        if not self.document_ids:
+            raise ValidationError(
+                _(
+                    "ECO %s: at least one Engineering Document must be "
+                    "attached before this ECO can be applied. Use the "
+                    "Documents tab to attach the relevant PDF(s)."
+                )
+                % self.name
+            )
         self.message_post(
             body=_("Engineering-document update recorded (%d attachment(s)).")
             % len(self.document_ids)
