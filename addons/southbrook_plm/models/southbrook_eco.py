@@ -276,6 +276,36 @@ class SouthbrookEco(models.Model):
             [("is_final", "=", True)], order="sequence desc", limit=1
         )
         for eco in self:
+            # Bug found by demo walkthrough 2026-06-01 part 10:
+            # rejecting an already-applied ECO silently flipped the
+            # state to 'rejected' even though the apply handlers had
+            # already mutated the DB (BoM versioned, cut spec
+            # activated). The audit trail lied about the outcome
+            # while the real-world effect stayed in place.
+            #
+            # An applied change is committed. To undo it, raise a
+            # NEW ECO that explicitly reverts (e.g. a new BoM-kind
+            # ECO that rolls forward to the original spec). Don't
+            # let action_reject masquerade as an undo.
+            if eco.state == "applied":
+                raise UserError(
+                    _(
+                        "ECO %s is already applied — its change is "
+                        "committed (BoM versioned / cut spec activated / "
+                        "etc.). Reject cannot undo the effect; raise a "
+                        "new ECO to revert."
+                    )
+                    % eco.name
+                )
+            if eco.state == "rejected":
+                # Idempotent no-op — re-rejecting a rejected ECO is
+                # harmless but worth a chatter line so the action
+                # is at least recorded.
+                eco.message_post(
+                    body=_("Re-reject no-op by %s (already rejected).")
+                    % self.env.user.display_name
+                )
+                continue
             # Co-write state + stage_id in a SINGLE write call so the
             # terminal-stage-arrival guard (in write() above) sees
             # the matching state in vals and lets the write through.
@@ -338,6 +368,20 @@ class SouthbrookEco(models.Model):
         for eco in self:
             if eco.state == "applied":
                 raise UserError(_("ECO %s is already applied.") % eco.name)
+            # Bug found by demo walkthrough 2026-06-01 part 11:
+            # applying a rejected ECO silently revived it (state=applied)
+            # with no chatter audit. A rejection is a deliberate decision;
+            # reviving requires explicit reset_draft so the audit trail
+            # carries the 'reset to draft by X' chatter post.
+            if eco.state == "rejected":
+                raise UserError(
+                    _(
+                        "ECO %s was rejected. Use 'Reset to Draft' first "
+                        "to revive it (which records the reset in the "
+                        "audit trail), then re-approve and apply."
+                    )
+                    % eco.name
+                )
             handler = getattr(eco, "_apply_%s" % (eco.target_kind or ""), None)
             if handler is None:
                 raise UserError(

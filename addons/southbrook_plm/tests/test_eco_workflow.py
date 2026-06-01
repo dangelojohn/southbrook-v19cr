@@ -294,6 +294,76 @@ class TestSouthbrookPlm(TransactionCase):
         self.assertTrue(eco.approval_date)
         self.assertEqual(eco.state, "applied")
 
+    def test_action_reject_blocked_on_already_applied(self):
+        """Rejecting an applied ECO must raise. Bug found by demo
+        walkthrough 2026-06-01 part 10: action_reject silently
+        flipped an applied ECO's state to 'rejected' while leaving
+        the apply effects (BoM version bump, cut-spec activation)
+        in place. To revert an applied change, raise a new ECO.
+        """
+        eco = self.Eco.create(
+            {
+                "title": "Apply then try to reject",
+                "eco_type_id": self.type_rule.id,
+                "git_ref": "abc1234",
+            }
+        )
+        eco.with_user(self.approver).action_apply()
+        self.assertEqual(eco.state, "applied")
+
+        with self.assertRaises(UserError):
+            eco.with_user(self.approver).action_reject()
+        # State + stage unchanged after the block.
+        self.assertEqual(eco.state, "applied")
+        self.assertEqual(
+            eco.stage_id, self.env.ref("southbrook_plm.stage_applied")
+        )
+
+    def test_action_apply_blocked_on_previously_rejected(self):
+        """Applying a rejected ECO must raise. Bug found by demo
+        walkthrough 2026-06-01 part 11: action_apply silently
+        revived a rejected ECO (state flipped to 'applied') with no
+        chatter audit. Reviving requires explicit action_reset_draft.
+        """
+        eco = self.Eco.create(
+            {
+                "title": "Reject then try to apply",
+                "eco_type_id": self.type_rule.id,
+                "git_ref": "def4567",
+            }
+        )
+        eco.with_user(self.approver).action_reject()
+        self.assertEqual(eco.state, "rejected")
+
+        with self.assertRaises(UserError):
+            eco.with_user(self.approver).action_apply()
+        # State unchanged after the block.
+        self.assertEqual(eco.state, "rejected")
+
+    def test_revival_path_via_reset_draft_then_apply(self):
+        """Regression check: after action_reset_draft revives a
+        rejected ECO, action_apply must succeed cleanly. Confirms
+        the 'apply on rejected' block from the previous test isn't
+        permanent — there's a legitimate path forward.
+        """
+        eco = self.Eco.create(
+            {
+                "title": "Reject, reset, apply",
+                "eco_type_id": self.type_rule.id,
+                "git_ref": "ghi8901",
+            }
+        )
+        eco.with_user(self.approver).action_reject()
+        self.assertEqual(eco.state, "rejected")
+
+        # Explicit revival via reset_draft.
+        eco.action_reset_draft()
+        self.assertEqual(eco.state, "open")
+
+        # Now apply works.
+        eco.with_user(self.approver).action_apply()
+        self.assertEqual(eco.state, "applied")
+
     def test_direct_write_to_terminal_stage_is_blocked(self):
         """Writing stage_id to Applied or Rejected without a matching
         state move must raise — terminal stages are reachable only
