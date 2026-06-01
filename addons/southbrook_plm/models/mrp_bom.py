@@ -29,13 +29,35 @@ class MrpBom(models.Model):
         help="Incremented by an Engineering Change Order each time this "
         "template BoM is re-versioned. The prior version is archived.",
     )
-    # The set of ECOs whose target_kind == 'bom' and bom_id == this record.
-    # Inverse of southbrook.eco.bom_id; powers the smart-button count + the
-    # one-click filtered list view (action_open_southbrook_ecos).
+    # Two One2many surfaces — both feed the smart-button count + the
+    # filtered list view (action_open_southbrook_ecos). The combined
+    # count tells a shop lead "everything ECO-related touching this
+    # BoM, in either direction":
+    #
+    #   southbrook_eco_ids          — ECOs RAISED AGAINST this BoM
+    #                                  (inverse of southbrook.eco.bom_id).
+    #                                  The target side: "what's being
+    #                                  changed about this BoM."
+    #
+    #   southbrook_eco_history_ids  — ECOs that PRODUCED this BoM
+    #                                  (inverse of southbrook.eco.new_bom_id).
+    #                                  The provenance side: "where did
+    #                                  this BoM version come from."
+    #
+    # Without the second inverse, a freshly-versioned BoM (the new
+    # active one created by _apply_bom) shows count=0 on its form,
+    # making the audit trail effectively unreachable from the active
+    # BoM — you'd have to find the archived prior version to see its
+    # smart button. Bug found by demo walkthrough 2026-06-01.
     southbrook_eco_ids = fields.One2many(
         "southbrook.eco",
         "bom_id",
         string="Engineering Change Orders",
+    )
+    southbrook_eco_history_ids = fields.One2many(
+        "southbrook.eco",
+        "new_bom_id",
+        string="Engineering Change Orders (provenance)",
     )
     southbrook_eco_count = fields.Integer(
         compute="_compute_southbrook_eco_count",
@@ -44,14 +66,21 @@ class MrpBom(models.Model):
 
     def _compute_southbrook_eco_count(self):
         for bom in self:
-            bom.southbrook_eco_count = len(bom.southbrook_eco_ids)
+            # Union (|) handles the rare case where the same ECO
+            # references this BoM as both bom_id AND new_bom_id —
+            # we want to count it once.
+            bom.southbrook_eco_count = len(
+                bom.southbrook_eco_ids | bom.southbrook_eco_history_ids
+            )
 
     def action_open_southbrook_ecos(self):
-        """Smart-button action: ECOs raised against this BoM.
+        """Smart-button action: ECOs touching this BoM in either direction.
 
-        Opens the southbrook.eco list view filtered to this BoM, with the
-        default-create context pre-set so 'New' from this view auto-binds
-        the ECO to this BoM (and to the 'bom'-kind ECO type if unique).
+        Opens the southbrook.eco list view filtered to ECOs where bom_id
+        OR new_bom_id matches this BoM. The default-create context
+        pre-sets bom_id (target side) and the bom-kind eco_type — that's
+        the new-ECO use case, distinct from clicking through to read
+        existing audit trail.
         """
         self.ensure_one()
         bom_kind_type = self.env["southbrook.eco.type"].search(
@@ -62,7 +91,11 @@ class MrpBom(models.Model):
             "name": _("Engineering Change Orders"),
             "res_model": "southbrook.eco",
             "view_mode": "list,form,kanban",
-            "domain": [("bom_id", "=", self.id)],
+            "domain": [
+                "|",
+                ("bom_id", "=", self.id),
+                ("new_bom_id", "=", self.id),
+            ],
             "context": {
                 "default_bom_id": self.id,
                 "default_eco_type_id": bom_kind_type.id if bom_kind_type else False,

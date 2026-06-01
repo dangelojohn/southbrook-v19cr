@@ -428,6 +428,66 @@ class TestSouthbrookPlm(TransactionCase):
         self.assertEqual(eco.state, "applied")
         self.assertTrue(eco.applied_date)
 
+    def test_bom_smart_button_counts_versioning_provenance(self):
+        """After _apply_bom versions a BoM, the NEW (active) BoM must
+        also show the ECO in its smart-button count via the new_bom_id
+        inverse — not just the OLD (archived) bom which has the ECO
+        via bom_id. Bug found by demo walkthrough 2026-06-01: the
+        provenance smart-button on the active BoM was 0, leaving the
+        audit trail effectively unreachable from the post-apply form.
+        """
+        product = self.env["product.product"].create(
+            {"name": "Provenance test cabinet", "type": "consu"}
+        )
+        bom_v1 = self.Bom.create(
+            {"product_tmpl_id": product.product_tmpl_id.id, "product_qty": 1.0}
+        )
+        eco = self.Eco.create(
+            {
+                "title": "Version-bump test",
+                "eco_type_id": self.type_bom.id,
+                "bom_id": bom_v1.id,
+            }
+        )
+        # Pre-apply: smart-button on v1 = 1, no v2 yet.
+        bom_v1.invalidate_recordset(
+            ["southbrook_eco_ids", "southbrook_eco_history_ids",
+             "southbrook_eco_count"]
+        )
+        self.assertEqual(bom_v1.southbrook_eco_count, 1)
+
+        eco.with_user(self.approver).action_apply()
+
+        bom_v2 = eco.new_bom_id
+        self.assertTrue(bom_v2)
+        self.assertNotEqual(bom_v1, bom_v2)
+        # Bust the caches so the inverse fields recompute against
+        # the post-apply DB state.
+        (bom_v1 | bom_v2).invalidate_recordset(
+            ["southbrook_eco_ids", "southbrook_eco_history_ids",
+             "southbrook_eco_count"]
+        )
+
+        # Old BoM: ECO appears via bom_id (target side).
+        self.assertIn(eco, bom_v1.southbrook_eco_ids)
+        self.assertEqual(bom_v1.southbrook_eco_count, 1)
+        # New BoM: same ECO appears via new_bom_id (provenance side).
+        self.assertIn(eco, bom_v2.southbrook_eco_history_ids)
+        self.assertEqual(bom_v2.southbrook_eco_count, 1)
+
+        # Action surface: both BoMs' smart-button click-through
+        # opens a list filtered by OR domain — same ECO visible from
+        # either side.
+        action_v1 = bom_v1.action_open_southbrook_ecos()
+        action_v2 = bom_v2.action_open_southbrook_ecos()
+        self.assertIn("|", action_v1["domain"])
+        self.assertIn("|", action_v2["domain"])
+        # The default-create context on each pre-fills bom_id with
+        # ITS OWN id — clicking 'New' from v1 raises a fresh ECO
+        # against v1; clicking 'New' from v2 against v2.
+        self.assertEqual(action_v1["context"]["default_bom_id"], bom_v1.id)
+        self.assertEqual(action_v2["context"]["default_bom_id"], bom_v2.id)
+
     def test_cut_spec_eco_count_and_smart_button(self):
         """Symmetric to the BoM smart-button test: a cut spec's
         southbrook_eco_count + action_open_southbrook_ecos round-trip
