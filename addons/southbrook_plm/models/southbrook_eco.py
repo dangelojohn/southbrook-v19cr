@@ -276,9 +276,16 @@ class SouthbrookEco(models.Model):
             [("is_final", "=", True)], order="sequence desc", limit=1
         )
         for eco in self:
-            eco.state = "rejected"
+            # Co-write state + stage_id in a SINGLE write call so the
+            # terminal-stage-arrival guard (in write() above) sees
+            # the matching state in vals and lets the write through.
+            # Splitting these into two writes would trigger the
+            # bypass-block — regression caught by 2026-06-01 part 9
+            # follow-up.
+            write_vals = {"state": "rejected"}
             if rejected_stage:
-                eco.stage_id = rejected_stage
+                write_vals["stage_id"] = rejected_stage.id
+            eco.write(write_vals)
             eco.message_post(body=_("Rejected by %s.") % self.env.user.display_name)
         return True
 
