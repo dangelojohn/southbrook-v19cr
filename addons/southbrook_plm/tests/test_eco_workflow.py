@@ -294,6 +294,32 @@ class TestSouthbrookPlm(TransactionCase):
         self.assertTrue(eco.approval_date)
         self.assertEqual(eco.state, "applied")
 
+    def test_action_reject_lands_in_rejected_stage(self):
+        """action_reject must move the ECO to the Rejected stage
+        specifically — not to the first is_final stage in sequence
+        order (which would be Applied). Bug found by demo walkthrough
+        2026-06-01.
+        """
+        rejected_stage = self.env.ref("southbrook_plm.stage_rejected")
+        applied_stage = self.env.ref("southbrook_plm.stage_applied")
+        # Sanity-check the seed: both are is_final, only one is
+        # is_rejected_stage.
+        self.assertTrue(rejected_stage.is_final)
+        self.assertTrue(applied_stage.is_final)
+        self.assertTrue(rejected_stage.is_rejected_stage)
+        self.assertFalse(applied_stage.is_rejected_stage)
+
+        eco = self.Eco.create(
+            {
+                "title": "Reject me",
+                "eco_type_id": self.type_rule.id,
+            }
+        )
+        eco.action_reject()
+        self.assertEqual(eco.state, "rejected")
+        self.assertEqual(eco.stage_id, rejected_stage)
+        self.assertNotEqual(eco.stage_id, applied_stage)
+
     def test_action_apply_preserves_prior_approver(self):
         """When action_approve ran first (recording who approved when),
         action_apply must NOT overwrite approver_id/approval_date —

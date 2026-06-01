@@ -36,3 +36,8 @@ class SouthbrookEcoStage(models.Model):
         "Final/Closed Stage",
         help="Terminal stage — the ECO is done (applied or rejected).",
     )
+    is_rejected_stage = fields.Boolean(
+        "Rejected Stage",
+        help="Distinguishes the Rejected terminal stage from the Applied "
+        "terminal stage. action_reject moves the ECO here.",
+    )

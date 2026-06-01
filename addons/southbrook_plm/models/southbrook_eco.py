@@ -211,8 +211,19 @@ class SouthbrookEco(models.Model):
         return True
 
     def action_reject(self):
+        # Use is_rejected_stage so we land in the Rejected stage
+        # specifically — NOT the first is_final stage in sequence
+        # order (which would be Applied, because seqs are
+        # Applied=40, Rejected=50). Bug found by demo walkthrough
+        # 2026-06-01: rejected ECOs were landing in Applied stage.
+        # Backward-compat fallback: if no stage has is_rejected_stage
+        # set (e.g. addons predating this flag), pick the
+        # highest-sequence is_final stage so we still land in the
+        # right ballpark.
         rejected_stage = self.env["southbrook.eco.stage"].search(
-            [("is_final", "=", True)], limit=1
+            [("is_rejected_stage", "=", True)], limit=1
+        ) or self.env["southbrook.eco.stage"].search(
+            [("is_final", "=", True)], order="sequence desc", limit=1
         )
         for eco in self:
             eco.state = "rejected"

@@ -31,6 +31,7 @@
         <field name="name">Rejected</field>
         <field name="sequence">50</field>
         <field name="is_final">1</field>
+        <field name="is_rejected_stage">1</field>
         <field name="fold">1</field>
     </record>
 
