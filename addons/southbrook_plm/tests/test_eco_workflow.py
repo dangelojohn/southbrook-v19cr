@@ -294,6 +294,78 @@ class TestSouthbrookPlm(TransactionCase):
         self.assertTrue(eco.approval_date)
         self.assertEqual(eco.state, "applied")
 
+    def test_action_advance_blocked_at_applied_terminal(self):
+        """action_advance from a terminal stage must raise. Bug found
+        by demo walkthrough 2026-06-01: advancing from Applied
+        silently moved the ECO to Rejected (next-higher sequence).
+        """
+        applied_stage = self.env.ref("southbrook_plm.stage_applied")
+        eco = self.Eco.create(
+            {
+                "title": "Stuck at Applied",
+                "eco_type_id": self.type_rule.id,
+                "stage_id": applied_stage.id,
+                "state": "applied",
+            }
+        )
+        with self.assertRaises(UserError):
+            eco.action_advance()
+        # State unchanged.
+        self.assertEqual(eco.stage_id, applied_stage)
+
+    def test_action_advance_blocked_at_rejected_terminal(self):
+        """Symmetric to the Applied-terminal test: advancing from
+        Rejected must also raise.
+        """
+        rejected_stage = self.env.ref("southbrook_plm.stage_rejected")
+        eco = self.Eco.create(
+            {
+                "title": "Stuck at Rejected",
+                "eco_type_id": self.type_rule.id,
+                "stage_id": rejected_stage.id,
+                "state": "rejected",
+            }
+        )
+        with self.assertRaises(UserError):
+            eco.action_advance()
+        self.assertEqual(eco.stage_id, rejected_stage)
+
+    def test_action_reset_draft_clears_lifecycle_end_fields(self):
+        """action_reset_draft must clear applied_date, approver_id,
+        and approval_date so the audit trail doesn't carry stale
+        markers from a prior pass. Bug found by demo walkthrough
+        2026-06-01: reset_draft left applied_date populated.
+        """
+        candidate = self.Spec.create(
+            {
+                "name": "Reset-draft test",
+                "state": "draft",
+                **{**ESTIMATING_DEFAULTS, "door_reveal": 3.7},
+            }
+        )
+        eco = self.Eco.create(
+            {
+                "title": "To be reset",
+                "eco_type_id": self.type_cut.id,
+                "cut_spec_id": candidate.id,
+            }
+        )
+        eco.with_user(self.approver).action_apply()
+        # Confirm post-apply state has the lifecycle-end fields set.
+        self.assertTrue(eco.applied_date)
+        self.assertTrue(eco.approver_id)
+        self.assertTrue(eco.approval_date)
+        self.assertEqual(eco.state, "applied")
+
+        eco.action_reset_draft()
+
+        self.assertEqual(eco.state, "open")
+        self.assertFalse(eco.applied_date)
+        self.assertFalse(eco.approver_id)
+        self.assertFalse(eco.approval_date)
+        # The reset stage is a non-terminal one (i.e. Draft).
+        self.assertFalse(eco.stage_id.is_final)
+
     def test_action_reject_lands_in_rejected_stage(self):
         """action_reject must move the ECO to the Rejected stage
         specifically — not to the first is_final stage in sequence

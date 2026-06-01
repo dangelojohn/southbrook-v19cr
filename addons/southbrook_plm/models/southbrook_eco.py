@@ -182,14 +182,36 @@ class SouthbrookEco(models.Model):
     # Buttons
     # ------------------------------------------------------------------
     def action_advance(self):
-        """Move to the next stage in sequence (respecting approval gating)."""
+        """Move to the next stage in sequence (respecting approval gating).
+
+        Walks ONLY non-terminal stages — an ECO at the Applied or
+        Rejected stage cannot be "advanced" further. The walk also
+        excludes is_final stages from the ordering so a sane workflow
+        moves Draft → Under Review → Approved and stops, without
+        accidentally landing in Rejected (which has the next-higher
+        sequence after Applied). Bug found by demo walkthrough
+        2026-06-01: advancing from Applied silently moved the ECO
+        to Rejected.
+        """
         for eco in self:
-            stages = self.env["southbrook.eco.stage"].search([])
+            if eco.stage_id and eco.stage_id.is_final:
+                raise UserError(
+                    _("ECO %s is in a terminal stage and cannot be advanced.")
+                    % eco.name
+                )
+            # Only the non-terminal stages participate in advance order;
+            # Applied + Rejected are reached via action_apply / action_reject.
+            stages = self.env["southbrook.eco.stage"].search(
+                [("is_final", "=", False)]
+            )
             ordered = stages.sorted(lambda s: (s.sequence, s.id))
             idx = ordered.ids.index(eco.stage_id.id) if eco.stage_id else -1
             nxt = ordered[idx + 1] if 0 <= idx + 1 < len(ordered) else False
             if not nxt:
-                raise UserError(_("ECO %s is already at the last stage.") % eco.name)
+                raise UserError(
+                    _("ECO %s is already at the last non-terminal stage; "
+                      "use Approve/Apply or Reject to close it.") % eco.name
+                )
             eco.stage_id = nxt
         return True
 
@@ -233,9 +255,34 @@ class SouthbrookEco(models.Model):
         return True
 
     def action_reset_draft(self):
-        first_stage = self.env["southbrook.eco.stage"].search([], limit=1)
+        """Reset an applied/rejected ECO back to the first stage as open.
+
+        Clears the lifecycle-end fields so the audit trail doesn't
+        carry stale 'this was applied at <X>' / 'approved by <Y>'
+        markers from the prior pass. Bug found by demo walkthrough
+        2026-06-01: reset_draft left applied_date populated even
+        though the ECO was no longer applied.
+
+        Re-running action_approve / action_apply on the reset ECO
+        will re-stamp these fields cleanly.
+        """
+        # Filter to non-terminal stages so we don't accidentally
+        # land back in Applied/Rejected if the seeded Draft stage
+        # has been renamed/reordered.
+        first_stage = self.env["southbrook.eco.stage"].search(
+            [("is_final", "=", False)], limit=1
+        )
         for eco in self:
-            eco.write({"state": "open", "stage_id": first_stage.id})
+            eco.write({
+                "state": "open",
+                "stage_id": first_stage.id,
+                "applied_date": False,
+                "approver_id": False,
+                "approval_date": False,
+            })
+            eco.message_post(
+                body=_("Reset to draft by %s.") % self.env.user.display_name
+            )
         return True
 
     def action_apply(self):
