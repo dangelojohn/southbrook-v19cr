@@ -67,6 +67,9 @@ boundary-rule justification.
         "views/mrp_bom_views.xml",
         "views/southbrook_plm_menus.xml",
     ],
+    "demo": [
+        "demo/southbrook_plm_demo.xml",
+    ],
     "application": True,
     "installable": True,
     "auto_install": False,

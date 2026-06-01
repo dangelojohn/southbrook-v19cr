@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Demo data — one example ECO per target_kind, each in a different
+  stage so a fresh-install dealer opening Engineering Change Orders
+  sees the Kanban pipeline already populated with the four canonical
+  shapes of change the PLM workflow governs.
+
+  This file does NOT call action_apply on any ECO. The 'applied' ECO
+  below carries state='applied' + an applied_date directly so the
+  demo state survives a -u upgrade without re-running the apply
+  handlers (which would mutate the active cut spec and BoMs in ways
+  the demo data file shouldn't be authoritative for).
+
+  noupdate="1" so demo edits during dealer use survive subsequent
+  -u southbrook_plm runs.
+-->
+<odoo noupdate="1">
+
+  <!-- Candidate cut spec the cut-spec ECO references. Draft state so
+       it doesn't fight cut_spec_nf14_seed for the single-active slot. -->
+  <record id="demo_cut_spec_wider_reveal" model="southbrook.cut.spec">
+    <field name="name">Proposed: Wider 4mm Door Reveal</field>
+    <field name="state">draft</field>
+    <field name="box_th">15.875</field>
+    <field name="back_th">6.35</field>
+    <field name="rabbet">6.35</field>
+    <field name="door_th">18.0</field>
+    <field name="door_reveal">4.0</field>
+    <field name="shelf_tol">1.5</field>
+    <field name="shelf_vent_gap">12.7</field>
+    <field name="toekick_h">101.6</field>
+    <field name="note">DEMO candidate — Studio request: bump the
+      uniform door reveal from 3mm to 4mm to improve hand-feel on
+      stained doors. NF14 baseline is unchanged otherwise.</field>
+  </record>
+
+  <!-- ============================================================ -->
+  <!-- 4 example ECOs — one per target_kind, varied stages          -->
+  <!-- ============================================================ -->
+
+  <!-- BoM ECO — Draft stage. No bom_id yet (gets bound at the time
+       the engineer picks which template BoM to version). Shows what
+       an in-progress BoM-revision request looks like before scoping. -->
+  <record id="demo_eco_bom" model="southbrook.eco">
+    <field name="title">Add lazy-susan exclusion to Corner BoM</field>
+    <field name="eco_type_id" ref="eco_type_bom"/>
+    <field name="stage_id" ref="stage_draft"/>
+    <field name="priority">1</field>
+    <field name="description"><![CDATA[
+      <p>Production reports the lazy-susan kit isn't compatible with
+      Corner cabinets configured with Maple interiors — the screw
+      pattern conflicts with the interior gable groove. Want to
+      exclude the lazy-susan accessory from Corner + Maple at the
+      BoM template level so the configurator can't surface it.</p>
+      <p><strong>Scope:</strong> southbrook.corner template BoM only.
+      Other cabinet families unaffected.</p>
+    ]]></field>
+  </record>
+
+  <!-- Cut-spec ECO — Under Review stage. References the demo
+       candidate spec above. Awaiting Approver sign-off. -->
+  <record id="demo_eco_cut_spec" model="southbrook.eco">
+    <field name="title">Bump door reveal to 4mm uniformly</field>
+    <field name="eco_type_id" ref="eco_type_cut_spec"/>
+    <field name="cut_spec_id" ref="demo_cut_spec_wider_reveal"/>
+    <field name="stage_id" ref="stage_review"/>
+    <field name="priority">0</field>
+    <field name="description"><![CDATA[
+      <p>Studio Lead's request after the 2026-Q2 install audit:
+      doors with the current 3mm reveal feel tight on stained
+      finishes. Bumping to 4mm gives a more forgiving hand-feel and
+      brings us in line with the 2025 Signature Series spec book.</p>
+      <p><strong>Impact:</strong> every cabinet's door panels shrink
+      by 2mm in each dimension. Verified by
+      test_panel_math_follows_active_spec on staging.</p>
+    ]]></field>
+  </record>
+
+  <!-- Rule ECO — Approved stage. Has a git_ref. Construction-rule
+       changes always land via code; the ECO is the audit-trail link. -->
+  <record id="demo_eco_rule" model="southbrook.eco">
+    <field name="title">Widen the 1-door/2-door cabinet rule to 22"</field>
+    <field name="eco_type_id" ref="eco_type_rule"/>
+    <field name="stage_id" ref="stage_approved"/>
+    <field name="priority">0</field>
+    <field name="git_ref">https://github.com/southbrook-cabinetry/southbrook-v19cr/pull/142</field>
+    <field name="description"><![CDATA[
+      <p>The current width→door-count rule (NF14) sets the threshold at
+      21": cabinets up to 21" wide are 1-door, 24"+ are 2-door.
+      Production data shows the 22" cabinet (Q23 enum width) gets
+      hand-rebuilt as 1-door in ~80% of orders. Move the threshold
+      to 22" so it's the default.</p>
+      <p><strong>Code reference:</strong> see PR #142 — the rule
+      lives in <code>data/config_rules.xml</code>.</p>
+    ]]></field>
+  </record>
+
+  <!-- Document ECO — Applied stage. Vendor spec sheet update; the
+       ECO carries the audit trail, the attached PDF (in real life)
+       rides on document_ids. Demo skips the attachment for
+       portability — no binary blobs in XML. -->
+  <record id="demo_eco_document" model="southbrook.eco">
+    <field name="title">Blum hinge spec sheet — 2026 Q2 revision</field>
+    <field name="eco_type_id" ref="eco_type_document"/>
+    <field name="stage_id" ref="stage_applied"/>
+    <field name="state">applied</field>
+    <field name="applied_date" eval="(DateTime.now()).strftime('%Y-%m-%d %H:%M:%S')"/>
+    <field name="priority">0</field>
+    <field name="description"><![CDATA[
+      <p>Blum issued the 2026-Q2 revision of their Clip-Top BLUMOTION
+      hinge spec — minor torque-spec changes and a new cup-drilling
+      tolerance window. Replaces the 2025 reference our shop floor
+      pulls from. PDF attached.</p>
+      <p><strong>Action taken:</strong> updated the supplier link on
+      the affected templates; shop floor copies refreshed.</p>
+    ]]></field>
+  </record>
+
+</odoo>
