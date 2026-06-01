@@ -264,7 +264,13 @@ class SouthbrookEco(models.Model):
             raise ValidationError(
                 _("ECO %s: a Target BoM is required to version a BoM.") % self.name
             )
-        old = self.bom_id
+        # The BoM copy/archive is a privileged action, but it is already
+        # authorised by the ECO approval gate (action_apply requires the PLM
+        # Approver group). A PLM Approver is not necessarily a Manufacturing
+        # Administrator, so run the mrp.bom mutation with sudo() — the approval
+        # IS the authorization. (NF: caught by test_bom_eco_versions_and_archives
+        # on the live v19 install — AccessError creating mrp.bom otherwise.)
+        old = self.bom_id.sudo()
         new = old.copy(
             {
                 "southbrook_version": old.southbrook_version + 1,
