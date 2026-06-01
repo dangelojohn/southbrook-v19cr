@@ -65,6 +65,9 @@ boundary-rule justification.
         "views/southbrook_eco_type_views.xml",
         "views/southbrook_eco_views.xml",
         "views/mrp_bom_views.xml",
+        # Step 4 — sale.order.line → ECO bridge button on the order
+        # builder's order_line list.
+        "views/sale_order_views.xml",
         "views/southbrook_plm_menus.xml",
     ],
     "demo": [

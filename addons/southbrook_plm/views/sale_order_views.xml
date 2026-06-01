@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Step 4 — line → ECO bridge view inherit.
+
+  Adds a small flag-icon button to the embedded order_line list in the
+  sale.order form. Clicking it on a line calls
+  sale.order.line.action_raise_eco() which opens a draft ECO pre-filled
+  with target_kind=bom, the cabinet's active BoM, and a title +
+  description citing the order/line/product.
+
+  Inherits FROM the southbrook_estimating view (not Odoo's), so the
+  button column lands inside Southbrook's order builder grid rather
+  than the upstream sale.order.line tree.
+
+  Group-gated to southbrook_plm.group_southbrook_plm_user so dealers
+  without PLM rights don't see the button cluttering their line list.
+
+  See docs/CUSTOMER_TO_MANUFACTURING_FLOW.md §3.3.
+-->
+<odoo>
+
+  <record id="view_order_form_southbrook_plm_eco_bridge" model="ir.ui.view">
+    <field name="name">sale.order.form.southbrook_plm.eco_bridge</field>
+    <field name="model">sale.order</field>
+    <field name="inherit_id" ref="southbrook_estimating.view_order_form_southbrook"/>
+    <field name="arch" type="xml">
+      <xpath expr="//field[@name='order_line']/list/field[@name='price_subtotal']" position="after">
+        <button name="action_raise_eco"
+                type="object"
+                icon="fa-flag"
+                title="Raise an Engineering Change Order about this cabinet"
+                groups="southbrook_plm.group_southbrook_plm_user"/>
+      </xpath>
+    </field>
+  </record>
+
+</odoo>

@@ -12,11 +12,80 @@ model. Estimating's sale.order.action_confirm calls the capture method
 via duck-typing — if PLM is installed, the capture runs; if not, the
 hasattr-guarded extension is silently absent.
 """
-from odoo import fields, models
+from odoo import _, fields, models
 
 
 class SaleOrderLine(models.Model):
     _inherit = "sale.order.line"
+
+    # ------------------------------------------------------------------
+    # Step 4 — line → ECO bridge (defined first so action shows up
+    # before the snapshot fields in the file order).
+    # ------------------------------------------------------------------
+    def action_raise_eco(self):
+        """Open a draft ECO pre-filled from this line's context.
+
+        Per Q-B draft assumption: auto-pick target_kind=bom (the most
+        common case) with the cabinet's active BoM pre-filled. The
+        engineer re-targets after opening if the issue is actually a
+        rule or cut spec.
+
+        Returns an ir.actions.act_window with default_* context so the
+        form opens populated:
+          eco_type_id = unique bom-kind ECO type
+          bom_id      = active BoM for this line's template
+          title       = 'Re: <order> line #N — <product>'
+          description = HTML block citing order/line/product/spec/qty
+        """
+        self.ensure_one()
+        bom_type = self.env["southbrook.eco.type"].search(
+            [("target_kind", "=", "bom")], limit=1
+        )
+        bom = False
+        if self.product_id and self.product_id.product_tmpl_id:
+            bom = self.env["mrp.bom"].sudo().search(
+                [
+                    ("product_tmpl_id", "=", self.product_id.product_tmpl_id.id),
+                    ("active", "=", True),
+                ],
+                limit=1,
+            )
+        product_label = (
+            self.product_id.display_name if self.product_id else "(no product)"
+        )
+        title = _("Re: %(order)s line #%(seq)s — %(product)s") % {
+            "order": self.order_id.name or "(new order)",
+            "seq": self.sequence or 0,
+            "product": product_label,
+        }
+        description = _(
+            "<p>Raised from <strong>%(order)s</strong> line "
+            "#%(seq)s.</p>"
+            "<ul>"
+            "<li>Product: %(product)s</li>"
+            "<li>Spec: %(name)s</li>"
+            "<li>Quantity: %(qty)s</li>"
+            "</ul>"
+        ) % {
+            "order": self.order_id.name or "(new order)",
+            "seq": self.sequence or 0,
+            "product": product_label,
+            "name": self.name or "—",
+            "qty": self.product_uom_qty or 0.0,
+        }
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Raise an Engineering Change Order"),
+            "res_model": "southbrook.eco",
+            "view_mode": "form",
+            "target": "current",
+            "context": {
+                "default_eco_type_id": bom_type.id if bom_type else False,
+                "default_bom_id": bom.id if bom else False,
+                "default_title": title,
+                "default_description": description,
+            },
+        }
 
     southbrook_cut_spec_version_id = fields.Many2one(
         "southbrook.cut.spec",
