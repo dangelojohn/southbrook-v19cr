@@ -1,0 +1,121 @@
+// =====================================================================
+// Step 6 — PLM addon adopts shared Signature Series design tokens.
+//
+// Tokens come from southbrook_estimating/static/src/scss/_southbrook_design_tokens.scss
+// (loaded first into web.assets_backend); this file applies them to
+// PLM-specific surfaces via the .sb-plm scope class added by the
+// kanban / form view inherits.
+//
+// CSS var() fallback values are the canonical Signature Series hex
+// literals so the styling works even if the partial is somehow not
+// loaded (e.g. running PLM standalone for testing). Source-of-truth
+// values match aligned commits 1601c9e + 3510f25 on main.
+//
+// See docs/CUSTOMER_TO_MANUFACTURING_FLOW.md §5 + §6.
+// =====================================================================
+
+// ---------------------------------------------------------------------
+// ECO Kanban — card visual register
+// ---------------------------------------------------------------------
+.sb-plm-eco-kanban {
+  .o_kanban_record {
+    background: var(--sb-linen, #f4ede2);
+    border: 1px solid var(--sb-rule, #d8cfbf);
+    border-radius: 4px;
+    transition:
+      border-color var(--sb-dur-fast, 120ms) var(--sb-easing, ease),
+      box-shadow var(--sb-dur-fast, 120ms) var(--sb-easing, ease);
+
+    &:hover {
+      border-color: var(--sb-walnut, #6b3f2a);
+      box-shadow: 0 4px 16px rgba(74, 60, 46, 0.15);
+    }
+  }
+
+  .o_kanban_record_title {
+    color: var(--sb-walnut, #6b3f2a);
+    font-family: var(--sb-font-display, 'Roboto Flex', sans-serif);
+    font-weight: 600;
+
+    strong {
+      font-family: var(--sb-font-mono, 'JetBrains Mono', monospace);
+      letter-spacing: 0.02em;
+    }
+  }
+
+  .o_kanban_record_subtitle {
+    color: var(--sb-ink-dim, #6b665e);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+
+  // Stage column headers get the walnut accent
+  .o_kanban_group_title {
+    color: var(--sb-walnut, #6b3f2a);
+    font-family: var(--sb-font-display, 'Roboto Flex', sans-serif);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+}
+
+// ---------------------------------------------------------------------
+// ECO Form — header + status bar
+// ---------------------------------------------------------------------
+.sb-plm-eco-form,
+.sb-plm-cut-spec-form {
+  .o_form_statusbar {
+    background: var(--sb-paper, #fbf7ef);
+    border-bottom: 1px solid var(--sb-rule, #d8cfbf);
+
+    .btn-primary {
+      background-color: var(--sb-walnut, #6b3f2a);
+      border-color: var(--sb-walnut, #6b3f2a);
+      color: var(--sb-linen, #f4ede2);
+
+      &:hover {
+        background-color: var(--sb-walnut-d, #4a2b1d);
+        border-color: var(--sb-walnut-d, #4a2b1d);
+      }
+    }
+  }
+
+  .o_form_sheet .oe_title h1 {
+    color: var(--sb-walnut, #6b3f2a);
+    font-family: var(--sb-font-display, 'Roboto Flex', sans-serif);
+    font-variation-settings: "opsz" 36, "wght" 500;
+  }
+
+  // Group labels (the small uppercase headings above each group)
+  .o_group string,
+  .o_form_label {
+    color: var(--sb-ink-dim, #6b665e);
+  }
+
+  // Smart-button row at the top of forms
+  .oe_button_box .oe_stat_button {
+    .o_stat_text,
+    .o_stat_value {
+      color: var(--sb-walnut, #6b3f2a);
+    }
+
+    .fa {
+      color: var(--sb-sky, #2b4f6b);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+// Cut-spec form — state badge gets sb-pill aesthetic
+// ---------------------------------------------------------------------
+.sb-plm-cut-spec-form {
+  .badge {
+    font-family: var(--sb-font-mono, 'JetBrains Mono', monospace);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+
+    &.text-bg-success {
+      background-color: var(--sb-ok, #4a6f3e) !important;
+    }
+  }
+}

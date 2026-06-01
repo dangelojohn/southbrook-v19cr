@@ -31,7 +31,7 @@
         <field name="name">southbrook.eco.kanban</field>
         <field name="model">southbrook.eco</field>
         <field name="arch" type="xml">
-            <kanban default_group_by="stage_id">
+            <kanban default_group_by="stage_id" class="sb-plm-eco-kanban">
                 <field name="stage_id"/>
                 <field name="state"/>
                 <templates>
@@ -78,7 +78,7 @@
         <field name="name">southbrook.eco.form</field>
         <field name="model">southbrook.eco</field>
         <field name="arch" type="xml">
-            <form>
+            <form class="sb-plm-eco-form">
                 <header>
                     <button name="action_approve" type="object" string="Approve"
                             class="btn-primary" invisible="state != 'open'"

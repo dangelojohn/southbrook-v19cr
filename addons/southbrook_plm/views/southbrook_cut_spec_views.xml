@@ -23,7 +23,7 @@
         <field name="name">southbrook.cut.spec.form</field>
         <field name="model">southbrook.cut.spec</field>
         <field name="arch" type="xml">
-            <form>
+            <form class="sb-plm-cut-spec-form">
                 <header>
                     <button name="action_activate" type="object" string="Activate"
                             class="btn-primary" invisible="state == 'active'"
