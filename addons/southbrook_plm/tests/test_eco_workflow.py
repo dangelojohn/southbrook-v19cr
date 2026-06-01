@@ -262,3 +262,56 @@ class TestSouthbrookPlm(TransactionCase):
         self.assertEqual(
             action["context"]["default_eco_type_id"], self.type_bom.id
         )
+
+    def test_cut_spec_eco_count_and_smart_button(self):
+        """Symmetric to the BoM smart-button test: a cut spec's
+        southbrook_eco_count + action_open_southbrook_ecos round-trip
+        the candidate-ECO audit trail. Two cut-kind ECOs referencing a
+        draft spec yield count=2 + a filtered action shape with the
+        cut-kind ECO type in the default-create context.
+        """
+        candidate = self.Spec.create(
+            {
+                "name": "Smart-btn candidate",
+                "state": "draft",
+                **ESTIMATING_DEFAULTS,
+            }
+        )
+
+        # Baseline: no ECOs propose this spec yet.
+        self.assertEqual(candidate.southbrook_eco_count, 0)
+        self.assertEqual(len(candidate.southbrook_eco_ids), 0)
+
+        eco_a = self.Eco.create(
+            {
+                "title": "Spec smart-btn ECO A",
+                "eco_type_id": self.type_cut.id,
+                "cut_spec_id": candidate.id,
+            }
+        )
+        eco_b = self.Eco.create(
+            {
+                "title": "Spec smart-btn ECO B",
+                "eco_type_id": self.type_cut.id,
+                "cut_spec_id": candidate.id,
+            }
+        )
+        candidate.invalidate_recordset(
+            ["southbrook_eco_ids", "southbrook_eco_count"]
+        )
+
+        self.assertEqual(candidate.southbrook_eco_count, 2)
+        self.assertEqual(
+            set(candidate.southbrook_eco_ids.ids), {eco_a.id, eco_b.id}
+        )
+
+        action = candidate.action_open_southbrook_ecos()
+        self.assertEqual(action["type"], "ir.actions.act_window")
+        self.assertEqual(action["res_model"], "southbrook.eco")
+        self.assertIn(("cut_spec_id", "=", candidate.id), action["domain"])
+        self.assertEqual(
+            action["context"]["default_cut_spec_id"], candidate.id
+        )
+        self.assertEqual(
+            action["context"]["default_eco_type_id"], self.type_cut.id
+        )

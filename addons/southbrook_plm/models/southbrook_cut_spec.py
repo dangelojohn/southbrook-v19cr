@@ -47,6 +47,22 @@ class SouthbrookCutSpec(models.Model):
         default=lambda self: _("New Cut Spec"),
         tracking=True,
     )
+    # Inverse of southbrook.eco.cut_spec_id. Powers the smart-button
+    # count + click-through on the cut-spec form: which ECOs proposed
+    # this spec (i.e. carry it as their candidate)? An applied ECO of
+    # target_kind='cut_spec' is what activated this spec; subsequent
+    # supersession is recorded via the chatter rather than a separate
+    # field, so the eco_ids list is the canonical audit trail for
+    # "where did this spec come from?"
+    southbrook_eco_ids = fields.One2many(
+        "southbrook.eco",
+        "cut_spec_id",
+        string="Engineering Change Orders",
+    )
+    southbrook_eco_count = fields.Integer(
+        compute="_compute_southbrook_eco_count",
+        string="ECO Count",
+    )
     state = fields.Selection(
         [
             ("draft", "Draft"),
@@ -125,6 +141,33 @@ class SouthbrookCutSpec(models.Model):
         it returns empty and the seam falls back to the code defaults.
         """
         return self.search([("state", "=", "active")], limit=1)
+
+    def _compute_southbrook_eco_count(self):
+        for spec in self:
+            spec.southbrook_eco_count = len(spec.southbrook_eco_ids)
+
+    def action_open_southbrook_ecos(self):
+        """Smart-button action: ECOs that reference this cut spec.
+
+        Opens the southbrook.eco list filtered to this spec, with the
+        default-create context pre-set so 'New' from this view auto-
+        binds the candidate spec + cut-kind ECO type.
+        """
+        self.ensure_one()
+        cut_kind_type = self.env["southbrook.eco.type"].search(
+            [("target_kind", "=", "cut_spec")], limit=1
+        )
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Engineering Change Orders"),
+            "res_model": "southbrook.eco",
+            "view_mode": "list,form,kanban",
+            "domain": [("cut_spec_id", "=", self.id)],
+            "context": {
+                "default_cut_spec_id": self.id,
+                "default_eco_type_id": cut_kind_type.id if cut_kind_type else False,
+            },
+        }
 
     def constants_dict(self):
         """Return this spec as the dict shape the cut math consumes."""
