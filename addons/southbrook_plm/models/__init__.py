@@ -4,3 +4,5 @@ from . import southbrook_eco_stage
 from . import southbrook_eco_type
 from . import southbrook_eco
 from . import mrp_bom
+from . import sale_order_line
+from . import sale_order
