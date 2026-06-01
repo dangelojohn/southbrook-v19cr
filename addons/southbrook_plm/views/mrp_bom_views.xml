@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  mrp.bom form inherit — surfaces the PLM workflow where engineers
+  actually work. A 'flag'-icon smart button shows the count of ECOs
+  raised against this BoM and click-throughs to the filtered list.
+
+  Hidden when the count is 0 so the form stays clean on the vast
+  majority of BoMs that have never been versioned.
+
+  'New' from the resulting list view pre-fills bom_id (so the ECO is
+  bound to this BoM) AND eco_type_id (to the unique 'bom'-kind ECO
+  type) via the action's context, so creating an ECO from the BoM is
+  literally one click + title + save.
+-->
+<odoo>
+
+  <record id="mrp_bom_form_inherit_southbrook_plm" model="ir.ui.view">
+    <field name="name">mrp.bom.form.inherit.southbrook_plm</field>
+    <field name="model">mrp.bom</field>
+    <field name="inherit_id" ref="mrp.mrp_bom_form_view"/>
+    <field name="arch" type="xml">
+      <xpath expr="//div[@name='button_box']" position="inside">
+        <button class="oe_stat_button"
+                type="object"
+                name="action_open_southbrook_ecos"
+                icon="fa-flag"
+                invisible="southbrook_eco_count == 0">
+          <field name="southbrook_eco_count"
+                 widget="statinfo"
+                 string="ECOs"/>
+        </button>
+      </xpath>
+    </field>
+  </record>
+
+</odoo>

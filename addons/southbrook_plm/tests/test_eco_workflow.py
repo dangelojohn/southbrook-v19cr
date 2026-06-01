@@ -212,3 +212,53 @@ class TestSouthbrookPlm(TransactionCase):
             {"title": "Seq check", "eco_type_id": self.type_rule.id}
         )
         self.assertTrue(eco.name.startswith("ECO/"))
+
+    # ------------------------------------------------------------------
+    # mrp.bom ECO smart button (count + action)
+    # ------------------------------------------------------------------
+    def test_bom_eco_count_and_smart_button(self):
+        """A BoM's southbrook_eco_count + action_open_southbrook_ecos
+        should round-trip cleanly: zero ECOs => 0 count, raising two ECOs
+        => count=2, action returns an ir.actions.act_window filtered to
+        that BoM with the default-create context pre-set.
+        """
+        product = self.env["product.product"].create(
+            {"name": "Smart-button test", "type": "consu"}
+        )
+        bom = self.Bom.create(
+            {"product_tmpl_id": product.product_tmpl_id.id, "product_qty": 1.0}
+        )
+
+        # Baseline: no ECOs against this BoM.
+        self.assertEqual(bom.southbrook_eco_count, 0)
+        self.assertEqual(len(bom.southbrook_eco_ids), 0)
+
+        # Raise two ECOs referencing the BoM.
+        eco_a = self.Eco.create(
+            {
+                "title": "Smart-btn ECO A",
+                "eco_type_id": self.type_bom.id,
+                "bom_id": bom.id,
+            }
+        )
+        eco_b = self.Eco.create(
+            {
+                "title": "Smart-btn ECO B",
+                "eco_type_id": self.type_bom.id,
+                "bom_id": bom.id,
+            }
+        )
+        bom.invalidate_recordset(["southbrook_eco_ids", "southbrook_eco_count"])
+
+        self.assertEqual(bom.southbrook_eco_count, 2)
+        self.assertEqual(set(bom.southbrook_eco_ids.ids), {eco_a.id, eco_b.id})
+
+        # Smart-button action shape.
+        action = bom.action_open_southbrook_ecos()
+        self.assertEqual(action["type"], "ir.actions.act_window")
+        self.assertEqual(action["res_model"], "southbrook.eco")
+        self.assertIn(("bom_id", "=", bom.id), action["domain"])
+        self.assertEqual(action["context"]["default_bom_id"], bom.id)
+        self.assertEqual(
+            action["context"]["default_eco_type_id"], self.type_bom.id
+        )

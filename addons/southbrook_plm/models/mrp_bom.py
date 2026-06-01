@@ -16,7 +16,7 @@ Two concerns:
    installing this module never silently changes cut output until a spec is
    activated.
 """
-from odoo import api, fields, models
+from odoo import _, api, fields, models
 
 
 class MrpBom(models.Model):
@@ -29,6 +29,45 @@ class MrpBom(models.Model):
         help="Incremented by an Engineering Change Order each time this "
         "template BoM is re-versioned. The prior version is archived.",
     )
+    # The set of ECOs whose target_kind == 'bom' and bom_id == this record.
+    # Inverse of southbrook.eco.bom_id; powers the smart-button count + the
+    # one-click filtered list view (action_open_southbrook_ecos).
+    southbrook_eco_ids = fields.One2many(
+        "southbrook.eco",
+        "bom_id",
+        string="Engineering Change Orders",
+    )
+    southbrook_eco_count = fields.Integer(
+        compute="_compute_southbrook_eco_count",
+        string="ECO Count",
+    )
+
+    def _compute_southbrook_eco_count(self):
+        for bom in self:
+            bom.southbrook_eco_count = len(bom.southbrook_eco_ids)
+
+    def action_open_southbrook_ecos(self):
+        """Smart-button action: ECOs raised against this BoM.
+
+        Opens the southbrook.eco list view filtered to this BoM, with the
+        default-create context pre-set so 'New' from this view auto-binds
+        the ECO to this BoM (and to the 'bom'-kind ECO type if unique).
+        """
+        self.ensure_one()
+        bom_kind_type = self.env["southbrook.eco.type"].search(
+            [("target_kind", "=", "bom")], limit=1
+        )
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Engineering Change Orders"),
+            "res_model": "southbrook.eco",
+            "view_mode": "list,form,kanban",
+            "domain": [("bom_id", "=", self.id)],
+            "context": {
+                "default_bom_id": self.id,
+                "default_eco_type_id": bom_kind_type.id if bom_kind_type else False,
+            },
+        }
 
     @api.model
     def _get_cut_constants(self):

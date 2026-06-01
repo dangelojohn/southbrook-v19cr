@@ -64,6 +64,7 @@ boundary-rule justification.
         "views/southbrook_cut_spec_views.xml",
         "views/southbrook_eco_type_views.xml",
         "views/southbrook_eco_views.xml",
+        "views/mrp_bom_views.xml",
         "views/southbrook_plm_menus.xml",
     ],
     "application": True,
