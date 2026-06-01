@@ -228,7 +228,16 @@ class SouthbrookEco(models.Model):
         return True
 
     def action_apply(self):
-        """Commit the ECO's change, branching on target_kind."""
+        """Commit the ECO's change, branching on target_kind.
+
+        Approver stamping: if the ECO was never run through
+        :meth:`action_approve` (which sets ``approver_id`` + ``approval_date``
+        explicitly), the user who applies it becomes the de-facto
+        approver and gets stamped here. If a prior ``action_approve``
+        already set those fields, they are preserved — the audit
+        trail correctly records that approval and application were
+        separate actions (and possibly different users).
+        """
         if not self.env.user.has_group(
             "southbrook_plm.group_southbrook_plm_approver"
         ):
@@ -246,13 +255,18 @@ class SouthbrookEco(models.Model):
             applied_stage = self.env["southbrook.eco.stage"].search(
                 [("is_applied_stage", "=", True)], limit=1
             )
-            eco.write(
-                {
-                    "state": "applied",
-                    "applied_date": fields.Datetime.now(),
-                    "stage_id": applied_stage.id if applied_stage else eco.stage_id.id,
-                }
-            )
+            now = fields.Datetime.now()
+            write_vals = {
+                "state": "applied",
+                "applied_date": now,
+                "stage_id": applied_stage.id if applied_stage else eco.stage_id.id,
+            }
+            # Only stamp approver_id + approval_date if a prior
+            # action_approve hasn't already filled them in.
+            if not eco.approver_id:
+                write_vals["approver_id"] = self.env.user.id
+                write_vals["approval_date"] = now
+            eco.write(write_vals)
         return True
 
     # ------------------------------------------------------------------

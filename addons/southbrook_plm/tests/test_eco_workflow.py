@@ -263,6 +263,73 @@ class TestSouthbrookPlm(TransactionCase):
             action["context"]["default_eco_type_id"], self.type_bom.id
         )
 
+    # ------------------------------------------------------------------
+    # Approver-stamp semantics on action_apply
+    # ------------------------------------------------------------------
+    def test_action_apply_stamps_approver_when_not_preset(self):
+        """When action_apply runs without a prior action_approve, the
+        applier is the de-facto approver — approver_id + approval_date
+        get stamped on the ECO at apply time.
+        """
+        candidate = self.Spec.create(
+            {
+                "name": "Apply-stamp test",
+                "state": "draft",
+                **{**ESTIMATING_DEFAULTS, "door_reveal": 3.5},
+            }
+        )
+        eco = self.Eco.create(
+            {
+                "title": "Apply without prior approve",
+                "eco_type_id": self.type_cut.id,
+                "cut_spec_id": candidate.id,
+            }
+        )
+        self.assertFalse(eco.approver_id)
+        self.assertFalse(eco.approval_date)
+
+        eco.with_user(self.approver).action_apply()
+
+        self.assertEqual(eco.approver_id, self.approver)
+        self.assertTrue(eco.approval_date)
+        self.assertEqual(eco.state, "applied")
+
+    def test_action_apply_preserves_prior_approver(self):
+        """When action_approve ran first (recording who approved when),
+        action_apply must NOT overwrite approver_id/approval_date —
+        the audit trail correctly captures approval and application
+        as distinct events.
+        """
+        candidate = self.Spec.create(
+            {
+                "name": "Two-step apply test",
+                "state": "draft",
+                **{**ESTIMATING_DEFAULTS, "door_reveal": 3.6},
+            }
+        )
+        eco = self.Eco.create(
+            {
+                "title": "Approve then apply",
+                "eco_type_id": self.type_cut.id,
+                "cut_spec_id": candidate.id,
+            }
+        )
+        # First step: explicit action_approve stamps approver fields.
+        eco.with_user(self.approver).action_approve()
+        original_approver = eco.approver_id
+        original_approval_date = eco.approval_date
+        self.assertEqual(original_approver, self.approver)
+        self.assertTrue(original_approval_date)
+
+        # Second step: action_apply must leave approver_id /
+        # approval_date untouched.
+        eco.with_user(self.approver).action_apply()
+
+        self.assertEqual(eco.approver_id, original_approver)
+        self.assertEqual(eco.approval_date, original_approval_date)
+        self.assertEqual(eco.state, "applied")
+        self.assertTrue(eco.applied_date)
+
     def test_cut_spec_eco_count_and_smart_button(self):
         """Symmetric to the BoM smart-button test: a cut spec's
         southbrook_eco_count + action_open_southbrook_ecos round-trip
