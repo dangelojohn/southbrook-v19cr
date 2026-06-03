@@ -1571,6 +1571,49 @@
         max-width: 760px;
     }
 
+    // Footer — added-count summary + Cancel/Done. Both buttons just
+    // close (items persist live as they're added), so they differ
+    // only in label/emphasis. Mirrors the header's 24px gutter and
+    // the --sb-rule divider used by header/toolbar.
+    .o_owl_modal_footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 24px;
+        border-top: 1px solid var(--sb-rule);
+    }
+
+    .o_owl_modal_footer_actions {
+        display: flex;
+        gap: 8px;
+    }
+
+    .o_owl_catalog_added_count {
+        font-size: $cp-meta;
+        color: var(--sb-ink-dim);
+    }
+
+    .o_owl_modal_btn {
+        border-radius: 8px;
+        padding: 8px 16px;
+        cursor: pointer;
+        font-family: var(--sb-font-sans);
+        border: 1px solid var(--sb-rule);
+
+        &:hover { filter: brightness(0.97); }
+    }
+
+    .o_owl_modal_btn_secondary {
+        background: var(--sb-paper);
+        color: var(--sb-ink);
+    }
+
+    .o_owl_modal_btn_primary {
+        background: var(--sb-walnut);
+        color: var(--sb-linen);
+        border-color: var(--sb-walnut);
+    }
+
     // Toolbar — search + view toggle.
     .o_owl_catalog_toolbar {
         display: flex;
