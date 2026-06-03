@@ -1378,3 +1378,33 @@ forces the choice.
 Retail pricelist); CLAUDE.md §6 (architecture spec to amend in
 Phase 3 if cost-floor architecture is dropped); Build Spec §6
 pseudocode (matches §6).
+
+---
+
+## 2026-06-03 · Production-approval gate — BoM/routing data completeness (follow-up)
+
+The production-approval gate (folded into `southbrook_mrp_pm`: the
+`action_send_to_production` chokepoint + request/approve/reject workflow +
+approver group + hybrid notifications) is complete and correct, but its
+*output* is bounded by manufacturing data that is only partially seeded.
+
+**Issue.** Only `SB-BASE-1DR` has a full BoM + 8-station routing today
+(`data/routing_base_1dr.xml`). The other 11 Q8 cabinet SKUs are covered by
+`data/routings_other_11.xml`, but `action_send_to_production` skips any order
+line whose variant has no resolvable normal-type BoM. So an **approved**
+multi-cabinet order currently generates fewer manufacturing/work orders than
+the "10 WO" vision — silently, line by line.
+
+**This is data, not code.** The gate behaves correctly; it simply has nothing
+to explode for the unseeded SKUs. No change to the gate is warranted.
+
+**When this needs work.** Before any demo / sign-off that promises
+per-cabinet work-order generation across the full catalogue, seed BoM +
+routing for the remaining 11 SKUs (mirror the `SB-BASE-1DR` skeleton;
+per-cabinet cycle times differ). Until then the portal `no_bom_lines`-style
+skip is expected behaviour, not a bug.
+
+**Cross-ref.** `southbrook_mrp_pm/models/sale_order.py`
+(`action_send_to_production`, `_resolve_bom_for_line`); manifest notes on
+`routing_base_1dr.xml` / `routings_other_11.xml`; gate patch
+`0001-feat-mrp-pm-production-approval-gate.patch`.

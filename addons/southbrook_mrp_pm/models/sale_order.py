@@ -36,6 +36,65 @@ from odoo.exceptions import UserError
 class SaleOrder(models.Model):
     _inherit = "sale.order"
 
+    # ------------------------------------------------------------------
+    # Production-approval gate (folded into mrp_pm 2026-06-03).
+    #
+    # There is no custom lifecycle stage field on sale.order — the
+    # native `state` (draft/sent/sale/done/cancel) IS the order
+    # lifecycle, and "In Production" is represented implicitly by the
+    # existence of mrp.production records (origin == order.name) created
+    # by action_send_to_production(). The approval gate therefore sits
+    # BETWEEN native 'sale' (Confirmed) and the MO-creation call: a
+    # confirmed order must be approved before any MO is created.
+    #
+    # The single chokepoint is action_send_to_production() itself, which
+    # both the dealer portal button (via the order_builder controller)
+    # and the backend form button route through. Guarding it there means
+    # production cannot start by any path without approval.
+    # ------------------------------------------------------------------
+    _PRODUCTION_APPROVAL_STATES = [
+        ("none", "Not Submitted"),
+        ("pending", "Pending Approval"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+
+    production_approval_state = fields.Selection(
+        selection=_PRODUCTION_APPROVAL_STATES,
+        string="Production Approval",
+        default="none",
+        copy=False,
+        tracking=True,
+        help="Approval gate that must reach 'Approved' before any "
+             "manufacturing order can be created for this sale order.",
+    )
+    production_requested_by = fields.Many2one(
+        "res.users",
+        string="Production Requested By",
+        copy=False,
+        readonly=True,
+    )
+    production_requested_date = fields.Datetime(
+        string="Production Requested On",
+        copy=False,
+        readonly=True,
+    )
+    production_approved_by = fields.Many2one(
+        "res.users",
+        string="Production Approved/Rejected By",
+        copy=False,
+        readonly=True,
+    )
+    production_approved_date = fields.Datetime(
+        string="Production Decision On",
+        copy=False,
+        readonly=True,
+    )
+    production_reject_reason = fields.Text(
+        string="Rejection Reason",
+        copy=False,
+    )
+
     def action_send_to_production(self):
         """Create one mrp.production per order line that has a
         resolvable BoM. Idempotent on the sale.order: existing
@@ -47,7 +106,8 @@ class SaleOrder(models.Model):
             for this order.
 
         Raises:
-            UserError if the order is not in 'sale' state.
+            UserError if the order is not in 'sale' state, or if the
+            production-approval gate has not reached 'approved'.
         """
         self.ensure_one()
         if self.state != "sale":
@@ -55,6 +115,26 @@ class SaleOrder(models.Model):
                 "Order %(name)s must be confirmed (sale state) before "
                 "sending to production. Current state: %(state)s."
             ) % {"name": self.name, "state": self.state})
+
+        # Approval gate (2026-06-03). MO creation is only reachable once
+        # an approver has signed off. This guards BOTH callers — the
+        # backend form button and the dealer portal "Send to Production"
+        # button (order_builder controller) — so production cannot start
+        # without approval by any route. action_approve_production() sets
+        # the state to 'approved' immediately before calling this method,
+        # so the approve path passes the gate.
+        if self.production_approval_state != "approved":
+            raise UserError(_(
+                "Order %(name)s cannot be sent to production until it is "
+                "approved. Current approval state: %(state)s. Use "
+                "'Request Production' and have an approver sign off first."
+            ) % {
+                "name": self.name,
+                "state": dict(self._PRODUCTION_APPROVAL_STATES).get(
+                    self.production_approval_state,
+                    self.production_approval_state,
+                ),
+            })
 
         MO = self.env["mrp.production"].sudo()
         Bom = self.env["mrp.bom"].sudo()
@@ -146,3 +226,159 @@ class SaleOrder(models.Model):
             order="sequence, id",
             limit=1,
         )
+
+    # ------------------------------------------------------------------
+    # Production-approval workflow (2026-06-03).
+    #
+    # request → (approver) approve | reject. Approve is the ONLY path
+    # that reaches MO creation: it flips the gate to 'approved' and then
+    # calls action_send_to_production(). Notifications follow the house
+    # pattern — message_post chatter + a mail.activity To-Do for the
+    # approver group — NOT mail.template (the codebase ships zero).
+    # ------------------------------------------------------------------
+    _APPROVER_GROUP = "southbrook_mrp_pm.group_southbrook_production_approver"
+
+    def _assert_production_approver(self):
+        """Defense-in-depth: the view hides Approve/Reject behind the
+        approver group, but the methods guard too in case they're
+        reached by RPC / server action."""
+        if not self.env.user.has_group(self._APPROVER_GROUP):
+            raise UserError(_(
+                "Only a Production Approver can approve or reject a "
+                "production request."
+            ))
+
+    def action_request_production(self):
+        """Submit a confirmed order for production approval. Notifies
+        the approver group via a To-Do activity + chatter."""
+        self.ensure_one()
+        if self.state != "sale":
+            raise UserError(_(
+                "Order %(name)s must be confirmed before requesting "
+                "production. Current state: %(state)s."
+            ) % {"name": self.name, "state": self.state})
+        if self.production_approval_state not in ("none", "rejected"):
+            raise UserError(_(
+                "Production for %(name)s has already been submitted "
+                "(state: %(state)s)."
+            ) % {"name": self.name, "state": self.production_approval_state})
+
+        self.write({
+            "production_approval_state": "pending",
+            "production_requested_by": self.env.user.id,
+            "production_requested_date": fields.Datetime.now(),
+            "production_reject_reason": False,
+            # Clear any prior decision so a rejected → re-requested order
+            # doesn't carry the stale rejecter / decision timestamp into
+            # the new pending cycle.
+            "production_approved_by": False,
+            "production_approved_date": False,
+        })
+
+        # Schedule a To-Do activity for every approver so the request
+        # surfaces in their Activities inbox.
+        approvers = self.env.ref(self._APPROVER_GROUP, raise_if_not_found=False)
+        if approvers:
+            for user in approvers.users:
+                self.activity_schedule(
+                    "mail.mail_activity_data_todo",
+                    user_id=user.id,
+                    summary=_("Production approval requested"),
+                    note=_(
+                        "%(user)s requested production for order "
+                        "%(name)s. Review and approve or reject."
+                    ) % {"user": self.env.user.name, "name": self.name},
+                )
+        self.message_post(
+            body=_("Production requested by %(user)s — awaiting approval.")
+            % {"user": self.env.user.name},
+            subject=_("Production approval requested — %s") % self.name,
+        )
+        # Customer-facing email (hybrid notification — chatter/activity
+        # above is the internal hand-off; this is the outbound mail).
+        # Queued via the standard outgoing-mail layer (force_send=False)
+        # so the transaction doesn't block on SMTP.
+        template = self.env.ref(
+            "southbrook_mrp_pm.mail_template_production_submitted",
+            raise_if_not_found=False,
+        )
+        if template:
+            template.send_mail(self.id, force_send=False)
+        return True
+
+    def action_approve_production(self):
+        """Approver sign-off. Flips the gate to 'approved' and creates
+        the manufacturing orders via action_send_to_production()."""
+        self.ensure_one()
+        self._assert_production_approver()
+        if self.production_approval_state != "pending":
+            raise UserError(_(
+                "Order %(name)s is not pending approval (state: "
+                "%(state)s)."
+            ) % {"name": self.name, "state": self.production_approval_state})
+
+        self.write({
+            "production_approval_state": "approved",
+            "production_approved_by": self.env.user.id,
+            "production_approved_date": fields.Datetime.now(),
+        })
+        # Close the outstanding approval To-Do activities.
+        self.activity_feedback(["mail.mail_activity_data_todo"])
+
+        # Now actually create the MOs. The gate above is satisfied, so
+        # the guard in action_send_to_production() passes.
+        mos = self.action_send_to_production()
+
+        self.message_post(
+            body=_(
+                "Production approved by %(user)s — %(count)s "
+                "manufacturing order(s) created."
+            ) % {"user": self.env.user.name, "count": len(mos)},
+            subject=_("Production approved — %s") % self.name,
+            partner_ids=self.production_requested_by.partner_id.ids,
+        )
+        # Customer-facing approval email (hybrid notification).
+        template = self.env.ref(
+            "southbrook_mrp_pm.mail_template_production_approved",
+            raise_if_not_found=False,
+        )
+        if template:
+            template.send_mail(self.id, force_send=False)
+
+        if not mos:
+            return True
+        # Surface the created MOs to the approver.
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Manufacturing Orders"),
+            "res_model": "mrp.production",
+            "domain": [("id", "in", mos.ids)],
+            "view_mode": "list,form",
+        }
+
+    def action_reject_production(self):
+        """Approver rejection. Returns the order to a re-submittable
+        state; no MOs are created."""
+        self.ensure_one()
+        self._assert_production_approver()
+        if self.production_approval_state != "pending":
+            raise UserError(_(
+                "Order %(name)s is not pending approval (state: "
+                "%(state)s)."
+            ) % {"name": self.name, "state": self.production_approval_state})
+
+        self.write({
+            "production_approval_state": "rejected",
+            "production_approved_by": self.env.user.id,
+            "production_approved_date": fields.Datetime.now(),
+        })
+        self.activity_feedback(["mail.mail_activity_data_todo"])
+
+        reason = self.production_reject_reason or _("(no reason given)")
+        self.message_post(
+            body=_("Production rejected by %(user)s. Reason: %(reason)s")
+            % {"user": self.env.user.name, "reason": reason},
+            subject=_("Production rejected — %s") % self.name,
+            partner_ids=self.production_requested_by.partner_id.ids,
+        )
+        return True

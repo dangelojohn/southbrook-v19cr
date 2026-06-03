@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+  <!--
+    Production-approval gate UI (folded into mrp_pm 2026-06-03).
+
+    Adds to the sale order form:
+      * header "Request Production" button (rep, when confirmed + not
+        yet submitted/rejected),
+      * header "Approve" / "Reject" buttons (approver group only, when
+        pending),
+      * a production_approval_state badge in the header,
+      * a "Production Approval" page with the audit trail + reject
+        reason.
+
+    Second inherit of sale.view_order_form (southbrook_estimating already
+    inherits it for the duplicate-as-draft button); both are additive
+    xpaths so they compose without collision.
+  -->
+  <record id="view_order_form_production_approval" model="ir.ui.view">
+    <field name="name">sale.order.form.southbrook.production.approval</field>
+    <field name="model">sale.order</field>
+    <field name="inherit_id" ref="sale.view_order_form"/>
+    <field name="arch" type="xml">
+
+      <header position="inside">
+        <button name="action_request_production"
+                type="object"
+                string="Request Production"
+                class="btn-primary"
+                invisible="state != 'sale' or production_approval_state not in ('none', 'rejected')"/>
+        <button name="action_approve_production"
+                type="object"
+                string="Approve Production"
+                class="btn-primary"
+                groups="southbrook_mrp_pm.group_southbrook_production_approver"
+                invisible="production_approval_state != 'pending'"/>
+        <button name="action_reject_production"
+                type="object"
+                string="Reject"
+                groups="southbrook_mrp_pm.group_southbrook_production_approver"
+                invisible="production_approval_state != 'pending'"/>
+        <field name="production_approval_state"
+               widget="badge"
+               decoration-info="production_approval_state == 'pending'"
+               decoration-success="production_approval_state == 'approved'"
+               decoration-danger="production_approval_state == 'rejected'"/>
+      </header>
+
+      <notebook position="inside">
+        <page name="production_approval"
+              string="Production Approval"
+              invisible="production_approval_state == 'none'">
+          <group>
+            <group string="Request">
+              <field name="production_requested_by" readonly="1"/>
+              <field name="production_requested_date" readonly="1"/>
+            </group>
+            <group string="Decision">
+              <field name="production_approved_by" readonly="1"/>
+              <field name="production_approved_date" readonly="1"/>
+            </group>
+          </group>
+          <group string="Rejection Reason"
+                 invisible="production_approval_state not in ('pending', 'rejected')">
+            <field name="production_reject_reason"
+                   nolabel="1"
+                   placeholder="Required context when rejecting — shown to the requester."/>
+          </group>
+        </page>
+      </notebook>
+
+    </field>
+  </record>
+
+</odoo>

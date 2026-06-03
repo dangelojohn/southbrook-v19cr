@@ -296,20 +296,25 @@ class FooterActions extends Component {
                      (the customer just asks for a price; nothing
                      manufacturing-ish has happened yet). -->
                 <button class="o_owl_btn o_owl_btn_primary"
-                        t-on-click="_onConfirmClick"
-                        t-att-disabled="props.busy or !_canConfirm()">
-                    <t t-if="!_canConfirm()">
-                        <t t-if="props.mode === 'customer'">
-                            Submitted (<t t-esc="props.order.state"/>)
-                        </t>
-                        <t t-else="">
-                            Confirmed (<t t-esc="props.order.state"/>)
-                        </t>
+                        t-on-click="_onPrimaryClick"
+                        t-att-disabled="props.busy or !_isPrimaryEnabled()">
+                    <t t-if="props.mode === 'customer'">
+                        <t t-if="_canConfirm()">Request a Price</t>
+                        <t t-else="">Submitted (<t t-esc="props.order.state"/>)</t>
                     </t>
-                    <t t-elif="props.mode === 'customer'">
-                        Request a Price
+                    <t t-else="">
+                        <!-- Dealer: confirm the quote, then request
+                             production (which submits for approval — the
+                             gate creates MOs only on approver sign-off). -->
+                        <t t-if="_canConfirm()">Confirm Order</t>
+                        <t t-elif="_approvalState() === 'pending'">Awaiting Approval</t>
+                        <t t-elif="_approvalState() === 'approved'">Approved for Production</t>
+                        <t t-elif="_canRequestProduction()">
+                            <t t-if="_approvalState() === 'rejected'">Re-request Production</t>
+                            <t t-else="">Request Production</t>
+                        </t>
+                        <t t-else="">Confirmed (<t t-esc="props.order.state"/>)</t>
                     </t>
-                    <t t-else="">Send to Production</t>
                 </button>
             </div>
             <div class="o_owl_footer_total">
@@ -341,13 +346,14 @@ class FooterActions extends Component {
                 <div class="o_owl_modal"
                      t-on-click="(ev) => ev.stopPropagation()">
                     <header class="o_owl_modal_head">
-                        <h2 class="o_owl_modal_title">Send to Production?</h2>
+                        <h2 class="o_owl_modal_title">Request Production?</h2>
                         <p class="o_owl_modal_sub">
-                            This commits the order to manufacturing.
-                            Once sent, the panel cut list locks
-                            against the current cut spec. To change
-                            anything after this point, an Engineering
-                            Change Order (ECO) is required.
+                            This submits the order for production approval.
+                            A production approver must sign off before any
+                            manufacturing order is created. Once approved,
+                            the panel cut list locks against the current
+                            cut spec — changes after that require an
+                            Engineering Change Order (ECO).
                         </p>
                     </header>
                     <dl class="o_owl_modal_review">
@@ -379,7 +385,7 @@ class FooterActions extends Component {
                         <button class="o_owl_btn o_owl_btn_primary"
                                 t-on-click="_onApproveConfirm"
                                 t-att-disabled="props.busy">
-                            Send to Production
+                            Request Production
                         </button>
                     </footer>
                 </div>
@@ -410,30 +416,53 @@ class FooterActions extends Component {
         return s === "draft" || s === "sent";
     }
 
-    _confirmAction() {
-        return this.props.mode === "customer" ? "request_price" : "confirm";
+    _approvalState() {
+        return this.props.order?.production_approval_state || "none";
     }
 
-    /** Dealer click → open modal. Customer click → fire immediately. */
-    _onConfirmClick = () => {
-        if (!this._canConfirm()) return;
+    /** Dealer, order confirmed (sale state), not yet pending/approved
+     *  → can submit it for production approval. */
+    _canRequestProduction() {
+        if (this.props.mode === "customer") return false;
+        if (this.props.order?.state !== "sale") return false;
+        const a = this._approvalState();
+        return a === "none" || a === "rejected";
+    }
+
+    _isPrimaryEnabled() {
+        if (this.props.mode === "customer") return this._canConfirm();
+        return this._canConfirm() || this._canRequestProduction();
+    }
+
+    /**
+     * Customer → Request a Price (soft commit, fire directly).
+     * Dealer  → Confirm Order fires directly; Request Production opens
+     *           the approval-request modal first.
+     */
+    _onPrimaryClick = () => {
         if (this.props.mode === "customer") {
-            // Customer Request-a-Price is a soft commit — no
-            // manufacturing-irreversible action. Send directly.
-            this.props.onAction(this._confirmAction());
+            if (this._canConfirm()) this.props.onAction("request_price");
             return;
         }
-        // Dealer Send-to-Production → confirm first.
-        this.state.confirming = true;
+        if (this._canConfirm()) {
+            // Confirming the quote is reversible and not the
+            // manufacturing-commit step — no modal needed.
+            this.props.onAction("confirm");
+            return;
+        }
+        if (this._canRequestProduction()) {
+            this.state.confirming = true;
+        }
     };
 
     _onCancelConfirm = () => {
         this.state.confirming = false;
     };
 
+    /** Modal confirm → submit the order for production approval. */
     _onApproveConfirm = () => {
         this.state.confirming = false;
-        this.props.onAction(this._confirmAction());
+        this.props.onAction("request_production");
     };
 }
 
@@ -1507,6 +1536,19 @@ class CatalogPicker extends Component {
                         Adding cabinet to your order…
                     </p>
                 </div>
+
+                <div class="o_owl_modal_footer o_owl_catalog_footer">
+                    <span class="o_owl_catalog_added_count"
+                          t-esc="addedSummaryText()"/>
+                    <div class="o_owl_modal_footer_actions">
+                        <button type="button"
+                                class="o_owl_modal_btn o_owl_modal_btn_secondary"
+                                t-on-click="props.onClose">Cancel</button>
+                        <button type="button"
+                                class="o_owl_modal_btn o_owl_modal_btn_primary"
+                                t-on-click="props.onClose">Done</button>
+                    </div>
+                </div>
             </div>
         </div>
     `;
@@ -1561,6 +1603,14 @@ class CatalogPicker extends Component {
         return label.toUpperCase();
     }
 
+    // Footer summary — running count of cabinets added this catalog
+    // session. Empty string until the first add so the footer left
+    // slot stays blank rather than showing "0 items added".
+    addedSummaryText() {
+        const n = this.state.addedCount;
+        return n ? `${n} item${n === 1 ? "" : "s"} added` : "";
+    }
+
     setup() {
         this.state = useState({
             // 2026-06-02 redesign — reactive filter + view state.
@@ -1577,6 +1627,7 @@ class CatalogPicker extends Component {
             filterMode: "tabs",        // 'tabs' | 'select'
             qtyBySku: {},              // sku -> integer qty (default 1)
             lastAddedSku: null,        // briefly set after successful add
+            addedCount: 0,             // running total of items added this session
         });
         // Pre-bind handlers passed by plain reference (same pattern as
         // OrderBuilder — OWL 2 in this Odoo build doesn't preserve
@@ -1780,6 +1831,7 @@ class CatalogPicker extends Component {
         // because the qty arg is optional on both sides.
         try {
             await this.props.onPick(item.id, qty);
+            this.state.addedCount += qty;
             this.state.lastAddedSku = item.sku;
             // Clear the 'Added' indicator after 1.5s so the user can
             // re-add the same cabinet if they want a second one of it.
@@ -2319,6 +2371,14 @@ class OrderBuilder extends Component {
                 case "confirm":
                     await this._loadOrder();
                     this.state.action_message = "Order confirmed.";
+                    break;
+                case "request_production":
+                    // Re-fetch so the footer reflects the new
+                    // production_approval_state ('pending').
+                    await this._loadOrder();
+                    this.state.action_message = (
+                        res.message || "Submitted for production approval."
+                    );
                     break;
                 case "duplicate":
                     if (res.redirect_url) {

@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-"""Extends SouthbrookOrderBuilderPortal with the send_to_production
+"""Extends SouthbrookOrderBuilderPortal with the production-request
 action branch.
 
-M3 + M7 — when the dealer-mode FooterActions component fires
-/southbrook/api/order/<id>/action with action_code='send_to_production',
-we land here, delegate to sale.order.action_send_to_production(),
-and return the new MO ids.
+2026-06-03 — production-approval gate. The dealer-mode FooterActions
+"Request Production" button fires /southbrook/api/order/<id>/action with
+action_code='request_production' (the legacy 'send_to_production' code is
+accepted as an alias so older cached bundles keep working). We delegate
+to sale.order.action_request_production(), which submits the confirmed
+order for approval — it does NOT create MOs.
+
+MO creation now happens only when an approver runs
+action_approve_production() in the backend (the single-chokepoint gate),
+so production can never start from the portal without sign-off.
 """
 from odoo.exceptions import AccessError, MissingError, UserError
 from odoo.http import request
@@ -14,11 +20,14 @@ from odoo.addons.southbrook_estimating_website.controllers.main import (
     SouthbrookOrderBuilderPortal,
 )
 
+# action_codes that mean "submit this order for production approval".
+_REQUEST_PRODUCTION_CODES = ("request_production", "send_to_production")
+
 
 class SouthbrookOrderBuilderPortalMRP(SouthbrookOrderBuilderPortal):
 
     def southbrook_api_order_action(self, order_id, action_code=None, **kw):
-        if action_code != "send_to_production":
+        if action_code not in _REQUEST_PRODUCTION_CODES:
             return super().southbrook_api_order_action(
                 order_id, action_code=action_code, **kw,
             )
@@ -30,29 +39,21 @@ class SouthbrookOrderBuilderPortalMRP(SouthbrookOrderBuilderPortal):
         except AccessError:
             return {"error": "forbidden"}
 
+        # sudo() bypasses the portal user's lack of sale.order write
+        # access; with_user keeps env.user as the real dealer, so the
+        # request is attributed to them (production_requested_by) rather
+        # than to OdooBot.
         try:
-            mos = order.with_user(request.env.user).sudo().action_send_to_production()
+            order.with_user(request.env.user).sudo().action_request_production()
         except UserError as e:
             return {"error": "wrong_state", "message": str(e)}
 
-        if not mos:
-            return {
-                "ok": False,
-                "error": "no_bom_lines",
-                "message": (
-                    "No order lines had a resolvable BoM. Send-to-"
-                    "Production requires at least one line whose "
-                    "product variant maps to a normal-type BoM. "
-                    "Check that the cabinet templates have been "
-                    "seeded with routings via southbrook_mrp_pm."
-                ),
-            }
-
         return {
             "ok": True,
-            "mo_ids": mos.ids,
-            "mo_names": mos.mapped("name"),
-            "redirect_url": (
-                "/odoo/action-mrp.mrp_production_action/%s" % mos[0].id
+            "requested": True,
+            "approval_state": order.production_approval_state,
+            "message": (
+                "Submitted for production approval. You'll be notified "
+                "once it's reviewed."
             ),
         }

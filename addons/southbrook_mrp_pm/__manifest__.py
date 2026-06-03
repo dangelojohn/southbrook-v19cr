@@ -40,7 +40,7 @@ analysis. Layered build:
       M17 Floor Manager access group
       M20 ECO → in-flight MO notification rule
 """,
-    "version": "19.0.1.0.0",
+    "version": "19.0.1.1.0",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "website": "https://southbrookcabinetry.space",
@@ -57,6 +57,10 @@ analysis. Layered build:
         # any subsequent record-create / access check resolves the
         # group_floor_manager reference.
         "security/floor_manager.xml",
+        # Production-approval gate (2026-06-03) — approver group. Loads
+        # before views/sale_order_views.xml, which references it in the
+        # Approve/Reject button groups= attribute.
+        "security/production_approval.xml",
         "security/ir.model.access.csv",
         # Layer 1 commit 1 — 8 Southbrook stations as mrp.workcenter.
         "data/workcenters.xml",
@@ -96,6 +100,13 @@ analysis. Layered build:
         # M18 — weekly capacity planning (pivot + graph on
         # mrp.workorder, 'Capacity' menu entry).
         "views/pm_capacity.xml",
+        # Production-approval gate (2026-06-03) — 2 customer-facing
+        # mail templates (submitted / approved). Internal approver
+        # hand-off stays chatter+activity (hybrid notification).
+        "data/mail_templates.xml",
+        # Production-approval gate (2026-06-03) — Request/Approve/Reject
+        # buttons + status badge + audit page on the sale order form.
+        "views/sale_order_views.xml",
     ],
     "assets": {
         "web.assets_frontend": [

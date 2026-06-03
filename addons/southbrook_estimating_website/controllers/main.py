@@ -1602,6 +1602,13 @@ class SouthbrookOrderBuilderPortal(CustomerPortal):
                 "id":             order.id,
                 "name":           order.name,
                 "state":          order.state,
+                # production-approval gate (southbrook_mrp_pm). getattr
+                # fallback: this serializer lives in the website addon,
+                # which doesn't depend on mrp_pm, so the field is absent
+                # when the gate module isn't installed.
+                "production_approval_state": getattr(
+                    order, "production_approval_state", "none"
+                ),
                 "version":        getattr(order, "version", 1),
                 "partner_id":     partner.id,
                 "partner_name":   partner.name,

@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+
+        <!-- 1. Submission confirmation → requester/customer: order awaiting approval -->
+        <record id="mail_template_production_submitted" model="mail.template">
+            <field name="name">Southbrook: Production Approval Submitted</field>
+            <field name="model_id" ref="sale.model_sale_order"/>
+            <field name="subject">{{ object.name }} — submitted for production approval</field>
+            <field name="email_from">{{ (object.company_id.email_formatted or user.email_formatted) }}</field>
+            <field name="email_to">{{ object.partner_id.email_formatted }}</field>
+            <field name="lang">{{ object.partner_id.lang }}</field>
+            <field name="auto_delete" eval="False"/>
+            <field name="body_html" type="html">
+                <div style="margin:0px;padding:0px;font-size:13px;">
+                    <p>Hello <t t-out="object.partner_id.name or ''"/>,</p>
+                    <p>
+                        Your order <strong t-out="object.name or ''"/> has been
+                        <strong>submitted for production approval</strong> and is awaiting review
+                        by our production team.
+                    </p>
+                    <p>
+                        Order total:
+                        <strong t-out="format_amount(object.amount_total, object.currency_id) or ''"/>
+                    </p>
+                    <div style="margin:16px 0px;">
+                        <a t-att-href="object.get_portal_url()"
+                           style="background-color:#714B67;padding:8px 16px;text-decoration:none;color:#fff;border-radius:5px;">
+                            View Your Order
+                        </a>
+                    </div>
+                    <p>We will notify you again as soon as the order is approved for production.</p>
+                    <p>— <t t-out="object.company_id.name or ''"/></p>
+                </div>
+            </field>
+        </record>
+
+        <!-- 2. Approval confirmation → requester/customer: approved for production -->
+        <record id="mail_template_production_approved" model="mail.template">
+            <field name="name">Southbrook: Approved for Production</field>
+            <field name="model_id" ref="sale.model_sale_order"/>
+            <field name="subject">{{ object.name }} — approved for production</field>
+            <field name="email_from">{{ (object.company_id.email_formatted or user.email_formatted) }}</field>
+            <field name="email_to">{{ object.partner_id.email_formatted }}</field>
+            <field name="lang">{{ object.partner_id.lang }}</field>
+            <field name="auto_delete" eval="False"/>
+            <field name="body_html" type="html">
+                <div style="margin:0px;padding:0px;font-size:13px;">
+                    <p>Hello <t t-out="object.partner_id.name or ''"/>,</p>
+                    <p>
+                        Good news — your order <strong t-out="object.name or ''"/> has been
+                        <strong>approved for production</strong> and manufacturing will now begin.
+                    </p>
+                    <table style="margin:12px 0px;border-collapse:collapse;">
+                        <tr>
+                            <td style="padding:2px 12px 2px 0px;color:#888;">Order</td>
+                            <td style="padding:2px 0px;"><strong t-out="object.name or ''"/></td>
+                        </tr>
+                        <tr>
+                            <td style="padding:2px 12px 2px 0px;color:#888;">Total</td>
+                            <td style="padding:2px 0px;">
+                                <t t-out="format_amount(object.amount_total, object.currency_id) or ''"/>
+                            </td>
+                        </tr>
+                        <tr t-if="object.production_approved_date">
+                            <td style="padding:2px 12px 2px 0px;color:#888;">Approved</td>
+                            <td style="padding:2px 0px;">
+                                <t t-out="format_datetime(object.production_approved_date) or ''"/>
+                            </td>
+                        </tr>
+                    </table>
+                    <div style="margin:16px 0px;">
+                        <a t-att-href="object.get_portal_url()"
+                           style="background-color:#714B67;padding:8px 16px;text-decoration:none;color:#fff;border-radius:5px;">
+                            View the Approved Order
+                        </a>
+                    </div>
+                    <p>— <t t-out="object.company_id.name or ''"/></p>
+                </div>
+            </field>
+        </record>
+
+    </data>
+</odoo>
