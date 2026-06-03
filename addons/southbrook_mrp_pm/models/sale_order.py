@@ -263,7 +263,16 @@ class SaleOrder(models.Model):
                 "(state: %(state)s)."
             ) % {"name": self.name, "state": self.production_approval_state})
 
-        self.write({
+        # sudo() the write: production_requested_by + production_approved_by
+        # are readonly Many2one→res.users fields. A salesman (who
+        # legitimately requests production for their own order) needs to
+        # write here but doesn't necessarily have direct write ACL on
+        # readonly fields, and the Many2one target res.users check
+        # triggers an AccessError on lookups of foreign user records.
+        # The gate's permission boundary is action-level (see
+        # _assert_production_approver and the state == 'sale' guard
+        # above) — sudo is the right escape hatch for the field write.
+        self.sudo().write({
             "production_approval_state": "pending",
             "production_requested_by": self.env.user.id,
             "production_requested_date": fields.Datetime.now(),
@@ -276,20 +285,28 @@ class SaleOrder(models.Model):
         })
 
         # Schedule a To-Do activity for every approver so the request
-        # surfaces in their Activities inbox.
+        # surfaces in their Activities inbox. sudo because the
+        # salesman doesn't have read access to other users' records.
+        # v19: res.groups.users → res.groups.user_ids (explicit users).
         approvers = self.env.ref(self._APPROVER_GROUP, raise_if_not_found=False)
         if approvers:
-            for user in approvers.users:
-                self.activity_schedule(
+            # sudo() the scheduling: creating mail.activity records for
+            # OTHER users (the approvers) needs elevated access. The
+            # salesman owns this sale.order legitimately but doesn't
+            # have ACL to write to the approver's activities directly.
+            order_su = self.sudo()
+            requester_name = self.env.user.name
+            for user in approvers.sudo().user_ids:
+                order_su.activity_schedule(
                     "mail.mail_activity_data_todo",
                     user_id=user.id,
                     summary=_("Production approval requested"),
                     note=_(
                         "%(user)s requested production for order "
                         "%(name)s. Review and approve or reject."
-                    ) % {"user": self.env.user.name, "name": self.name},
+                    ) % {"user": requester_name, "name": self.name},
                 )
-        self.message_post(
+        self.sudo().message_post(
             body=_("Production requested by %(user)s — awaiting approval.")
             % {"user": self.env.user.name},
             subject=_("Production approval requested — %s") % self.name,
@@ -303,7 +320,7 @@ class SaleOrder(models.Model):
             raise_if_not_found=False,
         )
         if template:
-            template.send_mail(self.id, force_send=False)
+            template.sudo().send_mail(self.id, force_send=False)
         return True
 
     def action_approve_production(self):
@@ -317,7 +334,10 @@ class SaleOrder(models.Model):
                 "%(state)s)."
             ) % {"name": self.name, "state": self.production_approval_state})
 
-        self.write({
+        # See note on action_request_production: sudo() the readonly-
+        # field write. The permission check above (_assert_production_
+        # approver) is the boundary; the field write is mechanical.
+        self.sudo().write({
             "production_approval_state": "approved",
             "production_approved_by": self.env.user.id,
             "production_approved_date": fields.Datetime.now(),
@@ -329,7 +349,7 @@ class SaleOrder(models.Model):
         # the guard in action_send_to_production() passes.
         mos = self.action_send_to_production()
 
-        self.message_post(
+        self.sudo().message_post(
             body=_(
                 "Production approved by %(user)s — %(count)s "
                 "manufacturing order(s) created."
@@ -343,7 +363,7 @@ class SaleOrder(models.Model):
             raise_if_not_found=False,
         )
         if template:
-            template.send_mail(self.id, force_send=False)
+            template.sudo().send_mail(self.id, force_send=False)
 
         if not mos:
             return True
@@ -367,7 +387,8 @@ class SaleOrder(models.Model):
                 "%(state)s)."
             ) % {"name": self.name, "state": self.production_approval_state})
 
-        self.write({
+        # sudo() the readonly write — same pattern as request/approve.
+        self.sudo().write({
             "production_approval_state": "rejected",
             "production_approved_by": self.env.user.id,
             "production_approved_date": fields.Datetime.now(),
@@ -375,7 +396,7 @@ class SaleOrder(models.Model):
         self.activity_feedback(["mail.mail_activity_data_todo"])
 
         reason = self.production_reject_reason or _("(no reason given)")
-        self.message_post(
+        self.sudo().message_post(
             body=_("Production rejected by %(user)s. Reason: %(reason)s")
             % {"user": self.env.user.name, "reason": reason},
             subject=_("Production rejected — %s") % self.name,

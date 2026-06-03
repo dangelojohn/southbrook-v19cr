@@ -28,12 +28,12 @@ class TestProductionApproval(SouthbrookTestCase):
         cls.approver = cls.env["res.users"].create({
             "name": "Approver Annie",
             "login": "approver_annie",
-            "groups_id": [(4, cls.approver_group.id)],
+            "group_ids": [(4, cls.approver_group.id)],
         })
         cls.salesman = cls.env["res.users"].create({
             "name": "Rep Rick",
             "login": "rep_rick",
-            "groups_id": [(4, cls.env.ref("sales_team.group_sale_salesman").id)],
+            "group_ids": [(4, cls.env.ref("sales_team.group_sale_salesman").id)],
         })
 
     def _confirmed_order(self):
