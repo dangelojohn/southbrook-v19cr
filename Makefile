@@ -29,7 +29,7 @@ PG_PASS = $(shell grep '^POSTGRES_PASSWORD=' .env 2>/dev/null | cut -d= -f2)
 #  view was made cold-install-safe — priority=1. mrp_kitchen_workcenters +
 #  manufacturing_intelligence merged from feature/mrp-kitchen-workcenters; the
 #  latter's source was recovered from the prod server — it existed nowhere in git.)
-MODULES = southbrook_freecad_bridge,southbrook_hardware_catalog,southbrook_kitchen_workspace,southbrook_kitchen_mrp,southbrook_mrp_pm,southbrook_ai_design,southbrook_config_engine,southbrook_configurator_ux,southbrook_estimating,southbrook_estimating_website,southbrook_customer_portal,southbrook_dealer_portal,southbrook_api,southbrook_plm,southbrook_manufacturing_intelligence,southbrook_mrp_kitchen_workcenters,southbrook_hermes
+MODULES = southbrook_freecad_bridge,southbrook_hardware_catalog,southbrook_kitchen_workspace,southbrook_kitchen_mrp,southbrook_mrp_pm,southbrook_ai_design,southbrook_config_engine,southbrook_configurator_ux,southbrook_estimating,southbrook_estimating_website,southbrook_customer_portal,southbrook_dealer_portal,southbrook_api,southbrook_plm,southbrook_manufacturing_intelligence,southbrook_mrp_kitchen_workcenters,southbrook_hermes,southbrook_hermes_bom
 
 # Odoo flags every command needs. The 8899/8902 port dodge is mandatory —
 # --no-http alone does not stop the gevent worker from binding 8072.
