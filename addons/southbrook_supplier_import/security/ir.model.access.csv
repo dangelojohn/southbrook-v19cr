@@ -1,0 +1,5 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_sci_run_user,supplier.catalog.import user,model_supplier_catalog_import,base.group_user,1,0,0,0
+access_sci_run_buyer,supplier.catalog.import buyer,model_supplier_catalog_import,purchase.group_purchase_manager,1,1,1,1
+access_sci_line_user,supplier.catalog.import.line user,model_supplier_catalog_import_line,base.group_user,1,0,0,0
+access_sci_line_buyer,supplier.catalog.import.line buyer,model_supplier_catalog_import_line,purchase.group_purchase_manager,1,1,1,1

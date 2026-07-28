@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+        <record id="view_sci_line_list" model="ir.ui.view">
+            <field name="name">supplier.catalog.import.line.list</field>
+            <field name="model">supplier.catalog.import.line</field>
+            <field name="arch" type="xml">
+                <list string="Staged Items" create="false"
+                      decoration-warning="action == 'review'"
+                      decoration-muted="action == 'skip'"
+                      decoration-success="action == 'create'">
+                    <field name="action"/>
+                    <field name="sku"/>
+                    <field name="title"/>
+                    <field name="brand"/>
+                    <field name="category_branch"/>
+                    <field name="category_leaf"/>
+                    <field name="weight_kg" optional="hide"/>
+                    <field name="image_count" optional="hide"/>
+                    <field name="is_kit_formula"/>
+                    <field name="tool_clash"/>
+                    <field name="matched_product_id" optional="show"/>
+                    <field name="reason"/>
+                </list>
+            </field>
+        </record>
+
+        <record id="view_sci_form" model="ir.ui.view">
+            <field name="name">supplier.catalog.import.form</field>
+            <field name="model">supplier.catalog.import</field>
+            <field name="arch" type="xml">
+                <form string="Catalogue Import">
+                    <header>
+                        <button name="action_fetch" type="object"
+                                string="1. Fetch Feed" class="oe_highlight"
+                                invisible="state not in ('draft',)"/>
+                        <button name="action_analyse" type="object"
+                                string="2. Dry Run" class="oe_highlight"
+                                invisible="state != 'fetched'"/>
+                        <button name="action_commit" type="object"
+                                string="3. Commit" class="btn-danger"
+                                confirm="This writes products and vendor prices into Inventory. Review the staged items first. Continue?"
+                                invisible="state != 'analysed'"/>
+                        <button name="action_reset" type="object"
+                                string="Reset"
+                                invisible="state in ('draft','committed')"/>
+                        <field name="state" widget="statusbar"/>
+                    </header>
+                    <sheet>
+                        <div class="oe_title">
+                            <h1><field name="name" placeholder="Eurofit catalogue"/></h1>
+                        </div>
+                        <group>
+                            <group string="Source">
+                                <field name="partner_id"/>
+                                <field name="source_url"
+                                       invisible="payload != False"/>
+                                <field name="payload" filename="payload_name"/>
+                                <field name="payload_name" invisible="1"/>
+                            </group>
+                            <group string="Dry-run result"
+                                   invisible="state == 'draft'">
+                                <field name="count_total"/>
+                                <field name="count_create"/>
+                                <field name="count_update"/>
+                                <field name="count_review"/>
+                                <field name="count_kit"/>
+                                <field name="count_tool_clash"/>
+                            </group>
+                        </group>
+                        <div class="alert alert-info" role="alert"
+                             invisible="state != 'analysed'">
+                            This is a dry run. Nothing has been written to
+                            Inventory yet. Review the staged items below —
+                            anything marked <b>Needs review</b> will be left
+                            untouched by Commit.
+                        </div>
+                        <field name="log" readonly="1" invisible="not log"/>
+                        <notebook>
+                            <page string="Staged Items" name="lines">
+                                <field name="line_ids" nolabel="1"
+                                       context="{'tree_view_ref': 'southbrook_supplier_import.view_sci_line_list'}"/>
+                            </page>
+                        </notebook>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <record id="view_sci_list" model="ir.ui.view">
+            <field name="name">supplier.catalog.import.list</field>
+            <field name="model">supplier.catalog.import</field>
+            <field name="arch" type="xml">
+                <list string="Catalogue Imports">
+                    <field name="name"/>
+                    <field name="partner_id"/>
+                    <field name="count_total"/>
+                    <field name="count_create"/>
+                    <field name="count_review"/>
+                    <field name="state"/>
+                </list>
+            </field>
+        </record>
+
+        <record id="action_sci" model="ir.actions.act_window">
+            <field name="name">Supplier Catalogue Import</field>
+            <field name="res_model">supplier.catalog.import</field>
+            <field name="view_mode">list,form</field>
+        </record>
+
+        <menuitem id="menu_sci" name="Catalogue Import"
+                  parent="purchase.menu_procurement_management"
+                  action="action_sci" sequence="90"
+                  groups="purchase.group_purchase_manager"/>
+    </data>
+</odoo>
