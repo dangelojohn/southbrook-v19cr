@@ -332,6 +332,43 @@ class SouthbrookCommandCenter(models.AbstractModel):
             cost_basis = "estimated"
             cost = estimated_cost
 
+        # Provenance guard (2026-07-27).
+        #
+        # A missing cost and a cost of zero are the same float by the time
+        # they arrive here, and the arithmetic below cannot tell them apart:
+        # (revenue - 0)/revenue is 100%, which bands green. Measured on
+        # production that day, 319 of 321 active variants had a NULL
+        # standard_price — the only two carrying a cost were "Mileage" and
+        # "Event Registration" — so essentially every job was being reported
+        # as near-perfect margin on a cost side nobody had entered.
+        #
+        # A dashboard that says "unknown" is useful. One that says "green"
+        # because it has no data is worse than no dashboard, because it is
+        # acted upon. Refuse to score rather than score a fiction.
+        coverage = getattr(task, "job_cost_coverage", None)
+        missing = getattr(task, "job_cost_missing_count", 0) or 0
+        if cost <= 0:
+            return {
+                "score": None, "band": "unknown",
+                "factors": [
+                    {"label": "Revenue", "value": revenue, "points": None,
+                     "of": None,
+                     "source": f"sale.order.{revenue_field} on {source_order.name}"},
+                    {"label": "Cost", "value": None, "points": None, "of": None,
+                     "source": "project.task.job_industrial_cost / "
+                               "job_estimated_cost — both zero"},
+                ],
+                "explanation": (
+                    "Margin unavailable - cost_not_loaded\n"
+                    f" Revenue {revenue:,.0f} is known, but no cost basis "
+                    "exists for this job.\n"
+                    f" {missing} of this job's manufacturing orders have "
+                    "neither a planned cost nor a product standard cost.\n"
+                    " This is NOT a 100% margin. Load product costs "
+                    "(standard_price) or run costing on the MOs."
+                ),
+            }
+
         margin_amount = revenue - cost
         margin_pct = (margin_amount / revenue) * 100
 
@@ -342,6 +379,13 @@ class SouthbrookCommandCenter(models.AbstractModel):
         else:
             band = "green"
 
+        # Partial coverage understates cost, which inflates margin. Report
+        # the number, but never let an incomplete cost basis show green —
+        # a green banded on half the costs is the same error in miniature.
+        partial = coverage is not None and 0 < coverage < 1.0
+        if partial and band == "green":
+            band = "amber"
+
         factors = [
             {"label": "Revenue", "value": revenue, "points": None, "of": None,
              "source": f"sale.order.{revenue_field} on {source_order.name}"},
@@ -349,10 +393,23 @@ class SouthbrookCommandCenter(models.AbstractModel):
              "of": None,
              "source": "project.task.job_industrial_cost / job_estimated_cost"},
         ]
+        if coverage is not None:
+            factors.append(
+                {"label": "Cost coverage", "value": round(coverage * 100, 0),
+                 "points": None, "of": 100,
+                 "source": "project.task.job_cost_coverage"})
+
+        partial_note = ""
+        if partial:
+            partial_note = (
+                f" WARNING: only {coverage * 100:.0f}% of this job's MOs carry "
+                f"a cost ({missing} missing). Cost is understated, so the true "
+                "margin is LOWER than shown. Band held at amber.\n")
 
         explanation = (
             f"Job margin: {margin_amount:,.0f} ({margin_pct:.1f}%) - "
             f"{cost_basis} cost basis\n"
+            + partial_note +
             f" Revenue {revenue:,.0f} (sale.order.{revenue_field} on "
             f"{source_order.name})\n"
             f" - Cost {cost:,.0f} (project.task.job_industrial_cost / "
