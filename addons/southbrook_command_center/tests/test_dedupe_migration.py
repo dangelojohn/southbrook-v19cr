@@ -18,6 +18,16 @@ class TestDedupeMigration(TransactionCase):
         super().setUpClass()
         cls.Exc = cls.env["southbrook.command.exception"]
         cls.owner = cls.env.ref("base.user_admin")
+        # Hermetic to the ambient environment: force the Phase-2 hooks
+        # kill-switch OFF so creating southbrook.mi.check rows below never
+        # auto-materializes an Exception via _sb_cc_materialize (that path
+        # is exercised by test_phase2.py, not here). Every test in this file
+        # constructs an exact synthetic duplicate-row shape and asserts an
+        # exact count on it; that must hold regardless of what
+        # command_center.hooks_enabled happens to be set to in whatever
+        # database this suite runs against.
+        cls.env["ir.config_parameter"].sudo().set_param(
+            "command_center.hooks_enabled", "0")
 
     def _vals(self, **kw):
         """Build base exception values."""
@@ -173,6 +183,237 @@ class TestDedupeMigration(TransactionCase):
                          "Orphan exception must be archived")
         self.assertFalse(orphan.dedupe_key,
                          "Orphan exception must have NULL dedupe_key")
+
+    def test_migrate_survives_source_res_id_collision(self):
+        """C1 shape: production's real duplicates include one whose
+        source_res_id equals the LIVE check's real id (the row minted by the
+        most recent sweep) — the earlier test suite missed this because it
+        only ever seeded synthetic high ids (900000+i) that never collide.
+        While `migrate()` runs, the legacy unique(source_model, source_res_id,
+        exception_type) constraint is still enforced (Odoo does not drop it
+        until ir.model.data._process_end(), which runs AFTER post-migration
+        scripts) — so the winner's write of `source_res_id = check.id` must
+        not collide with a duplicate already holding that exact triple. This
+        asserts the migration completes and elects correctly despite the
+        collision, and that the legacy constraint is gone afterwards."""
+        mo = self.env["mrp.production"].search([], limit=1)
+
+        check = self.env["southbrook.mi.check"].create({
+            "name": "Missing cutlist",
+            "message": "Cutlist divergence detected",
+            "category": "cut",
+            "severity": "blocker",
+            "production_id": mo.id if mo else False,
+        })
+
+        for i in range(5):
+            self.Exc.create({
+                "exception_type": "cutlist_divergence",
+                "source_model": "southbrook.mi.check",
+                "source_res_id": 900000 + i,
+                "mo_id": mo.id,
+                **self._vals(),
+            })
+
+        # The collider: source_res_id already equals the live check's real
+        # id — exactly the triple the elected winner's write will target.
+        collider = self.Exc.create({
+            "exception_type": "cutlist_divergence",
+            "source_model": "southbrook.mi.check",
+            "source_res_id": check.id,
+            "mo_id": mo.id,
+            **self._vals(),
+        })
+
+        migration = self._load_migration()
+        migration.migrate(self.env.cr, "19.0.2.0.0")  # must not raise
+
+        self.Exc.invalidate_recordset()
+
+        survivors = self.Exc.search([
+            ("source_model", "=", "southbrook.mi.check"),
+            ("exception_type", "=", "cutlist_divergence"),
+            ("mo_id", "=", mo.id),
+            ("active", "=", True),
+        ])
+        self.assertEqual(len(survivors), 1,
+                          "Exactly one survivor even with a colliding "
+                          "source_res_id among the duplicates")
+        self.assertEqual(survivors[0].source_res_id, check.id)
+        self.assertTrue(survivors[0].dedupe_key)
+
+        all_after = self.Exc.with_context(active_test=False).search_count([
+            ("source_model", "=", "southbrook.mi.check"),
+            ("exception_type", "=", "cutlist_divergence"),
+            ("mo_id", "=", mo.id),
+        ])
+        self.assertEqual(all_after, 6, "No rows deleted, including the collider")
+
+        # The legacy constraint must be gone. (It is already absent by the
+        # time this test runs — Odoo drops it during module upgrade, well
+        # before test execution — so this cannot reproduce the UniqueViolation
+        # itself; it only confirms the migration's DROP CONSTRAINT IF EXISTS
+        # left the schema in the expected post-migration shape.)
+        self.env.cr.execute(
+            "SELECT 1 FROM pg_constraint WHERE conname = %s",
+            ("southbrook_command_exception_source_uniq",),
+        )
+        self.assertFalse(
+            self.env.cr.fetchone(),
+            "Legacy unique(source_model, source_res_id, exception_type) "
+            "constraint must not exist after migration",
+        )
+
+    def test_migrate_never_elects_resolved_survivor(self):
+        """I1: the oldest human-touched row in the bucket is resolved, but a
+        newer row is acknowledged (genuinely open). The acknowledged row must
+        win — electing a resolved/dismissed row as the survivor of a LIVE
+        condition would archive the winner, and the next sweep finds it by
+        key with active_test=False and correctly never reactivates it,
+        permanently burying a live blocker with no UI path to recover it."""
+        mo = self.env["mrp.production"].search([], limit=1)
+
+        check = self.env["southbrook.mi.check"].create({
+            "name": "Missing cutlist",
+            "message": "Cutlist divergence detected",
+            "category": "cut",
+            "severity": "blocker",
+            "production_id": mo.id if mo else False,
+        })
+
+        # Oldest duplicate: a human resolved it. Must NEVER be elected.
+        resolved_row = self.Exc.create({
+            "exception_type": "cutlist_divergence",
+            "source_model": "southbrook.mi.check",
+            "source_res_id": 900100,
+            "mo_id": mo.id,
+            **self._vals(),
+        })
+        resolved_row.action_resolve()
+        self.assertEqual(resolved_row.state, "resolved")
+        self.assertFalse(resolved_row.active)
+
+        # A few untouched duplicates in between.
+        for i in range(3):
+            self.Exc.create({
+                "exception_type": "cutlist_divergence",
+                "source_model": "southbrook.mi.check",
+                "source_res_id": 900101 + i,
+                "mo_id": mo.id,
+                **self._vals(),
+            })
+
+        # Newer duplicate: genuinely open, human-acknowledged. Must win.
+        acknowledged_row = self.Exc.create({
+            "exception_type": "cutlist_divergence",
+            "source_model": "southbrook.mi.check",
+            "source_res_id": 900199,
+            "mo_id": mo.id,
+            **self._vals(),
+        })
+        acknowledged_row.action_acknowledge()
+        self.assertEqual(acknowledged_row.state, "acknowledged")
+        self.assertTrue(acknowledged_row.active)
+
+        migration = self._load_migration()
+        migration.migrate(self.env.cr, "19.0.2.0.0")
+
+        self.Exc.invalidate_recordset()
+
+        survivors = self.Exc.search([
+            ("source_model", "=", "southbrook.mi.check"),
+            ("exception_type", "=", "cutlist_divergence"),
+            ("mo_id", "=", mo.id),
+            ("active", "=", True),
+        ])
+        self.assertEqual(len(survivors), 1)
+        self.assertEqual(survivors[0].id, acknowledged_row.id,
+                          "The acknowledged row must win, never the resolved "
+                          "one, even though the resolved row is older")
+        self.assertTrue(survivors[0].active)
+        self.assertEqual(survivors[0].source_res_id, check.id)
+
+        resolved_row.invalidate_recordset()
+        self.assertFalse(resolved_row.dedupe_key,
+                          "The resolved row must never be elected/keyed")
+        self.assertFalse(resolved_row.active)
+
+    def test_migrate_two_live_checks_same_bucket_get_distinct_survivors(self):
+        """I2: two live southbrook.mi.check rows on the SAME manufacturing
+        order and in the SAME etype bucket (etype only encodes category, not
+        check name, so both checks' candidate search domain is identical)
+        must each get their own, distinct survivor — a row must never be
+        elected as the survivor for two different live conditions."""
+        mo = self.env["mrp.production"].search([], limit=1)
+
+        check1 = self.env["southbrook.mi.check"].create({
+            "name": "Missing cutlist A",
+            "message": "Cutlist divergence detected on run A",
+            "category": "cut",
+            "severity": "blocker",
+            "production_id": mo.id if mo else False,
+        })
+        check2 = self.env["southbrook.mi.check"].create({
+            "name": "Missing cutlist B",
+            "message": "Cutlist divergence detected on run B",
+            "category": "cut",
+            "severity": "blocker",
+            "production_id": mo.id if mo else False,
+        })
+
+        for i in range(4):
+            self.Exc.create({
+                "exception_type": "cutlist_divergence",
+                "source_model": "southbrook.mi.check",
+                "source_res_id": 900400 + i,
+                "mo_id": mo.id,
+                **self._vals(),
+            })
+        for i in range(4):
+            self.Exc.create({
+                "exception_type": "cutlist_divergence",
+                "source_model": "southbrook.mi.check",
+                "source_res_id": 900500 + i,
+                "mo_id": mo.id,
+                **self._vals(),
+            })
+
+        migration = self._load_migration()
+        migration.migrate(self.env.cr, "19.0.2.0.0")
+
+        self.Exc.invalidate_recordset()
+
+        key1 = self.Exc._dedupe_key_for(
+            "cutlist_divergence", "southbrook.mi.check", check1.id, check1)
+        key2 = self.Exc._dedupe_key_for(
+            "cutlist_divergence", "southbrook.mi.check", check2.id, check2)
+        self.assertNotEqual(key1, key2)
+
+        survivors = self.Exc.search([
+            ("source_model", "=", "southbrook.mi.check"),
+            ("exception_type", "=", "cutlist_divergence"),
+            ("mo_id", "=", mo.id),
+            ("active", "=", True),
+        ])
+        self.assertEqual(len(survivors), 2,
+                          "Each live check must get its own survivor, "
+                          "never sharing one and never doubling up")
+
+        keys_found = set(survivors.mapped("dedupe_key"))
+        self.assertEqual(keys_found, {key1, key2},
+                          "Each survivor must be keyed to a distinct check")
+
+        source_res_ids = sorted(survivors.mapped("source_res_id"))
+        self.assertEqual(source_res_ids, sorted([check1.id, check2.id]),
+                          "Each survivor's source_res_id must point to its "
+                          "own check, never the other's")
+
+        all_after = self.Exc.with_context(active_test=False).search_count([
+            ("source_model", "=", "southbrook.mi.check"),
+            ("exception_type", "=", "cutlist_divergence"),
+            ("mo_id", "=", mo.id),
+        ])
+        self.assertEqual(all_after, 8, "No rows deleted")
 
     def test_migrate_keys_non_mi_sources(self):
         """Non-MI sources are keyed on the legacy triple."""
