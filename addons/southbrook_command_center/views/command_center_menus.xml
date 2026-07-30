@@ -4,20 +4,20 @@
 
     <!-- OWL client action (tag registered in central_command.esm.js) -->
     <record id="action_central_command" model="ir.actions.client">
-        <field name="name">Central Command</field>
+        <field name="name">Factory Command Center</field>
         <field name="tag">southbrook_command_center.central_command</field>
     </record>
 
     <!-- Root app menu -->
     <menuitem id="menu_command_center_root"
-              name="Central Command"
+              name="Factory Command Center"
               web_icon="southbrook_command_center,static/description/icon.png"
               groups="group_command_center_user"
               sequence="8"/>
 
     <!-- Dashboard (the OWL screen) -->
     <menuitem id="menu_command_center_dashboard"
-              name="Dashboard"
+              name="Factory Command Center"
               parent="menu_command_center_root"
               action="action_central_command"
               groups="group_command_center_user"

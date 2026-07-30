@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 {
-    "name": "Southbrook Central Command",
-    "summary": "Single-pane accountable exception queue + read-time factory "
-               "health / schedule-confidence / margin / PO-risk scoring.",
+    "name": "Southbrook Factory Command Center",
+    "summary": "Four-zone lens: live factory health, exception queue, "
+               "schedule-confidence, margin & PO-risk scoring dashboard.",
     "description": """
 Southbrook Central Command
 ===========================
