@@ -146,3 +146,45 @@ class TestReleaseGateKind(TransactionCase):
             hasattr(model, "_cron_retick_time_sensitive_readiness"),
             "the date-driven readiness re-tick is what keeps job_at_risk honest")
         self.assertIsInstance(model._cron_retick_time_sensitive_readiness(), int)
+
+
+@tagged("post_install", "-at_install", "southbrook", "project_mrp")
+class TestEquipmentBlockedInvalidation(TransactionCase):
+    """equipment_blocked is stored ONLY because a hook invalidates it.
+
+    Its compute reaches maintenance.request through a reverse relation no @api.depends
+    can express. Storing it without the hook freezes the flag — an intermittent false
+    all-clear on equipment availability, which is the bug class this whole release exists
+    to remove. These tests fail if either half is removed.
+    """
+
+    def test_equipment_blocked_is_stored(self):
+        self.assertTrue(
+            self.env["project.task"]._fields["equipment_blocked"].store,
+            "un-storing this makes its filter and stat-button return nothing again")
+
+    def test_the_invalidation_hook_exists(self):
+        """Storing the field without this hook is the failure mode, so assert the hook."""
+        Request = self.env["maintenance.request"]
+        self.assertTrue(
+            hasattr(Request, "_sb_invalidate_equipment_blocked"),
+            "equipment_blocked is stored on the assumption this hook requeues it")
+        self.assertTrue(
+            hasattr(self.env["project.task"], "_sb_recompute_for_workcenters"),
+            "the reverse lookup the hook depends on")
+
+    def test_reverse_lookup_is_callable_and_returns_a_count(self):
+        wcs = self.env["mrp.workcenter"].search([], limit=1)
+        result = self.env["project.task"]._sb_recompute_for_workcenters(wcs)
+        self.assertIsInstance(result, int)
+
+    def test_reverse_lookup_tolerates_an_empty_set(self):
+        """Equipment with no work centre must not build an `IN ()` query."""
+        empty = self.env["mrp.workcenter"].browse()
+        self.assertEqual(self.env["project.task"]._sb_recompute_for_workcenters(empty), 0)
+
+    def test_equipment_blocked_is_searchable(self):
+        """The whole point: this filter returned nothing for as long as it was unstored."""
+        self.env["project.task"].search_count([("equipment_blocked", "=", True)])
+        self.env["project.task"]._read_group(
+            [], groupby=["equipment_blocked"], aggregates=["__count"])

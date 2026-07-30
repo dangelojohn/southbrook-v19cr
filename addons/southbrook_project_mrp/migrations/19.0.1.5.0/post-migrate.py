@@ -83,6 +83,7 @@ def migrate(cr, version):
         "crew_gap": len(tasks.filtered("crew_gap")),
         "over_capacity": len(tasks.filtered("workcenter_over_capacity")),
         "material_at_risk": len(tasks.filtered("material_at_risk")),
+        "equipment_blocked": len(tasks.filtered("equipment_blocked")),
     }
     _logger.info("southbrook_project_mrp: newly-stored readiness flags %s", newly_stored)
 

@@ -721,18 +721,15 @@ class ProjectTask(models.Model):
              "work centers.")
     maintenance_request_count = fields.Integer(
         string="# Open Maintenance", compute="_compute_equipment_readiness")
-    # NOT stored, deliberately, and the search hook is left in place even though it does
-    # not work. This compute does a live search over maintenance.request through a REVERSE
-    # relation from mrp.workcenter, which no forward @api.depends path can express: opening
-    # or closing a maintenance ticket can never retrigger it. Storing it would freeze the
-    # flag until some unrelated work-order reassignment happened to touch the task —
-    # producing an intermittent false all-clear on equipment, which is precisely the bug
-    # class the Install Risk fix in this branch was written to eliminate. Filtering on it
-    # returning nothing is discoverable and consistent; a stale True/False is neither.
-    # Making this correct needs an invalidation hook on maintenance.request, not a keyword.
+    # Stored ONLY because models/maintenance_request.py now invalidates it from the side
+    # that actually changes. The compute reaches maintenance.request through a REVERSE
+    # relation no @api.depends can express, so on its own a stored value would freeze —
+    # an intermittent false all-clear on equipment availability, the exact bug class this
+    # release exists to remove. Do not add store=True to a field shaped like this without
+    # the matching hook; do not delete the hook and leave this stored.
     equipment_blocked = fields.Boolean(
         string="Equipment Blocked", compute="_compute_equipment_readiness",
-        search="_search_equipment_blocked")
+        store=True, index=True)
     equipment_readiness_summary = fields.Text(
         string="Equipment Readiness", compute="_compute_equipment_readiness")
 
@@ -1771,6 +1768,31 @@ class ProjectTask(models.Model):
             task.pm_stage_mismatch = bool(task.stage_mo_divergence)
 
     @api.model
+    def _sb_recompute_for_workcenters(self, workcenters):
+        """Requeue readiness for every job touching these work centres.
+
+        The reverse of `_compute_equipment_readiness`'s forward walk, and the reverse of
+        the @api.depends it declares. Every hop is indexed — mrp.workorder.workcenter_id,
+        mrp.workorder.production_id and mrp.production.project_task_id — so this is nested
+        indexed subqueries rather than a scan.
+
+        `modified(["production_ids"])` rather than calling the compute: Odoo registers
+        every PREFIX of a dotted dependency as a trigger root, so `production_ids` queues
+        equipment_blocked through the protected recompute path. Calling the compute
+        directly would turn each field assignment into a full write().
+        """
+        if not workcenters:
+            return 0
+        tasks = self.sudo().search([
+            ("production_ids.workorder_ids.workcenter_id", "in", workcenters.ids),
+        ])
+        if not tasks:
+            return 0
+        tasks.modified(["production_ids"])
+        tasks.flush_recordset()
+        return len(tasks)
+
+    @api.model
     def _cron_retick_time_sensitive_readiness(self, limit=None):
         """Re-evaluate readiness that depends on the date, not on a write.
 
@@ -1799,6 +1821,10 @@ class ProjectTask(models.Model):
         # recompute path and turn every field assignment into a full write().
         tasks.modified(["production_ids"])
         tasks.flush_recordset()
+        # The same re-tick also bounds the one gap the maintenance hooks cannot see: an
+        # admin flipping `done` on a maintenance.stage RECORD writes no request row, so
+        # nothing invalidates equipment_blocked. Rare, and an hour of staleness beats a
+        # second hook on a config model nobody edits.
         late = tasks.filtered("job_at_risk")
         _logger.info(
             "southbrook_project_mrp: re-ticked %s kitchen job(s) for date-driven "
@@ -1861,9 +1887,6 @@ class ProjectTask(models.Model):
     def _search_southbrook_production_release_state(self, operator, value):
         return self._search_selection_compute(
             "southbrook_production_release_state", operator, value)
-
-    def _search_equipment_blocked(self, operator, value):
-        return self._search_boolean_compute("equipment_blocked", operator, value)
 
     @api.depends("production_ids", "production_ids.bom_id")
     def _compute_eco(self):

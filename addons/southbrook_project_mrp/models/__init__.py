@@ -8,3 +8,4 @@ from . import project_readiness_line
 from . import project_task
 from . import sale_order
 from . import stock_scrap
+from . import maintenance_request
