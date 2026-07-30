@@ -44,6 +44,7 @@ rather than duplicating them — material/BoM/cost are pulled FROM the linked MO
     ],
     "data": [
         "security/ir.model.access.csv",
+        "data/ir_cron_readiness_retick.xml",
         "data/project_job_templates.xml",
         "views/data_quality_report_views.xml",
         "views/mrp_production_views.xml",

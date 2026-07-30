@@ -30,28 +30,40 @@ _logger = logging.getLogger(__name__)
 
 
 def migrate(cr, version):
+    # Every other migration in this repo guards on this. `version` legitimately arrives
+    # falsy when a module's load_version was never recorded, and running a full recompute
+    # in that state is exactly what the convention exists to prevent.
+    if not version:
+        return
+
     from odoo import SUPERUSER_ID, api
     env = api.Environment(cr, SUPERUSER_ID, {})
     Task = env["project.task"].with_context(active_test=False)
 
-    tasks = Task.search([])
+    # SCOPED to kitchen jobs, mirroring the readiness cron's own domain. An unscoped
+    # search([]) walks every project.task on the instance including archived ones — on
+    # any deployment that also uses Projects for non-kitchen work that is a different
+    # and much larger job than the 35 rows this was written for.
+    tasks = Task.search([("x_southbrook_sale_order_id", "!=", False)])
     if not tasks:
+        _logger.info("southbrook_project_mrp: no kitchen jobs to backfill")
         return
 
-    # Order matters: the rollup feeds job_install_due, which feeds install_date_missing.
+    # Mark the fields to recompute and let the FRAMEWORK drive it, rather than calling
+    # the compute methods directly. A direct call runs outside env.protecting(), so every
+    # `task.field = value` inside those methods falls through Field.__set__ to a full
+    # write() — one per field, per record, each with its own modified() cascade and
+    # tracking side effects. _compute_mrp_status alone assigns fourteen fields. Marking
+    # the dependencies instead gives one batched flush.
     tasks.invalidate_recordset()
-    tasks._compute_mrp_status()
-    tasks._compute_phase3_queue_flags()
-
-    # The rest of the fields that became stored in this release. Each was previously a
-    # non-stored compute with a `search=` hook that silently matched nothing, so every
-    # filter and stat-button click-through built on them returned zero rows over
-    # correctly-counted data.
-    tasks._compute_southbrook_specs_complete()
-    tasks._compute_crew()
-    tasks._compute_workcenter_load()
-    tasks._compute_workorder_rollup()
-    tasks._compute_material_readiness()
+    tasks.modified([
+        "production_ids",
+        "x_southbrook_material_species",
+        "x_southbrook_hardware_specs",
+        "southbrook_door_style",
+        "southbrook_finish",
+        "stage_id",
+    ])
     tasks.flush_recordset()
 
     # southbrook_production_release_state is STORED, so changing the compute that

@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 from collections import Counter
 
+import logging
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 # project.task.stage names (lowercased) that imply production has begun / finished.
 _STARTED_STAGE_HINTS = ("cutting", "machining", "assembly", "finishing")
@@ -733,6 +737,21 @@ class ProjectTask(models.Model):
         string="Equipment Readiness", compute="_compute_equipment_readiness")
 
     # ------------------------------------------------------------------------
+    # `x_sbk_install_due_date` is the field job_install_due is a MIN() of, and it is
+    # deliberately NOT listed here: it belongs to southbrook_mrp_kitchen_workcenters,
+    # which is a SIBLING module, not an ancestor. Naming it makes this module refuse to
+    # load anywhere that one is absent — verified, it raises "Dependency field
+    # 'x_sbk_install_due_date' not found in model mrp.production" at registry build.
+    # The trigger therefore lives in the module that owns the field, as a write() hook on
+    # mrp.production. Without either, a user setting the install date on an MO would not
+    # update the task, and Install Risk would keep reporting "install date missing" on a
+    # job whose date had just been entered.
+    #
+    # NOTE ON TIME: this compute also compares MO deadlines against TODAY, and wall-clock
+    # cannot be a dependency. Stored fields driven partly by "now" do not self-heal, so
+    # `_cron_retick_time_sensitive_readiness` below forces the re-evaluation. Without it,
+    # storing job_at_risk would silently reintroduce the false all-clear this branch
+    # exists to remove.
     @api.depends("production_ids", "production_ids.state",
                  "production_ids.reservation_state", "production_ids.date_deadline")
     def _compute_mrp_status(self):
@@ -1750,6 +1769,41 @@ class ProjectTask(models.Model):
                 cad_status and "done" not in cad_status)
             task.install_date_missing = not bool(task.job_install_due)
             task.pm_stage_mismatch = bool(task.stage_mo_divergence)
+
+    @api.model
+    def _cron_retick_time_sensitive_readiness(self, limit=None):
+        """Re-evaluate readiness that depends on the date, not on a write.
+
+        `job_at_risk` is True partly because an MO deadline has PASSED. That is a
+        comparison against today, and today is not a field, so it cannot appear in
+        @api.depends. Odoo only recomputes a stored field when a declared dependency is
+        written, which means a job that becomes late overnight — with nobody touching the
+        MO — keeps yesterday's `False` forever and drops off the Install Risk board.
+
+        That is the same false all-clear the board already suffered from for a different
+        reason, and storing the field would have reintroduced it through the back door.
+        A stored field driven by wall-clock time needs an external forcing function; this
+        is it.
+
+        Scoped to open kitchen jobs, mirroring the readiness cron, so this never walks
+        every project.task on the instance.
+        """
+        tasks = self.search(
+            [("x_southbrook_sale_order_id", "!=", False),
+             ("production_ids", "!=", False)],
+            limit=limit)
+        if not tasks:
+            return 0
+        # modified() on the declared dependency is what puts the records back on the
+        # to-compute list; calling the compute directly would bypass Odoo's protected
+        # recompute path and turn every field assignment into a full write().
+        tasks.modified(["production_ids"])
+        tasks.flush_recordset()
+        late = tasks.filtered("job_at_risk")
+        _logger.info(
+            "southbrook_project_mrp: re-ticked %s kitchen job(s) for date-driven "
+            "readiness; %s now at risk", len(tasks), len(late))
+        return len(tasks)
 
     def _search_boolean_compute(self, field_name, operator, value):
         if operator not in ("=", "!="):

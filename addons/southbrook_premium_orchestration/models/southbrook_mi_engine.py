@@ -103,6 +103,14 @@ class SouthbrookMiEngineState(models.Model):
 
         `order="id"` makes the choice deterministic rather than incidental.
         """
+        # sudo: this is system-owned telemetry that a business user triggers but does
+        # not own. security/ir.model.access.csv grants base.group_user read ONLY, while
+        # the Kitchen Ops menu and the Run Engine Now button are ungated — so without
+        # this, a plain internal user clicking the button hits AccessError on the write
+        # (pre-existing) and now on the unlink too (added by the duplicate collapse).
+        # Elevating the resolver is narrower than granting every user write+unlink on
+        # engine state.
+        self = self.sudo()
         engines = self.search([], order="id")
         if not engines:
             return self.create({})
@@ -239,15 +247,20 @@ class SouthbrookMiEngineState(models.Model):
         summary = self._cron_refire_gates()
         # Make sure the row the user is looking at is the row that was written.
         primary = self._get_singleton()
-        if primary != self:
-            return {
-                "type": "ir.actions.act_window",
-                "res_model": self._name,
-                "res_id": primary.id,
-                "view_mode": "form",
-                "target": "current",
-            }
-        self.invalidate_recordset()
+        # Both effects, always. A display_notification returns to the client and stops —
+        # `_executeClientAction` only chains onward when `next` is set — so the previous
+        # version showed a toast over a form still rendering the values it loaded with.
+        # `invalidate_recordset()` clears the SERVER cache and has no channel to the
+        # browser, so it did nothing for this. Chaining the act_window as `next` gives the
+        # user the summary AND the refreshed record, whether or not they were already
+        # looking at the primary row.
+        reload_action = {
+            "type": "ir.actions.act_window",
+            "res_model": self._name,
+            "res_id": primary.id,
+            "view_mode": "form",
+            "target": "current",
+        }
         return {
             "type": "ir.actions.client",
             "tag": "display_notification",
@@ -259,5 +272,6 @@ class SouthbrookMiEngineState(models.Model):
                 ) % summary,
                 "type": "success" if not summary["blockers"] else "warning",
                 "sticky": False,
+                "next": reload_action,
             },
         }

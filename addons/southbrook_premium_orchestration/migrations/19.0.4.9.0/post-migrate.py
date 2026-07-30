@@ -19,6 +19,9 @@ _logger = logging.getLogger(__name__)
 
 
 def migrate(cr, version):
+    if not version:
+        return
+
     from odoo import SUPERUSER_ID, api
     env = api.Environment(cr, SUPERUSER_ID, {})
     Engine = env["southbrook.mi.engine.state"]

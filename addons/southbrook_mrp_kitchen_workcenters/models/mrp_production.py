@@ -234,3 +234,26 @@ class MrpProduction(models.Model):
                         "on MO %s (id=%s)", mo.name, mo.id,
                     )
         return result
+
+    def write(self, vals):
+        """Push an install-date change through to the linked kitchen job.
+
+        `project.task.job_install_due` is a stored MIN() over this field, but it cannot
+        declare `production_ids.x_sbk_install_due_date` as a dependency: that field lives
+        here, and southbrook_project_mrp is a SIBLING module, not a descendant. Naming it
+        there makes that module fail to load anywhere this one is absent — it raises
+        "Dependency field 'x_sbk_install_due_date' not found in model mrp.production" at
+        registry build time.
+
+        So the module that owns the field owns the trigger. Without this, editing the one
+        field whose entire purpose is to drive install-risk would leave the task's stored
+        value untouched, and the Install Risk board would keep reporting "install date
+        missing" for a job whose date had just been entered — indefinitely, until some
+        unrelated write to the MO happened to fire the recompute.
+        """
+        res = super().write(vals)
+        if "x_sbk_install_due_date" in vals:
+            tasks = self.mapped("project_task_id")
+            if tasks:
+                tasks.modified(["production_ids"])
+        return res
