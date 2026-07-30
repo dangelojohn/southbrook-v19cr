@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!--
+        Floor Manager Analytics — pivot/graph aggregation over the kitchen
+        job book. These views did not exist before because they COULD NOT:
+        southbrook_production_release_state, risk_level, job_at_risk,
+        crew_gap, workcenter_over_capacity, unscheduled_workorder_count,
+        equipment_blocked and job_install_due were all non-stored computes.
+        Odoo's pivot/graph read_group path builds SQL directly off stored
+        columns — grouping or aggregating an unstored compute raises
+        ValueError: Cannot convert ... to SQL because it is not stored the
+        moment a user opens the view (the same failure mode documented on
+        current_bottleneck_workcenter_id in project_task.py). Converting
+        the release/risk/gap/capacity/schedule signals to store=True made
+        this Pivot/Graph/Search trio possible for the first time — the
+        Floor Manager can now pivot the whole job book by release state
+        and risk instead of reading it one Kanban card at a time.
+
+        risk_level (project_task.py ~238) carries the four-band gradient
+        (low/medium/high/critical) and is store=True, index=True — stored
+        specifically so this pivot can split on it. It rides the same
+        _compute_phase1_operational_context as readiness_decision, which
+        was already stored on that compute without a staleness bug, so the
+        @api.depends is proven complete. It is the column split below.
+        job_at_risk (the stored boolean) is kept as a one-click search
+        filter — "show me the at-risk jobs" — but the pivot/graph/group-by
+        use the richer risk_level band. Every field referenced here
+        (southbrook_production_release_state, risk_level, crew_gap,
+        workcenter_over_capacity, unscheduled_workorder_count,
+        equipment_blocked, job_install_due, job_at_risk) is store=True in
+        project_task.py.
+
+        Also verified against the rest of this codebase before writing:
+        no southbrook_* module binds pivot/graph/search views onto an
+        act_window via view_ids Command entries or ir.actions.act_window.
+        view records (that pattern only appears inside the third-party
+        dms_field module). Every local pivot/graph action — NCR Pareto,
+        Capacity, Shop Daily, Workcenter Downtime — instead relies on
+        view_mode + priority to win default view resolution, with
+        search_view_id set explicitly. This file follows that convention:
+        priority="16" (matching view_production_release_list/search in
+        the sibling production_release_views.xml) plus an explicit
+        search_view_id on the action.
+    -->
+
+    <record id="view_floor_manager_jobs_pivot" model="ir.ui.view">
+        <field name="name">project.task.floor.manager.analytics.pivot</field>
+        <field name="model">project.task</field>
+        <field name="priority">16</field>
+        <field name="arch" type="xml">
+            <pivot string="Floor Manager Analytics" sample="1">
+                <field name="southbrook_production_release_state" type="row"/>
+                <!-- Second row dimension: install-due month. Available,
+                     not forced open — the Floor Manager drills into it
+                     from the pivot's own field picker. -->
+                <field name="job_install_due" type="row" interval="month"/>
+                <!-- Column split on the four-band risk gradient (stored). -->
+                <field name="risk_level" type="col"/>
+                <!-- No explicit measure: the pivot defaults to Count, which is
+                     the meaningful aggregate for a job book (how many jobs sit
+                     in each release-state × risk cell). __count is not a real
+                     field and cannot be declared as one. -->
+            </pivot>
+        </field>
+    </record>
+
+    <record id="view_floor_manager_jobs_graph" model="ir.ui.view">
+        <field name="name">project.task.floor.manager.analytics.graph</field>
+        <field name="model">project.task</field>
+        <field name="priority">16</field>
+        <field name="arch" type="xml">
+            <graph string="Floor Manager Analytics" type="bar" stacked="1" sample="1">
+                <field name="southbrook_production_release_state"/>
+                <!-- Stack-by the four-band risk gradient (stored). -->
+                <field name="risk_level"/>
+            </graph>
+        </field>
+    </record>
+
+    <record id="view_floor_manager_jobs_search" model="ir.ui.view">
+        <field name="name">project.task.floor.manager.analytics.search</field>
+        <field name="model">project.task</field>
+        <field name="priority">16</field>
+        <field name="arch" type="xml">
+            <search string="Floor Manager Analytics">
+                <field name="name"/>
+                <field name="partner_id"/>
+                <filter name="filter_at_risk"
+                        string="At Risk"
+                        domain="[('job_at_risk','=',True)]"/>
+                <filter name="filter_crew_gap"
+                        string="Crew Gap"
+                        domain="[('crew_gap','=',True)]"/>
+                <filter name="filter_workcenter_over_capacity"
+                        string="Station Over Capacity"
+                        domain="[('workcenter_over_capacity','=',True)]"/>
+                <filter name="filter_equipment_blocked"
+                        string="Equipment Blocked"
+                        domain="[('equipment_blocked','=',True)]"/>
+                <filter name="filter_unscheduled_wos"
+                        string="Unscheduled WOs"
+                        domain="[('unscheduled_workorder_count','>',0)]"/>
+                <separator/>
+                <group name="group_floor_manager_analytics">
+                    <filter name="group_release_state"
+                            string="Release State"
+                            context="{'group_by': 'southbrook_production_release_state'}"/>
+                    <filter name="group_risk_level"
+                            string="Risk Level"
+                            context="{'group_by': 'risk_level'}"/>
+                    <filter name="group_install_due"
+                            string="Install Due"
+                            context="{'group_by': 'job_install_due:month'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_floor_manager_analytics" model="ir.actions.act_window">
+        <field name="name">Floor Analytics</field>
+        <field name="res_model">project.task</field>
+        <field name="view_mode">pivot,graph,list</field>
+        <field name="domain">[('x_southbrook_sale_order_id','!=',False)]</field>
+        <field name="context">{'search_default_group_release_state': 1}</field>
+        <field name="search_view_id" ref="view_floor_manager_jobs_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No kitchen jobs yet
+            </p>
+            <p>
+                Pivot and graph the whole kitchen job book by release state,
+                risk, and install-due month — now possible because those
+                signals are stored, indexed columns instead of computed
+                on the fly.
+            </p>
+        </field>
+    </record>
+
+    <menuitem id="menu_floor_manager_analytics"
+              name="Floor Analytics"
+              parent="southbrook_mrp_pm.menu_southbrook_pm_root"
+              action="action_floor_manager_analytics"
+              sequence="60"/>
+
+</odoo>
