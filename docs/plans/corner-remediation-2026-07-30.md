@@ -277,7 +277,83 @@ AC: migration archives exactly the debris class (in-bounds lines untouched);
 idempotent; a regression test covers the guard or the report documents why the
 producer is unreachable; no new suite failures.
 
-## Task 10-12: Part C quick wins — RESERVED pending V5 verification
+## Task 10: Filler engine — no phantom on empty rooms, honest remainder
 
-(Variant width resolution / filler phantom + strategy / room-dimension clamps &
-line cap.) Do not start until the controller amends this plan with V5 verdicts.
+Files: `addons/southbrook_kitchen_3d_configurator/controllers/main.py` (filler /
+remainder computation at :126-220), related client filler-panel state in
+`static/src/**/kitchen_configurator.js`, tests.
+Required reading: V5-partc.md §SBK-023 (it names which sub-claims were refuted —
+do not "fix" the refuted ones: proration is correct; Est.-excludes-filler is by
+design).
+
+Root cause (V5): `remainder = rw - n*module_w` is computed unconditionally even
+when `n=0` (empty/undersized room), which yields the phantom "[FP3] +$140 filler
+on an empty 12-inch room" and a persisted $70 filler on a zero-cabinet design.
+Fix: gate filler computation/creation/selection on `n > 0`; an empty design has
+no filler line, no filler price, no pre-selected filler in the client. Also make
+the remainder honest in the two directions V5 documents (scribe overstates;
+post-filler-delete recompute understates) — remainder must equal run length minus
+occupied length (corner cells included) for the active runs.
+
+AC: 0-cabinet design shows $0.00 and no filler anywhere (client + persisted);
+remainder test pins run-length identity; the four filler strategies place
+correctly on a real room (existing behavior guarded); no new suite failures.
+
+## Task 11: Variant width resolution on placement
+
+Files: the ~6 placement call sites reading template `southbrook_width_in`
+(V5 lists them; `product_template.py:32` is the field), wiring in the
+variant-Width extraction that already exists in
+`product_config_line.py::_extract_cabinet_inputs`; tests.
+Required reading: V5-partc.md §SBK-024.
+
+Placement ignores the variant's Width attribute — a "Width: 18 in" variant
+places at the template's nominal width. Centralize: one helper
+`placed_width_in(product)` = variant Width attribute if present, else template
+`southbrook_width_in` (log when the fallback fires), used by all placement call
+sites. Do NOT change corner-cell sizing (rule payloads own corner footprints).
+
+AC: an 18-in variant of a multi-width template places at 18; a catalog-walk
+regression test asserts placed width == attribute width for every variant that
+has a Width attribute; fallback logged once per product; no new suite failures.
+
+## Task 12: Room bounds, line cap, honest field errors
+
+Files: `addons/southbrook_kitchen_3d_configurator/models/kitchen_design.py`
+(constraints), `controllers/main.py` (save_design validation), client
+`static/src/**/kitchen_configurator.js` (`_stretchWidth`, dimension fields).
+Required reading: V5-partc.md §SBK-021/022.
+
+- Server-side clamps: room width/depth 12-480 in, height 84-144 in — enforced in
+  save_design (readable JSON error) AND as a model constraint (Odoo 19: use the
+  current constraint API, not `_sql_constraints`).
+- Cap engine-generated lines per design at 120 with an explicit
+  `layout_warning` ("room too large to auto-fill") — no silent truncation.
+- Fix `_stretchWidth`: the ±24 in buttons must target the ACTIVE wall's axis
+  (back/front → width, left/right → depth); no wall selected → width (current
+  behavior).
+- Client: out-of-range dimension input shows inline validation text next to the
+  field instead of silently no-oping.
+- Do NOT add confirm dialogs or an undo stack (explicitly parked — John's
+  regenerate-on-resize decision stands).
+
+AC: width=99999 rejected server-side with a readable message and nothing
+persisted; cap enforced with the warning surfaced to the client; ±24 affects the
+active wall's axis; invalid field shows text; no new suite failures.
+
+## Task 13: Display-unit snap (kill the 35.98/55.12 drift echoes)
+
+Files: `addons/southbrook_estimating_website/controllers/main.py:2456-2461`
+(unrounded `w * (1/25.4)`), the raw echo at
+`kitchen_configurator.js:2604`; tests.
+Required reading: V5-partc.md §SBK-025.
+
+Only these two spots bypass the existing drift-safe display helpers (others
+already snap to 1/4 in). Route them through the same snap. Storage stays as-is
+(design lines are canonically float-inches; `southbrook.room.wall` integer-mm is
+intentional). Note Task 3 removes the largest drift source at the data level;
+this task cleans the display boundary.
+
+AC: a 36-in cabinet reads 36.00 everywhere in the UI; wall-cabinet mount height
+displays 55.0 not 55.12 (or the design's true inch value post-Task-3); no new
+suite failures.
