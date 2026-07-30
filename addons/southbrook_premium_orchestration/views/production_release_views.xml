@@ -2,10 +2,14 @@
 <odoo>
 
     <!--
-        Production Release Queue — the kanban of kitchen jobs whose
-        production-release decision is anything other than "ready".
-        Default-filtered to review + blocked so the PM works the queue
-        from the top of the list every morning.
+        Production Release Queue — the Floor Manager board for every
+        kitchen job with a production-release decision. Three lanes,
+        grouped by release state by default: "blocked" (shop must act),
+        "review" (only a sign-off/attestable gate is outstanding — a
+        human signature clears it), and "ready" (checklist complete —
+        release it). Ready jobs stay in the queue as the payoff lane
+        instead of vanishing the moment they become releasable, so the
+        PM works the whole board, lane by lane, every morning.
     -->
 
     <record id="view_production_release_list" model="ir.ui.view">
@@ -27,6 +31,7 @@
                 <field name="install_due_date"/>
                 <field name="x_southbrook_sale_order_id"/>
                 <field name="job_at_risk" widget="boolean_toggle" readonly="1" optional="hide"/>
+                <field name="southbrook_production_release_reason" optional="hide"/>
             </list>
         </field>
     </record>
@@ -45,6 +50,9 @@
                 <filter name="review"
                         string="Needs Review"
                         domain="[('southbrook_production_release_state','=','review')]"/>
+                <filter name="ready"
+                        string="Ready"
+                        domain="[('southbrook_production_release_state','=','ready')]"/>
                 <separator/>
                 <filter name="my_jobs"
                         string="My Jobs"
@@ -65,7 +73,8 @@
         <field name="name">Production Release Queue</field>
         <field name="res_model">project.task</field>
         <field name="view_mode">list,form</field>
-        <field name="domain">[('southbrook_production_release_state','in',('review','blocked')),('x_southbrook_sale_order_id','!=',False)]</field>
+        <field name="domain">[('southbrook_production_release_state','in',('review','blocked','ready')),('x_southbrook_sale_order_id','!=',False)]</field>
+        <field name="context">{'search_default_group_release_state': 1}</field>
         <field name="search_view_id" ref="view_production_release_search"/>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">
