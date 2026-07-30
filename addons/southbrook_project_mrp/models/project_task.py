@@ -1767,6 +1767,83 @@ class ProjectTask(models.Model):
             task.install_date_missing = not bool(task.job_install_due)
             task.pm_stage_mismatch = bool(task.stage_mo_divergence)
 
+    def action_southbrook_schedule_unscheduled_workorders(self):
+        """Plan only work orders that no one has scheduled, in EITHER system.
+
+        THERE ARE TWO SCHEDULES ON THIS INSTANCE, and that is the whole difficulty.
+        Native Odoo stores a work order's plan as a `resource.calendar.leaves` row pointed
+        at by `leave_id` (date_start/date_finished are computed from it). The installed
+        `mrp_shop_floor_control` keeps a SECOND, independent plan in
+        `date_planned_start_wo`, hand-editable through its own wizard.
+
+        On production right now: 17 of 93 in-flight work orders carry a native leave, 95
+        of 99 carry an SFC date, and ZERO are unscheduled in both. In other words every
+        piece of in-flight work has already been planned by a person — just not in the
+        field the native views read. An action guarded only on `leave_id`, which is the
+        obvious reading of "unscheduled", would have re-planned seventy-six work orders
+        that a planner had already dated.
+
+        So this refuses to touch anything a human has dated anywhere, and on today's data
+        it correctly does nothing. That is the right outcome: an action whose safe form is
+        a no-op is telling you the queue is not the problem.
+
+        It also deliberately does NOT call `mrp.production.button_plan()`:
+          * `is_planned` is computed with `any()`, so a partly-dated MO is invisible to it
+            — neither re-planned nor advanced.
+          * it silently confirms draft MOs as a side effect.
+          * `mrp_shop_floor_control` overrides it and re-runs its own `schedule_workorders()`
+            for EVERY order passed in, planned or not, rewriting the SFC dates this method
+            exists to protect.
+        Core's per-work-order `_plan_workorder(replan=False)` carries the correct guard
+        (`if self.leave_id: return`), searches the work centre for a free slot before
+        creating the leave, and threads dependency order through `blocked_by_workorder_ids`.
+        """
+        self.ensure_one()
+        if not self.env.user.has_group("mrp.group_mrp_user"):
+            raise UserError(_(
+                "Scheduling manufacturing work needs the Manufacturing / User group."))
+
+        workorders = self.production_ids.mapped("workorder_ids")
+        # `_plan_workorder` itself only acts on these two states; filtering here as well
+        # keeps the counts honest in the message below.
+        candidates = workorders.filtered(lambda w: w.state in ("blocked", "ready"))
+        already_native = candidates.filtered("leave_id")
+        already_sfc = candidates.filtered(
+            lambda w: not w.leave_id and getattr(w, "date_planned_start_wo", False))
+        unscheduled = candidates - already_native - already_sfc
+
+        if not unscheduled:
+            return self._sb_notify(
+                _("Nothing to schedule"),
+                _("%(n)s work order(s) are in flight and every one already has a planned "
+                  "date — %(native)s in the native schedule, %(sfc)s in the shop-floor "
+                  "schedule. Nothing here is waiting on a planner.",
+                  n=len(candidates), native=len(already_native), sfc=len(already_sfc)),
+                "warning")
+
+        for workorder in unscheduled:
+            workorder._plan_workorder(replan=False)
+
+        self.message_post(body=_(
+            "Scheduled %(n)s previously unplanned work order(s), by %(actor)s. "
+            "%(skipped)s left untouched because a planner had already dated them.",
+            n=len(unscheduled), actor=self.env.user.display_name,
+            skipped=len(already_native) + len(already_sfc)))
+        return self._sb_notify(
+            _("Scheduled"),
+            _("%(n)s work order(s) planned. %(skipped)s were left alone — they already "
+              "had a date.", n=len(unscheduled),
+              skipped=len(already_native) + len(already_sfc)),
+            "success")
+
+    def _sb_notify(self, title, message, kind):
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {"title": title, "message": message, "type": kind,
+                       "sticky": kind == "warning"},
+        }
+
     @api.model
     def _sb_recompute_for_workcenters(self, workcenters):
         """Requeue readiness for every job touching these work centres.
@@ -2219,6 +2296,7 @@ class ProjectTask(models.Model):
     # --- TASK 4: Crew compute ----------------------------------------------
     @api.depends("production_ids", "production_ids.user_id",
                  "production_ids.workorder_ids",
+                 "production_ids.workorder_ids.southbrook_assigned_user_id",
                  "production_ids.workorder_ids.working_user_ids",
                  "production_ids.workorder_ids.last_working_user_id")
     def _compute_crew(self):
@@ -2227,14 +2305,21 @@ class ProjectTask(models.Model):
             wos = mos.mapped("workorder_ids")
             crew = self.env["res.users"]
             crew |= mos.mapped("user_id")
+            crew |= wos.mapped("southbrook_assigned_user_id")
             crew |= wos.mapped("working_user_ids")
             crew |= wos.mapped("last_working_user_id")
             # Filter to active internal users only (no bots / no portal).
             crew = crew.filtered(
                 lambda u: u and not u.share and u.active)
             unassigned_mos = mos.filtered(lambda m: not m.user_id)
+            # A work order counts as crewed when somebody is PLANNED to run it. The
+            # timer fields still count — if a person is on the machine the question is
+            # settled — but they are no longer the only way to answer it. Before this,
+            # the gap asked "has anyone clocked on", which is false for all work that has
+            # not started, so the flag was permanently true and unclosable.
             unassigned_wos = wos.filtered(
-                lambda w: not w.working_user_ids
+                lambda w: not w.southbrook_assigned_user_id
+                and not w.working_user_ids
                 and not w.last_working_user_id)
             task.unassigned_mo_count = len(unassigned_mos)
             task.unassigned_workorder_count = len(unassigned_wos)

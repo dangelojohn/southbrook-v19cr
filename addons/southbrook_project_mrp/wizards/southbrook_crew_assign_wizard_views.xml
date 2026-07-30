@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_southbrook_crew_assign_wizard_form" model="ir.ui.view">
+        <field name="name">southbrook.crew.assign.wizard.form</field>
+        <field name="model">southbrook.crew.assign.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Assign Crew">
+                <field name="task_ids" invisible="1"/>
+                <group>
+                    <field name="job_count" string="Jobs selected" readonly="1"/>
+                    <field name="unassigned_mo_count" readonly="1"/>
+                    <field name="unassigned_wo_count" readonly="1"/>
+                </group>
+                <group>
+                    <field name="user_id" options="{'no_create': True}"/>
+                    <field name="overwrite_existing"/>
+                </group>
+                <p class="text-muted">
+                    This sets who is <em>planned</em> to run the work. It does not touch
+                    the Working User, which records who is clocked in at the machine —
+                    that stays a record of what actually happened.
+                </p>
+                <footer>
+                    <button name="action_assign" type="object" string="Assign"
+                            class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Bound to the list so a planner can act on a selection from the Production
+         Release Queue, which is where the crew gap is visible in the first place. -->
+    <record id="action_southbrook_crew_assign_wizard" model="ir.actions.act_window">
+        <field name="name">Assign Crew</field>
+        <field name="res_model">southbrook.crew.assign.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="binding_model_id" ref="project.model_project_task"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="group_ids" eval="[(4, ref('mrp.group_mrp_user'))]"/>
+    </record>
+
+</odoo>

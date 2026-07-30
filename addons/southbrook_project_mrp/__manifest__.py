@@ -49,6 +49,8 @@ rather than duplicating them — material/BoM/cost are pulled FROM the linked MO
         "views/data_quality_report_views.xml",
         "views/mrp_production_views.xml",
         "views/project_task_views.xml",
+        "wizards/southbrook_crew_assign_wizard_views.xml",
+        "data/server_actions.xml",
     ],
     "assets": {
         "web.assets_backend": [

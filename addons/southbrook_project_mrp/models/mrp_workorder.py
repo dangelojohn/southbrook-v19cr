@@ -5,6 +5,30 @@ from odoo import api, fields, models
 class MrpWorkorder(models.Model):
     _inherit = "mrp.workorder"
 
+    # Odoo 19 has NO assignment field on a work order. `working_user_ids` and
+    # `last_working_user_id` look like one and are not: both are non-stored computes over
+    # `time_ids` (mrp.workcenter.productivity), i.e. the shop-floor clock log — who is
+    # punched in right now, and who punched in last. They have no inverse and cannot be
+    # written; the only way to populate them is to fabricate an open attendance record
+    # claiming somebody is at the machine.
+    #
+    # That is why `project.task.crew_gap` could never be closed by assigning anyone. Its
+    # work-order half asked "has anyone clocked on yet", which is false for every job that
+    # has not physically started — so a planner who had assigned every operator still saw
+    # a crew gap, and no action could clear it.
+    #
+    # This is the missing field. It says who is MEANT to do the work, which is a planning
+    # fact, and leaves the timer fields to record what actually happened.
+    southbrook_assigned_user_id = fields.Many2one(
+        "res.users",
+        string="Assigned Operator",
+        index=True,
+        tracking=True,
+        domain=lambda self: [
+            ("all_group_ids", "in", self.env.ref("mrp.group_mrp_user").id)],
+        help="Who is planned to run this operation. Distinct from the Working User, "
+             "which is whoever is clocked in on it right now.")
+
     southbrook_not_scheduled = fields.Boolean(
         string="Not Scheduled",
         compute="_compute_southbrook_not_scheduled",

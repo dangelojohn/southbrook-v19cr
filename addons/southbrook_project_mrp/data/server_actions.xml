@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+
+        <!-- Bound to the list so it can be run from the Production Release Queue, where
+             a planner is already looking at what is stuck. Gated to Manufacturing / User
+             because that is the group whose job this is and whose members are internal —
+             southbrook_mrp_pm.group_floor_manager reads like the right name but all ten
+             of its members are PORTAL users who cannot open a backend list at all, and
+             group_southbrook_production_approver has no members whatsoever. -->
+        <record id="action_server_schedule_unscheduled_workorders" model="ir.actions.server">
+            <field name="name">Schedule Unplanned Work Orders</field>
+            <field name="model_id" ref="project.model_project_task"/>
+            <field name="binding_model_id" ref="project.model_project_task"/>
+            <field name="binding_view_types">list,form</field>
+            <field name="group_ids" eval="[(4, ref('mrp.group_mrp_user'))]"/>
+            <field name="state">code</field>
+            <field name="code">
+for record in records:
+    action = record.action_southbrook_schedule_unscheduled_workorders()
+            </field>
+        </record>
+
+    </data>
+</odoo>

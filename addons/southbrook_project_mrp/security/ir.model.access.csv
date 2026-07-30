@@ -7,3 +7,4 @@ access_southbrook_project_job_template_line_user,southbrook.project.job.template
 access_southbrook_project_job_template_line_admin,southbrook.project.job.template.line admin,model_southbrook_project_job_template_line,base.group_system,1,1,1,1
 access_southbrook_project_data_quality_report_user,southbrook.project.data.quality.report user,model_southbrook_project_data_quality_report,base.group_user,1,1,1,1
 access_southbrook_project_data_quality_line_user,southbrook.project.data.quality.line user,model_southbrook_project_data_quality_line,base.group_user,1,1,1,1
+access_southbrook_crew_assign_wizard,southbrook.crew.assign.wizard mrp user,model_southbrook_crew_assign_wizard,mrp.group_mrp_user,1,1,1,1
