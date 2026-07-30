@@ -42,6 +42,16 @@ def migrate(cr, version):
     tasks.invalidate_recordset()
     tasks._compute_mrp_status()
     tasks._compute_phase3_queue_flags()
+
+    # The rest of the fields that became stored in this release. Each was previously a
+    # non-stored compute with a `search=` hook that silently matched nothing, so every
+    # filter and stat-button click-through built on them returned zero rows over
+    # correctly-counted data.
+    tasks._compute_southbrook_specs_complete()
+    tasks._compute_crew()
+    tasks._compute_workcenter_load()
+    tasks._compute_workorder_rollup()
+    tasks._compute_material_readiness()
     tasks.flush_recordset()
 
     # southbrook_production_release_state is STORED, so changing the compute that
@@ -54,6 +64,16 @@ def migrate(cr, version):
 
     at_risk = tasks.filtered("job_at_risk")
     missing = tasks.filtered("install_date_missing")
+    newly_stored = {
+        "specs_complete": len(tasks.filtered("southbrook_specs_complete")),
+        "needs_cad_cutlist": len(tasks.filtered("cad_cutlist_review_required")),
+        "pm_stage_mismatch": len(tasks.filtered("pm_stage_mismatch")),
+        "crew_gap": len(tasks.filtered("crew_gap")),
+        "over_capacity": len(tasks.filtered("workcenter_over_capacity")),
+        "material_at_risk": len(tasks.filtered("material_at_risk")),
+    }
+    _logger.info("southbrook_project_mrp: newly-stored readiness flags %s", newly_stored)
+
     by_state = {}
     for task in tasks:
         key = task.southbrook_production_release_state or "unset"

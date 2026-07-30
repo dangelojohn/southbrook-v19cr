@@ -385,7 +385,8 @@ class ProjectTask(models.Model):
     southbrook_specs_complete = fields.Boolean(
         string="Cabinet Specs Complete",
         compute="_compute_southbrook_specs_complete",
-        search="_search_southbrook_specs_complete",
+        store=True,
+        index=True,
         readonly=True,
     )
     southbrook_release_cad_approved = fields.Boolean(
@@ -421,7 +422,8 @@ class ProjectTask(models.Model):
     cad_cutlist_review_required = fields.Boolean(
         string="Needs CAD / Cutlist",
         compute="_compute_phase3_queue_flags",
-        search="_search_cad_cutlist_review_required",
+        store=True,
+        index=True,
         readonly=True,
     )
     install_date_missing = fields.Boolean(
@@ -539,7 +541,8 @@ class ProjectTask(models.Model):
     pm_stage_mismatch = fields.Boolean(
         string="PM Stage Mismatch",
         compute="_compute_phase3_queue_flags",
-        search="_search_pm_stage_mismatch",
+        store=True,
+        index=True,
         readonly=True,
     )
 
@@ -608,7 +611,7 @@ class ProjectTask(models.Model):
              "last_working_user_id — i.e. nobody has ever touched them.")
     crew_gap = fields.Boolean(
         string="Crew Gap", compute="_compute_crew",
-        search="_search_crew_gap",
+        store=True, index=True,
         help="At least one MO or WO has no operator assigned.")
 
     # --- TASK 3: Work-center load summary ----------------------------------
@@ -622,7 +625,7 @@ class ProjectTask(models.Model):
     workcenter_over_capacity = fields.Boolean(
         string="WC Over Capacity",
         compute="_compute_workcenter_load",
-        search="_search_workcenter_over_capacity",
+        store=True, index=True,
         help="True when any work center's booked minutes exceed its "
              "daily capacity proxy.")
 
@@ -636,7 +639,7 @@ class ProjectTask(models.Model):
         string="# Work Orders", compute="_compute_workorder_rollup")
     unscheduled_workorder_count = fields.Integer(
         string="# Not Scheduled", compute="_compute_workorder_rollup",
-        search="_search_unscheduled_workorder_count",
+        store=True,
         help="Work orders with no planned start date — the MRP scheduler "
              "needs to set these in the Work Orders view.")
     workorder_summary = fields.Char(
@@ -691,7 +694,7 @@ class ProjectTask(models.Model):
         string="# MOs Unavailable", compute="_compute_material_readiness")
     material_at_risk = fields.Boolean(
         string="Material At Risk", compute="_compute_material_readiness",
-        search="_search_material_at_risk",
+        store=True, index=True,
         help="At least one linked MO is not fully component-available.")
     material_readiness_summary = fields.Text(
         string="Material Readiness", compute="_compute_material_readiness")
@@ -714,6 +717,15 @@ class ProjectTask(models.Model):
              "work centers.")
     maintenance_request_count = fields.Integer(
         string="# Open Maintenance", compute="_compute_equipment_readiness")
+    # NOT stored, deliberately, and the search hook is left in place even though it does
+    # not work. This compute does a live search over maintenance.request through a REVERSE
+    # relation from mrp.workcenter, which no forward @api.depends path can express: opening
+    # or closing a maintenance ticket can never retrigger it. Storing it would freeze the
+    # flag until some unrelated work-order reassignment happened to touch the task —
+    # producing an intermittent false all-clear on equipment, which is precisely the bug
+    # class the Install Risk fix in this branch was written to eliminate. Filtering on it
+    # returning nothing is discoverable and consistent; a stale True/False is neither.
+    # Making this correct needs an invalidation hook on maintenance.request, not a keyword.
     equipment_blocked = fields.Boolean(
         string="Equipment Blocked", compute="_compute_equipment_readiness",
         search="_search_equipment_blocked")
@@ -1777,17 +1789,6 @@ class ProjectTask(models.Model):
             lambda task: matches(task[field_name]))
         return [("id", "in", tasks.ids)]
 
-    def _search_cad_cutlist_review_required(self, operator, value):
-        return self._search_boolean_compute(
-            "cad_cutlist_review_required", operator, value)
-
-    def _search_pm_stage_mismatch(self, operator, value):
-        return self._search_boolean_compute("pm_stage_mismatch", operator, value)
-
-    def _search_southbrook_specs_complete(self, operator, value):
-        return self._search_boolean_compute(
-            "southbrook_specs_complete", operator, value)
-
     def _search_selection_compute(self, field_name, operator, value):
         if operator not in ("=", "!=", "in", "not in"):
             return [("id", "=", 0)]
@@ -1807,22 +1808,8 @@ class ProjectTask(models.Model):
         return self._search_selection_compute(
             "southbrook_production_release_state", operator, value)
 
-    def _search_material_at_risk(self, operator, value):
-        return self._search_boolean_compute("material_at_risk", operator, value)
-
-    def _search_crew_gap(self, operator, value):
-        return self._search_boolean_compute("crew_gap", operator, value)
-
     def _search_equipment_blocked(self, operator, value):
         return self._search_boolean_compute("equipment_blocked", operator, value)
-
-    def _search_workcenter_over_capacity(self, operator, value):
-        return self._search_boolean_compute(
-            "workcenter_over_capacity", operator, value)
-
-    def _search_unscheduled_workorder_count(self, operator, value):
-        return self._search_integer_compute(
-            "unscheduled_workorder_count", operator, value)
 
     @api.depends("production_ids", "production_ids.bom_id")
     def _compute_eco(self):
@@ -2182,8 +2169,16 @@ class ProjectTask(models.Model):
                     sorted(crew.mapped("name")))
 
     # --- TASK 3: Work-center load compute ----------------------------------
+    # The capacity threshold is derived from the work centre's own efficiency and its
+    # calendar's hours_per_day. Those were read but never declared, which was harmless
+    # while the field was computed on the fly and is NOT harmless now that it is stored:
+    # changing a work centre's efficiency or working hours would leave every task's
+    # over-capacity flag frozen at its old value.
     @api.depends("production_ids.workorder_ids.workcenter_id",
-                 "production_ids.workorder_ids.duration_expected")
+                 "production_ids.workorder_ids.duration_expected",
+                 "production_ids.workorder_ids.workcenter_id.time_efficiency",
+                 "production_ids.workorder_ids.workcenter_id.resource_calendar_id",
+                 "production_ids.workorder_ids.workcenter_id.resource_calendar_id.hours_per_day")
     def _compute_workcenter_load(self):
         for task in self:
             wos = task.production_ids.mapped("workorder_ids")
