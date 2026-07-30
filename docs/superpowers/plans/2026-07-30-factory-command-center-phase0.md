@@ -528,12 +528,34 @@ In `__manifest__.py` line 32, change `"version": "19.0.2.0.0",` to `"version": "
 
 - [ ] **Step 3: Run the migration against a disposable copy of production**
 
-Never against live. Take a copy on the QNAP first:
+Never against live. Take a copy on the QNAP first.
+
+**Do not use `WITH TEMPLATE southbrook`** — Postgres refuses to copy a template
+that has active sessions, and `southbrook` is a live Odoo with a connection
+pool. It fails with `source database "southbrook" is being accessed by other
+users`. Dump and restore instead:
 
 ```bash
 ssh qnap-tunnel 'SD=/share/CACHEDEV3_DATA/.qpkg/container-station/bin/system-docker; \
   $SD exec -i southbrook-postgres psql -U odoo -d postgres -c \
-  "CREATE DATABASE southbrook_dedupe_test WITH TEMPLATE southbrook OWNER odoo;"'
+  "CREATE DATABASE southbrook_dedupe_test OWNER odoo;" && \
+  $SD exec -i southbrook-postgres sh -c \
+  "pg_dump -U odoo -d southbrook | psql -U odoo -q -d southbrook_dedupe_test" && \
+  $SD exec -i southbrook-postgres psql -U odoo -d southbrook_dedupe_test -tAc \
+  "SELECT count(*) FROM southbrook_command_exception;"'
+```
+
+Expected: the restore prints no errors and the count matches production
+(~38,917). The copy is ~250 MB; drop it in Step 6 rather than leaving it on the
+QNAP, which runs close to its resource ceiling.
+
+Neutralise the copy's crons before upgrading it, so the MI sweep cannot fire
+against the test database and re-seed the very duplicates being measured:
+
+```bash
+ssh qnap-tunnel 'SD=/share/CACHEDEV3_DATA/.qpkg/container-station/bin/system-docker; \
+  $SD exec -i southbrook-postgres psql -U odoo -d southbrook_dedupe_test -c \
+  "UPDATE ir_cron SET active = false;"'
 ```
 
 Then upgrade the copy and read the migration's own log line:
