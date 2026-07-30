@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Inherits the costing module's own view so this runs AFTER it and the field is
+         guaranteed to be in the arch. Inheriting the core form instead would race it. -->
+    <record id="view_mrp_workcenter_form_wc_type_optional" model="ir.ui.view">
+        <field name="name">mrp.workcenter.form.wc-type-optional</field>
+        <field name="model">mrp.workcenter</field>
+        <field name="inherit_id" ref="mrp_product_costing.mrp_workcenter_view_mpc"/>
+        <field name="arch" type="xml">
+            <field name="wc_type" position="attributes">
+                <attribute name="required">0</attribute>
+                <attribute name="help">Man or Machine. Selects which GL account absorbs
+                    this work centre's direct cost — labour or machine run. Left empty,
+                    the cost posts to Machine Run by default, so set it deliberately on
+                    any work centre whose cost is genuinely labour.</attribute>
+            </field>
+        </field>
+    </record>
+
+</odoo>
