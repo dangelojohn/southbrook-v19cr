@@ -256,6 +256,38 @@ class SouthbrookCommandException(models.Model):
     )
 
     # ------------------------------------------------------------------
+    # Recurrence signal (2026-07-30, alongside dedupe_key).
+    #
+    # Collapsing the keying-bug backlog to one survivor per condition throws
+    # away "this has re-fired 2,000 times since 5 July" unless something
+    # captures it explicitly. Written IMPERATIVELY by _upsert_exception() in
+    # command_center_materialize.py (never @api.depends against a foreign
+    # model — see the module docstring's design invariants) and backfilled
+    # once, on the collapsed bucket, by the 19.0.3.0.0 migration.
+    #
+    # Deliberately NOT mail.thread-tracked, even though this model inherits
+    # mail.thread. A live blocker re-fires every ~15 minutes forever — that
+    # churn is exactly why dedupe_key exists — so a tracked field here would
+    # write a mail.message tracking row every 15 minutes for the entire life
+    # of the condition. That is the same flood the migration's archive write
+    # (untracked fields only, 2000-row slices) was built to avoid at
+    # collapse time; tracking these fields would just reintroduce it going
+    # forward instead of once at migration time. Plain stored fields:
+    # severity/state changes are still tracked and remain the audit trail.
+    # ------------------------------------------------------------------
+    occurrence_count = fields.Integer(
+        default=1,
+        copy=False,
+        help="Number of times this business condition has been observed. "
+             "A re-fire of the same dedupe_key increments this instead of "
+             "minting a new row.",
+    )
+    last_seen = fields.Datetime(
+        copy=False,
+        help="When this business condition was most recently observed.",
+    )
+
+    # ------------------------------------------------------------------
     # Create: sequence-backed name (falls back gracefully if no
     # ir.sequence with this code has been registered by a later data file)
     # ------------------------------------------------------------------

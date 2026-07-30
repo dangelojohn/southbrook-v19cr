@@ -48,6 +48,36 @@ class TestPhase2Materializer(TransactionCase):
         self.assertEqual(a.id, b.id, "same key must upsert, not duplicate")
         self.assertEqual(a.impact_summary, "updated")
 
+    def test_upsert_increments_occurrence_and_advances_last_seen(self):
+        exc = self.Exc._upsert_exception("mi_blocker", "southbrook.mi.check", 5010,
+                                         self._vals())
+        self.assertEqual(exc.occurrence_count, 1, "a fresh row starts at 1")
+        self.assertTrue(exc.last_seen, "a fresh row stamps last_seen")
+        first_seen = exc.last_seen
+
+        # Re-fire the same condition a few times (the cron re-evaluates every
+        # 15 minutes; this simulates 3 sweeps finding the same open row).
+        for _ in range(3):
+            self.Exc._upsert_exception(
+                "mi_blocker", "southbrook.mi.check", 5010,
+                self._vals(impact_summary="refire"))
+        exc.invalidate_recordset()
+
+        self.assertEqual(exc.occurrence_count, 4,
+                         "1 initial + 3 re-fires must equal exactly 4, "
+                         "never merely > 1")
+        self.assertGreaterEqual(exc.last_seen, first_seen,
+                                "last_seen must advance, never go backwards")
+
+        # No second row was minted for the same dedupe_key.
+        matches = self.Exc.with_context(active_test=False).search([
+            ("source_model", "=", "southbrook.mi.check"),
+            ("source_res_id", "=", 5010),
+        ])
+        self.assertEqual(len(matches), 1,
+                         "repeated upserts of the same condition must never "
+                         "create a second row")
+
     def test_upsert_preserves_owner_and_state_on_open_row(self):
         exc = self.Exc._upsert_exception("mi_blocker", "southbrook.mi.check", 5002,
                                          self._vals())

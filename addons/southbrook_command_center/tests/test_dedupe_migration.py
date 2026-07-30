@@ -7,6 +7,7 @@ bug, with the human-touched-one election rule verified.
 import importlib.util
 import os
 
+from odoo import fields
 from odoo.tests import TransactionCase, tagged
 
 
@@ -414,6 +415,73 @@ class TestDedupeMigration(TransactionCase):
             ("mo_id", "=", mo.id),
         ])
         self.assertEqual(all_after, 8, "No rows deleted")
+
+    def test_migrate_backfills_survivor_occurrence_count_and_last_seen(self):
+        """Before archiving, the migration must count the collapsed bucket:
+        the survivor's occurrence_count becomes the EXACT number of rows
+        collapsing into it (survivor included), and last_seen becomes the
+        newest create_date among them — so a chronic condition reads "seen
+        9 times, last at <ts>" instead of looking like a fresh incident."""
+        mo = self.env["mrp.production"].search([], limit=1)
+
+        check = self.env["southbrook.mi.check"].create({
+            "name": "Missing cutlist",
+            "message": "Cutlist divergence detected",
+            "category": "cut",
+            "severity": "blocker",
+            "production_id": mo.id if mo else False,
+        })
+
+        # 9 historical duplicates for the same condition (the keying-bug
+        # shape). Distinct source_res_id values, same (mo_id, etype) bucket.
+        exceptions = []
+        for i in range(9):
+            exceptions.append(self.Exc.create({
+                "exception_type": "cutlist_divergence",
+                "source_model": "southbrook.mi.check",
+                "source_res_id": 902000 + i,
+                "mo_id": mo.id,
+                **self._vals(),
+            }))
+
+        # create_date is not writable through the ORM; stamp distinct values
+        # via SQL, deliberately out of creation order, so the newest value is
+        # unambiguous and NOT simply "the last row created".
+        dates = [
+            "2026-06-01 00:00:00", "2026-06-15 00:00:00", "2026-07-20 09:30:00",
+            "2026-06-10 00:00:00", "2026-05-01 00:00:00", "2026-06-25 00:00:00",
+            "2026-06-05 00:00:00", "2026-06-12 00:00:00", "2026-06-18 00:00:00",
+        ]
+        newest = max(dates)
+        for exc, dt in zip(exceptions, dates):
+            self.env.cr.execute(
+                "UPDATE southbrook_command_exception SET create_date = %s "
+                "WHERE id = %s",
+                (dt, exc.id),
+            )
+
+        migration = self._load_migration()
+        migration.migrate(self.env.cr, "19.0.2.0.0")
+
+        self.Exc.invalidate_recordset()
+
+        survivors = self.Exc.search([
+            ("source_model", "=", "southbrook.mi.check"),
+            ("exception_type", "=", "cutlist_divergence"),
+            ("mo_id", "=", mo.id),
+            ("active", "=", True),
+        ])
+        self.assertEqual(len(survivors), 1)
+        survivor = survivors[0]
+
+        self.assertEqual(
+            survivor.occurrence_count, 9,
+            "occurrence_count must equal the exact number of rows collapsed "
+            "into the survivor (survivor included), not merely > 1")
+        self.assertEqual(
+            fields.Datetime.to_string(survivor.last_seen), newest,
+            "last_seen must be the newest create_date among the collapsed "
+            "rows, not the survivor's own create_date")
 
     def test_migrate_keys_non_mi_sources(self):
         """Non-MI sources are keyed on the legacy triple."""

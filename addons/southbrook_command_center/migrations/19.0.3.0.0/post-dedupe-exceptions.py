@@ -9,6 +9,12 @@ which the MI sweep cron recreates every 15 minutes.
 This elects one survivor per live MI condition, keys it, and archives the rest
 with a NULL dedupe_key (NULLs do not collide in a unique index, so archived
 rows stay in the table and stay auditable). Reversible: nothing is deleted.
+
+Before a bucket's duplicates are archived, the survivor's occurrence_count is
+backfilled to the exact number of rows collapsing into it (itself included)
+and last_seen to the newest create_date among them — otherwise the collapse
+would silently destroy the recurrence signal ("this has re-fired 2,000 times
+since 5 July") that made it worth building this migration in the first place.
 """
 import logging
 
@@ -85,10 +91,29 @@ def migrate(cr, version):
             # cron-scan materializer will mint a fresh, correctly-keyed row
             # for it on its next pass.
             continue
+        # Recurrence signal: before this bucket's duplicates are archived,
+        # capture how many rows are collapsing into `winner` (survivor
+        # included) and the newest create_date among them, so the survivor
+        # reads "seen N times, last at <ts>" instead of looking like a fresh
+        # single incident. `candidates` is already the exact bucket the
+        # election above just computed (same domain, same claimed_ids
+        # exclusion) — reuse it rather than re-deriving anything. Aggregate
+        # with a targeted SQL COUNT/MAX over just this bucket's ids (a
+        # handful to a few thousand rows per MO/etype in production, not all
+        # 39,070 at once) so Postgres does the aggregation instead of the
+        # ORM pulling every candidate's create_date into Python memory.
+        cr.execute(
+            "SELECT count(*), max(create_date) "
+            "FROM southbrook_command_exception WHERE id = ANY(%s)",
+            (candidates.ids,),
+        )
+        occurrence_count, last_seen = cr.fetchone()
         winner.write({
             "dedupe_key": key,
             "source_res_id": check.id,
             "active": True if winner.state not in ("resolved", "dismissed") else winner.active,
+            "occurrence_count": occurrence_count,
+            "last_seen": last_seen,
         })
         survivors.add((winner.id, key))
         claimed_ids.add(winner.id)

@@ -70,6 +70,12 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
         ``source_res_id`` is refreshed to the live source row on every upsert,
         so click-through always opens a record that still exists — before this,
         18,240 rows pointed at deleted mi.check ids.
+
+        ``occurrence_count`` / ``last_seen`` are maintained here too, on every
+        upsert: a matched row gets its count incremented and its last_seen
+        stamped to now (this IS a fresh observation of the condition,
+        regardless of whether the row's workflow state is touched); a
+        brand-new row starts at count=1 / last_seen=now.
         """
         Exc = self.sudo().with_context(active_test=False)
         key = dedupe_key or self._dedupe_key_for(
@@ -87,9 +93,12 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
         narrative = {k: vals[k] for k in
                      ("severity", "severity_rank", "impact_summary",
                       "recommended_action", "why_text") if k in vals}
+        now = fields.Datetime.now()
         if existing:
             narrative["dedupe_key"] = key
             narrative["source_res_id"] = source_res_id
+            narrative["occurrence_count"] = existing.occurrence_count + 1
+            narrative["last_seen"] = now
             if not existing.active and reactivate:
                 existing.write({**narrative, "active": True, "state": "new"})
             else:
@@ -101,6 +110,8 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
             "source_model": source_model,
             "source_res_id": source_res_id,
             "dedupe_key": key,
+            "occurrence_count": 1,
+            "last_seen": now,
         })
         return Exc.create(create_vals)
 
