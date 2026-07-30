@@ -17,6 +17,8 @@
                         domain="[('severity','=','critical')]"/>
                 <filter name="mine" string="Assigned to me"
                         domain="[('owner_id','=',uid)]"/>
+                <filter name="chronic" string="Chronic (5+ recurrences)"
+                        domain="[('occurrence_count','>=',5)]"/>
                 <separator/>
                 <!-- Resolved/Dismissed are archived (active=False), so grouping
                      by State hides them by default. This filter reveals them
@@ -45,7 +47,7 @@
         <field name="model">southbrook.command.exception</field>
         <field name="arch" type="xml">
             <list string="Exceptions" default_order="severity_rank asc, create_date desc"
-                  decoration-danger="severity=='critical'"
+                  decoration-danger="severity=='critical' or occurrence_count >= 5"
                   decoration-warning="severity=='high'">
                 <header>
                     <button name="action_refresh_exceptions" type="object"
@@ -58,6 +60,8 @@
                 <field name="owner_id"/>
                 <field name="state"/>
                 <field name="create_date"/>
+                <field name="occurrence_count" string="Seen×"/>
+                <field name="last_seen" optional="show"/>
                 <field name="severity_rank" column_invisible="1"/>
             </list>
         </field>
