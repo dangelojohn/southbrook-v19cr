@@ -1,6 +1,6 @@
 {
     'name': 'Southbrook Premium MRP Orchestration',
-    'version': '19.0.4.9.0',
+    'version': '19.0.5.0.0',
     'summary': 'Closes the loop: cron-driven readiness/MI/analytics, always-on project-task spine, '
                'practical-intelligence telemetry, generative + planning activation.',
     'description': """
@@ -100,6 +100,16 @@ PHASE 3 — Generative + Planning Activation
             # dashboard. Stacks the two top tile groups vertically on
             # phones, shrinks display-4 numbers, hides verbose columns.
             'southbrook_premium_orchestration/static/src/scss/kitchen_ops_dashboard.scss',
+            # Kitchen Jobs board remediation (contract §6, BlindSpot review
+            # of action-1298): the OWL header band (KPI chips, DO NEXT,
+            # blocker Pareto, provenance/legend) that skj_board_intel
+            # feeds. JS + XML template share one bundle with their SCSS,
+            # matching this repo's own precedent (see
+            # southbrook_command_center/__manifest__.py) rather than a
+            # separate qweb bundle.
+            'southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss',
+            'southbrook_premium_orchestration/static/src/js/kitchen_jobs_kanban.js',
+            'southbrook_premium_orchestration/static/src/xml/kitchen_jobs_kanban.xml',
         ],
     },
     'installable': True,

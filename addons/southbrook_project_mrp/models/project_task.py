@@ -295,6 +295,14 @@ class ProjectTask(models.Model):
         compute="_compute_phase1_operational_context",
         store=True,
         readonly=True,
+        # Kitchen Jobs board (contract §2): the kanban must render all four
+        # columns even when a filtered domain has zero tasks in one or more
+        # of them — e.g. "every open job is blocked" should still show
+        # empty Ready/Review/Info columns, not silently collapse to one.
+        # group_expand=True on a Selection field is a native Odoo feature
+        # (see sale.order.state, fleet.vehicle.log.services.stage_id) —
+        # no custom _group_expand_* method needed.
+        group_expand=True,
     )
     readiness_score = fields.Integer(
         string="Readiness Score",

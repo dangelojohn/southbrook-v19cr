@@ -7,6 +7,11 @@
         "which task id was that kitchen?" problem by surfacing the
         sale-order backlink, install date, and readiness telemetry
         on a list-style kanban grouped by readiness_decision.
+
+        Card payload rewrite per CONTRACT_kitchen_jobs_board.md §3.
+        "Absence of data never renders as good" — every missing value
+        below renders an explicit marker (skj-unknown / skj-warn), it
+        is never left blank and never conveyed by colour alone.
     -->
 
     <record id="view_kitchen_jobs_kanban" model="ir.ui.view">
@@ -15,17 +20,26 @@
         <field name="priority">16</field>
         <field name="arch" type="xml">
             <kanban default_group_by="readiness_decision"
-                    class="o_kanban_small_column"
+                    class="o_kanban_small_column skj-board"
                     sample="1"
-                    js_class="kanban_view">
+                    js_class="kitchen_jobs_kanban">
                 <field name="name"/>
-                <field name="partner_id"/>
+                <field name="skj_customer_display"/>
                 <field name="x_southbrook_sale_order_id"/>
-                <field name="install_due_date"/>
+                <field name="skj_identity_needs_naming"/>
                 <field name="readiness_decision"/>
                 <field name="readiness_score"/>
-                <field name="southbrook_production_release_state"/>
+                <field name="skj_days_late"/>
+                <field name="date_deadline"/>
+                <field name="current_bottleneck_workcenter_id"/>
+                <field name="top_blocker"/>
+                <field name="next_best_action"/>
+                <field name="unscheduled_workorder_count"/>
+                <field name="unassigned_workorder_count"/>
                 <field name="job_at_risk"/>
+                <field name="user_ids"/>
+                <field name="job_install_due"/>
+                <field name="install_date_missing"/>
                 <progressbar field="readiness_decision"
                              colors='{"blocked":"danger","review":"warning","ready":"success"}'/>
                 <templates>
@@ -35,34 +49,99 @@
                                 <strong class="o_kanban_record_title">
                                     <field name="name"/>
                                 </strong>
-                                <small class="o_kanban_record_subtitle text-muted">
-                                    <field name="partner_id"/>
-                                </small>
                             </div>
-                            <field name="readiness_decision"
-                                   widget="label_selection"
-                                   options="{'classes': {'blocked':'danger','review':'warning','ready':'success'}}"/>
                         </div>
                         <div class="o_kanban_record_body">
-                            <div t-if="record.x_southbrook_sale_order_id.raw_value">
-                                <span class="fw-bold">SO: </span>
-                                <field name="x_southbrook_sale_order_id"/>
+                            <!-- L1: customer + SO ref + needs-naming tag -->
+                            <div class="skj-l1">
+                                <t t-if="record.skj_customer_display.raw_value">
+                                    <span class="skj-customer">
+                                        <field name="skj_customer_display"/>
+                                    </span>
+                                </t>
+                                <t t-else="">
+                                    <span class="skj-unknown">no customer in data</span>
+                                </t>
+                                <t t-if="record.x_southbrook_sale_order_id.raw_value">
+                                    <span class="skj-so"> · SO:
+                                        <field name="x_southbrook_sale_order_id"/>
+                                    </span>
+                                </t>
+                                <span class="skj-tag skj-warn"
+                                      t-if="record.skj_identity_needs_naming.raw_value">needs naming</span>
                             </div>
-                            <div t-if="record.install_due_date.raw_value">
-                                <span class="fw-bold">Install: </span>
-                                <field name="install_due_date"/>
+
+                            <!-- L2: readiness pill (decision + score) + days-late chip -->
+                            <div class="skj-l2">
+                                <t t-if="!record.readiness_decision.raw_value || record.readiness_decision.raw_value === 'info' || record.readiness_score.raw_value === false">
+                                    <span class="skj-pill skj-unknown">not computed</span>
+                                </t>
+                                <t t-else="">
+                                    <field name="readiness_decision"
+                                           widget="label_selection"
+                                           options="{'classes': {'blocked':'danger','review':'warning','ready':'success'}}"/>
+                                    <span class="skj-score"> ·
+                                        <field name="readiness_score"/>/100</span>
+                                </t>
+                                <t t-if="record.skj_days_late.raw_value &gt; 0">
+                                    <span class="skj-chip skj-late">+<field name="skj_days_late"/>d late</span>
+                                </t>
+                                <t t-elif="!record.date_deadline.raw_value">
+                                    <span class="skj-chip skj-unknown">no deadline in data</span>
+                                </t>
                             </div>
-                            <div>
-                                <span class="fw-bold">Readiness: </span>
-                                <field name="readiness_score"/> / 100
+
+                            <!-- L3: station + blocker, next-best-action sub-line -->
+                            <div class="skj-l3">
+                                <t t-if="record.current_bottleneck_workcenter_id.raw_value">
+                                    <span class="skj-station">
+                                        <field name="current_bottleneck_workcenter_id"/>
+                                    </span>
+                                </t>
+                                <t t-else="">
+                                    <span class="skj-unknown">no station data</span>
+                                </t>
+                                <t t-if="record.top_blocker.raw_value">
+                                    <span class="skj-blocker"> ·
+                                        <field name="top_blocker"/>
+                                    </span>
+                                </t>
                             </div>
-                            <div>
-                                <field name="southbrook_production_release_state"
-                                       widget="label_selection"
-                                       options="{'classes': {'blocked':'danger','review':'warning','ready':'success'}}"/>
+                            <div class="skj-nba" t-if="record.next_best_action.raw_value">
+                                →
+                                <field name="next_best_action"/>
                             </div>
-                            <div t-if="record.job_at_risk.raw_value">
-                                <span class="badge text-bg-danger">At Risk</span>
+
+                            <!-- L4: WO reality + at-risk chip -->
+                            <div class="skj-l4">
+                                <t t-if="record.unscheduled_workorder_count.raw_value === 0 &amp;&amp; record.unassigned_workorder_count.raw_value === 0">
+                                    <span class="skj-chip skj-ok">WOs scheduled ✓</span>
+                                </t>
+                                <t t-else="">
+                                    <span class="skj-chip skj-warn">
+                                        <field name="unscheduled_workorder_count"/> unscheduled</span>
+                                    <span class="skj-chip skj-warn">
+                                        <field name="unassigned_workorder_count"/> unassigned</span>
+                                </t>
+                                <span class="skj-chip skj-atrisk" t-if="record.job_at_risk.raw_value">At Risk</span>
+                            </div>
+
+                            <!-- L5: assignees + install date -->
+                            <div class="skj-l5">
+                                <t t-if="record.user_ids.raw_value.length">
+                                    <field name="user_ids" widget="many2many_avatar_user"/>
+                                </t>
+                                <t t-else="">
+                                    <span class="skj-chip skj-warn">unassigned</span>
+                                </t>
+                                <t t-if="record.job_install_due.raw_value">
+                                    <span class="skj-install">Install
+                                        <field name="job_install_due"/>
+                                    </span>
+                                </t>
+                                <t t-elif="record.install_date_missing.raw_value">
+                                    <span class="skj-unknown">no install date in data</span>
+                                </t>
                             </div>
                         </div>
                     </t>
@@ -84,11 +163,14 @@
                 <field name="partner_id"/>
                 <field name="x_southbrook_sale_order_id"/>
                 <field name="install_due_date"/>
+                <field name="user_ids" widget="many2many_avatar_user" optional="show"/>
                 <field name="readiness_decision" widget="badge"
                        decoration-danger="readiness_decision == 'blocked'"
                        decoration-warning="readiness_decision == 'review'"
                        decoration-success="readiness_decision == 'ready'"/>
                 <field name="readiness_score"/>
+                <field name="skj_days_late" string="Days late"/>
+                <field name="unscheduled_workorder_count"/>
                 <field name="southbrook_production_release_state"/>
                 <field name="job_at_risk" widget="boolean_toggle" readonly="1"/>
             </list>
@@ -127,6 +209,16 @@
                 <filter name="missing_install_date"
                         string="Missing Install Date"
                         domain="[('install_date_missing','=',True)]"/>
+                <separator/>
+                <filter name="unassigned"
+                        string="Unassigned"
+                        domain="[('user_ids','=',False)]"/>
+                <filter name="unscheduled"
+                        string="Has Unscheduled WOs"
+                        domain="[('unscheduled_workorder_count','&gt;',0)]"/>
+                <filter name="late"
+                        string="Past Deadline"
+                        domain="[('date_deadline','&lt;','today')]"/>
                 <group name="group_by_kitchen_jobs">
                     <filter name="group_readiness"
                             string="Readiness"
@@ -137,6 +229,9 @@
                     <filter name="group_partner"
                             string="Customer"
                             context="{'group_by': 'partner_id'}"/>
+                    <filter name="group_install_week"
+                            string="Install Week"
+                            context="{'group_by': 'job_install_due:week'}"/>
                 </group>
             </search>
         </field>

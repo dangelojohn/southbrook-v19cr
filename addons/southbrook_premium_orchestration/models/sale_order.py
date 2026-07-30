@@ -295,6 +295,17 @@ class SaleOrder(models.Model):
         for fname, value in spec_map.items():
             if value and fname in Task._fields:
                 vals[fname] = value
+
+        # partner_id — the job's customer. Nothing above sets it: the spine
+        # gets project_id, stage_id and the SO backlink, but the task's own
+        # partner_id was left to whatever project.task's default resolves
+        # to (usually nothing), even though the order it was born from
+        # plainly has one. `not vals.get("partner_id")` is belt-and-braces
+        # — this is currently the only place in this method that could set
+        # the key — so a future edit that starts setting it earlier in
+        # this same vals dict doesn't get silently clobbered here.
+        if self.partner_id and not vals.get("partner_id"):
+            vals["partner_id"] = self.partner_id.id
         return vals
 
     def _build_kitchen_task_name(self, inferred=None):

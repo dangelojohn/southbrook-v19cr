@@ -1,0 +1,464 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+// Kitchen Jobs board — header intelligence band + card overrides.
+// Governing rule (CONTRACT_kitchen_jobs_board.md §0, verbatim):
+// "Absence of data never renders as good."
+//
+// SCOPING — read before touching this file:
+// The kanban arch carries class="skj-board" (B3's views/kitchen_jobs_views.xml).
+// Verified against this machine's v19 source
+// (web/static/src/views/utils.js#computeViewClassName +
+// web/static/src/views/kanban/kanban_controller.xml): that class lands on
+// the OUTER kanban wrapper div together with Odoo's own "o_kanban_view"
+// class, i.e. on `.o_kanban_view.skj-board` — NOT on `.o_kanban_renderer`
+// (that div's class list is hardcoded in kanban_renderer.xml and never
+// receives the arch's class attribute).
+// The injected header band (`.o_kitchen_jobs_board`, from
+// kitchen_jobs_kanban.xml) and the native card tree (`.o_kanban_renderer`
+// → `.o_kanban_record`) are SIBLINGS under that same wrapper — not nested
+// in each other — so the --skj-* custom properties are declared once on
+// `.o_kanban_view.skj-board`, their nearest common ancestor, and both
+// branches read them via normal CSS custom-property inheritance.
+// EVERYTHING in this file lives under `.o_kanban_view.skj-board`. Never a
+// bare html/body or unscoped global selector here — a past leak like that
+// broke every backend screen (repo memory:
+// odoo_client_action_scss_global_leak.md).
+.o_kanban_view.skj-board {
+    // ---------------- tokens (ported from mrp_explorer.scss, --mpx- -> --skj-) ----------------
+    --skj-accent: #714b67;
+    --skj-ink: #2a2730;
+    --skj-muted: #6d6971;
+    --skj-faint: #b7b1ba;
+    --skj-border: #e4e0e4;
+    --skj-panel: #ffffff;
+    --skj-sunk: #fbfafb;
+    --skj-line: #efeaee;
+    --skj-shadow: 0 2px 6px rgba(30, 20, 30, .09), 0 1px 2px rgba(30, 20, 30, .06);
+
+    // status palette — CONTRACT §6, values ported verbatim from
+    // mrp_explorer.scss's WCAG-AA-fixed pairs (blocked/at-risk chips ~L100-160,
+    // 316-320; at-risk header rollup ~L516; DO NEXT card accents ~L585-594).
+    --skj-blocked-bg: #f7dcd7;
+    --skj-blocked-fg: #bc2f1c;
+    --skj-atrisk-bg: #fbe0d1;
+    --skj-atrisk-fg: #b04319; // distinct from blocked red — reviewed requirement, do not merge
+    --skj-late-fg: #b3261e;
+    --skj-ok-fg: #2f8f4f;
+    --skj-unknown-fg: #a7a7b2;
+    --skj-warn-bg: #f7e9c8;
+    --skj-warn-fg: #7a5a12;
+
+    // typography — 12px floor everywhere (CONTRACT §6 + repo-wide WCAG pass
+    // this ports from: mrp_explorer.scss WI-7).
+    --skj-fs-xs: 12px;
+    --skj-fs-sm: 13px;
+    --skj-fs-md: 14px;
+    --skj-fs-lg: 16px;
+    --skj-fs-xl: 18px;
+
+    font-size: var(--skj-fs-sm);
+    color: var(--skj-ink);
+
+    // keyboard focus (a11y) — scoped to our own interactive elements only.
+    .o_kitchen_jobs_board button:focus-visible,
+    .o_kitchen_jobs_board summary:focus-visible {
+        outline: 2px solid var(--skj-accent);
+        outline-offset: 1px;
+        border-radius: 4px;
+    }
+
+    // ================================================================
+    // Header intelligence band
+    // ================================================================
+    .o_kitchen_jobs_board {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 16px;
+        background: linear-gradient(180deg, color-mix(in srgb, var(--skj-accent) 8%, var(--skj-panel)), var(--skj-panel));
+        border-bottom: 1px solid var(--skj-border);
+        font-size: var(--skj-fs-sm);
+
+        // ---------------- 1) KPI row ----------------
+        .skj-kpirow {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .skj-livepill {
+            font-size: var(--skj-fs-xs);
+            font-weight: 800;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: #e5f1ea;
+            color: #287b44; // 4.52:1 on this bg — WCAG AA, ported from mrp_explorer.scss L91
+            &.is-error { background: var(--skj-blocked-bg); color: var(--skj-blocked-fg); }
+        }
+        .skj-provline {
+            font-size: var(--skj-fs-xs);
+            color: var(--skj-muted);
+            white-space: nowrap;
+        }
+        .skj-kpisep {
+            width: 1px;
+            align-self: stretch;
+            background: var(--skj-border);
+            margin: 0 2px;
+        }
+        .skj-skel {
+            font-size: var(--skj-fs-xs);
+            font-style: italic;
+            color: var(--skj-muted);
+        }
+
+        // ⓘ provenance popover — a native <details>/<summary> pair (no
+        // popover-positioning JS to maintain; simplest robust choice per
+        // build contract). Rendered as a small anchored panel, matching
+        // the visual language of mrp_explorer.scss's #provpop.
+        .skj-provpop {
+            position: relative;
+            display: inline-block;
+
+            .skj-infoic {
+                display: list-item;
+                list-style: none;
+                border: 0;
+                background: transparent;
+                padding: 0 2px;
+                font-size: var(--skj-fs-sm);
+                line-height: 1;
+                cursor: pointer;
+                color: var(--skj-muted);
+                &::-webkit-details-marker { display: none; }
+                &:hover { color: var(--skj-accent); }
+            }
+            .skj-provbody {
+                position: absolute;
+                z-index: 40;
+                top: 100%;
+                left: 0;
+                margin-top: 4px;
+                width: max-content;
+                // Min() capitalised — libsass has a builtin lowercase min()
+                // that collides here and breaks the DB-wide style compile
+                // (repo memory: odoo19_libsass_lowercase_min_trap.md; same
+                // trap the reference mrp_explorer.scss documents at its
+                // own .mpx-provpop rule).
+                max-width: Min(420px, calc(100vw - 32px));
+                background: var(--skj-panel);
+                color: var(--skj-ink);
+                border: 1px solid var(--skj-border);
+                border-radius: 10px;
+                box-shadow: var(--skj-shadow);
+                padding: 10px 14px;
+                font-size: var(--skj-fs-sm);
+                line-height: 1.45;
+            }
+        }
+
+        // ---------------- 2) DO NEXT band ----------------
+        .skj-donext {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            &.is-collapsed { gap: 0; }
+        }
+        .skj-donext-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .skj-donext-lb {
+            font-size: var(--skj-fs-xs);
+            font-weight: 800;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            color: var(--skj-accent);
+        }
+        .skj-donext-coll {
+            border: 0;
+            background: transparent;
+            cursor: pointer;
+            color: var(--skj-accent);
+            font-size: var(--skj-fs-md);
+            line-height: 1;
+            padding: 0 2px;
+            &:hover { color: var(--skj-ink); }
+        }
+        .skj-donext-skel {
+            font-size: var(--skj-fs-xs);
+            font-style: italic;
+            color: var(--skj-muted);
+        }
+        .skj-donext-ok {
+            font-size: var(--skj-fs-sm);
+            color: var(--skj-ok-fg);
+        }
+        .skj-donext-cards {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .skj-donext-card {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            width: 100%;
+            text-align: left;
+            font: inherit;
+            border: 1px solid var(--skj-border);
+            background: var(--skj-panel);
+            border-left: 4px solid var(--skj-accent);
+            border-radius: 8px;
+            padding: 6px 12px;
+            cursor: pointer;
+            &:hover { box-shadow: var(--skj-shadow); background: var(--skj-sunk); }
+        }
+        .skj-donext-l1 {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: var(--skj-fs-md);
+            font-weight: 700;
+            min-width: 0;
+        }
+        .skj-donext-rank {
+            flex: 0 0 auto;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: var(--skj-sunk);
+            color: var(--skj-muted);
+            font-size: var(--skj-fs-xs);
+            font-weight: 800;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .skj-donext-label {
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .skj-donext-l2 {
+            font-size: var(--skj-fs-xs);
+            color: var(--skj-muted);
+            padding-left: 24px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .skj-donext-dot { margin: 0 4px; }
+
+        // ---------------- 3) filter chip row + Legend ----------------
+        .skj-frow {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding-top: 2px;
+        }
+        .skj-fchip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: var(--skj-fs-xs);
+            font-weight: 700;
+            border: 1px solid var(--skj-border);
+            background: var(--skj-panel);
+            border-radius: 999px;
+            padding: 3px 10px;
+            cursor: pointer;
+            color: var(--skj-ink);
+            &:hover:not(:disabled) { background: var(--skj-sunk); }
+            &.is-active { background: var(--skj-accent); border-color: var(--skj-accent); color: #fff; }
+            &:disabled, &.is-missing {
+                cursor: not-allowed;
+                opacity: .55;
+                border-style: dashed;
+            }
+        }
+        .skj-fcount {
+            font-variant-numeric: tabular-nums;
+            font-weight: 800;
+        }
+        .skj-legend-btn {
+            margin-left: auto;
+            border: 1px solid var(--skj-border);
+            background: var(--skj-panel);
+            border-radius: 7px;
+            padding: 3px 10px;
+            font-size: var(--skj-fs-xs);
+            font-weight: 700;
+            cursor: pointer;
+            color: var(--skj-accent);
+            &:hover { background: var(--skj-sunk); }
+        }
+    }
+
+    // ================================================================
+    // Kanban column header — count-visible treatment.
+    // Columns themselves are stock DOM (no new elements); this only
+    // sharpens the native .o_kanban_counter that <progressbar> already
+    // renders per column, and keeps zero-count columns fully legible
+    // instead of fading them (bootstrap's own .opacity-25 utility reads as
+    // "less important" — for a board whose whole point is surfacing zeros
+    // honestly, a 0-job column should be exactly as readable as any other).
+    // ================================================================
+    .o_kanban_group {
+        .o_column_title { font-weight: 700; }
+        .o_kanban_counter.opacity-25 { opacity: .85; }
+    }
+
+    // ================================================================
+    // Kanban card content — CONTRACT §3 card anatomy classes.
+    // ================================================================
+    .o_kanban_record {
+        .skj-l1, .skj-l2, .skj-l3, .skj-l4, .skj-l5 {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            line-height: 1.35;
+        }
+        .skj-l1 { font-size: var(--skj-fs-sm); font-weight: 600; color: var(--skj-ink); }
+        .skj-l2 { font-size: var(--skj-fs-xs); }
+        .skj-l3 { font-size: var(--skj-fs-xs); color: var(--skj-muted); }
+        .skj-l4 { font-size: var(--skj-fs-xs); }
+        .skj-l5 { font-size: var(--skj-fs-xs); margin-top: 2px; }
+
+        // next-best-action sub-line (CONTRACT §3 L3: "→ <text>" own sub-line)
+        .skj-nba {
+            display: block;
+            font-size: var(--skj-fs-xs);
+            font-weight: 600;
+            color: var(--skj-accent);
+            margin-top: 1px;
+        }
+
+        // remaining card-line vocabulary from B3's template (views/kitchen_jobs_views.xml):
+        // identity emphasis, plain-text spans, and the two chip aliases it coined.
+        .skj-customer { font-weight: 700; }
+        .skj-so { color: var(--skj-muted); font-weight: 400; }
+        .skj-score { font-variant-numeric: tabular-nums; }
+        .skj-station { font-weight: 600; color: var(--skj-ink); }
+        .skj-blocker { color: var(--skj-muted); }
+        .skj-install { font-weight: 600; }
+        .skj-tag {
+            display: inline-flex;
+            align-items: center;
+            font-size: var(--skj-fs-xs);
+            font-weight: 700;
+            padding: 0 6px;
+            border-radius: 4px;
+            &.skj-warn { background: var(--skj-warn-bg); color: var(--skj-warn-fg); }
+        }
+        .skj-pill {
+            display: inline-flex;
+            align-items: center;
+            font-size: var(--skj-fs-xs);
+            font-weight: 700;
+            padding: 1px 8px;
+            border-radius: 999px;
+            &.skj-unknown { background: var(--skj-line); color: var(--skj-unknown-fg); font-style: italic; }
+        }
+    }
+
+    // ================================================================
+    // Shared chip / marker vocabulary — used by BOTH the header band
+    // (KPI row, filter row, Legend dialog swatches) and kanban card lines
+    // (skj-l1..skj-l5 inline chips). One vocabulary, one place it's
+    // defined, so header and cards can never visually disagree about what
+    // "blocked" or "unknown" look like.
+    // ================================================================
+    .skj-chip {
+        display: inline-flex;
+        align-items: center;
+        font-size: var(--skj-fs-xs);
+        font-weight: 700;
+        padding: 1px 8px;
+        border-radius: 999px;
+        background: var(--skj-line);
+        color: var(--skj-ink);
+        white-space: nowrap;
+    }
+    .skj-chip.skj-blocked,
+    .skj-fchip.skj-blocked.is-active { background: var(--skj-blocked-bg); color: var(--skj-blocked-fg); }
+    .skj-chip.skj-atrisk,
+    .skj-fchip.skj-atrisk.is-active { background: var(--skj-atrisk-bg); color: var(--skj-atrisk-fg); }
+    .skj-chip.skj-warn,
+    .skj-chip.skj-review,
+    .skj-fchip.skj-warn.is-active,
+    .skj-fchip.skj-review.is-active { background: var(--skj-warn-bg); color: var(--skj-warn-fg); }
+    .skj-chip.skj-ok,
+    .skj-fchip.skj-ok.is-active { background: #e5f1ea; color: var(--skj-ok-fg); }
+    .skj-chip.skj-unknown,
+    .skj-fchip.skj-unknown.is-active { background: var(--skj-line); color: var(--skj-unknown-fg); font-style: italic; }
+    .skj-chip.skj-late,
+    .skj-fchip.skj-late.is-active { background: var(--skj-blocked-bg); color: var(--skj-late-fg); font-weight: 800; }
+
+    // bare (non-chip) text markers — used inline on card lines for values
+    // that have no pill, e.g. "no customer in data".
+    .skj-unknown { color: var(--skj-unknown-fg); font-style: italic; }
+    .skj-late { color: var(--skj-late-fg); font-weight: 700; }
+    .skj-atrisk { color: var(--skj-atrisk-fg); font-weight: 700; }
+
+    // "known gap, not wired to the UI yet" — dashed underline, never a
+    // background pill (keeps it visually distinct from skj-unknown, which
+    // means "this value has never been computed").
+    .skj-unwired {
+        color: var(--skj-muted);
+        text-decoration: underline dashed;
+        text-underline-offset: 2px;
+        font-style: normal;
+    }
+}
+
+// ================================================================
+// Legend dialog — rendered inside a standard web.Dialog, i.e. OUTSIDE the
+// .o_kanban_view.skj-board DOM subtree (dialogs mount at the document
+// root). Its own small scope, still never bare html/body.
+// ================================================================
+.skj-legend-rule {
+    font-weight: 700;
+    font-size: 14px;
+    margin: 0 0 10px;
+}
+.skj-legend-table {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.skj-legend-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 13px;
+
+    .skj-chip, .skj-unwired { flex: 0 0 auto; min-width: 64px; text-align: center; }
+    .skj-legend-label { flex: 0 0 96px; font-weight: 700; }
+    .skj-legend-copy { color: #6d6971; }
+}
+.skj-legend-pareto {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px dashed #e4e0e4;
+}
+.skj-legend-sublabel {
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: #6d6971;
+    margin-bottom: 6px;
+}
+.skj-legend-prow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 13px;
+    padding: 2px 0;
+}

@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    SPDX-License-Identifier: LGPL-3.0-only
+    Kitchen Jobs board — header intelligence band templates.
+    See kitchen_jobs_kanban.js for the controller/component logic and
+    CONTRACT_kitchen_jobs_board.md §6 for the content spec this implements.
+-->
+<templates xml:space="preserve">
+
+    <!-- Extends the stock Kanban controller template to insert the header
+         band as a sibling BEFORE the renderer, inside <main class="o_content">
+         (verified against odoo/addons/web static views/kanban/kanban_controller.xml,
+         v19 source: static template = "web.KanbanView"). -->
+    <t t-name="southbrook_premium_orchestration.KitchenJobsKanbanView" t-inherit="web.KanbanView" t-inherit-mode="primary">
+        <xpath expr="//t[@t-component='props.Renderer']" position="before">
+            <KitchenJobsBoardHeader
+                state="skjState"
+                onToggleFilter="(name) => this.skjToggleFilter(name)"
+                onClearFilters="() => this.skjClearFilterChips()"
+                onRunDoNext="(item) => this.skjRunDoNextAction(item)"
+                onToggleCollapse="() => this.skjToggleDoNextCollapsed()"
+                onOpenLegend="() => this.skjOpenLegend()"
+                isFilterActive="(name) => this.skjIsFilterActive(name)"
+                isFilterMissing="(name) => this.skjIsFilterMissing(name)"
+                isAnyFilterActive="() => this.skjIsAnyFilterActive()"
+            />
+        </xpath>
+    </t>
+
+    <t t-name="southbrook_premium_orchestration.KitchenJobsBoardHeader">
+        <div class="o_kitchen_jobs_board">
+            <h2 class="visually-hidden">Kitchen jobs board intelligence</h2>
+
+            <!-- 1) KPI chip row + LIVE pill + provenance -->
+            <div class="skj-kpirow" aria-live="polite">
+                <span class="skj-livepill" t-att-class="{'is-error': isError}">LIVE</span>
+                <t t-if="showProvenance">
+                    <span class="skj-provline" t-if="provenanceLine" t-esc="provenanceLine"/>
+                    <span class="skj-provline skj-unknown" t-if="provenanceNeverComputed">not computed yet</span>
+                    <details class="skj-provpop">
+                        <summary class="skj-infoic" title="Provenance details" aria-label="Provenance details">ⓘ</summary>
+                        <div class="skj-provbody" t-esc="provenanceCopy"/>
+                    </details>
+                </t>
+                <span class="skj-kpisep" aria-hidden="true"/>
+                <t t-if="isLoading">
+                    <span class="skj-skel">computing…</span>
+                </t>
+                <t t-elif="isError">
+                    <span class="skj-chip skj-unknown">board intelligence unavailable</span>
+                </t>
+                <t t-else="">
+                    <t t-foreach="kpiChips" t-as="chip" t-key="chip.key">
+                        <span t-att-class="chip.cls" t-esc="chip.text"/>
+                    </t>
+                </t>
+            </div>
+
+            <!-- 2) DO NEXT band -->
+            <div class="skj-donext" t-att-class="{'is-collapsed': doNextCollapsed}">
+                <div class="skj-donext-head">
+                    <span class="skj-donext-lb">Do next</span>
+                    <button type="button" class="skj-donext-coll" t-att-aria-expanded="doNextCollapsed ? 'false' : 'true'" title="Collapse / expand DO NEXT" t-on-click="onCollapseClick">
+                        <t t-if="doNextCollapsed">▸</t>
+                        <t t-else="">▾</t>
+                    </button>
+                </div>
+                <t t-if="!doNextCollapsed">
+                    <t t-if="isLoading">
+                        <div class="skj-donext-skel">computing…</div>
+                    </t>
+                    <t t-elif="isError">
+                        <div class="skj-donext-skel skj-unknown">board intelligence unavailable</div>
+                    </t>
+                    <t t-elif="doNextEmpty">
+                        <div class="skj-donext-ok">No priority actions — board is clear.</div>
+                    </t>
+                    <t t-else="">
+                        <div class="skj-donext-cards">
+                            <button type="button" class="skj-donext-card" t-foreach="doNextItems" t-as="item" t-key="item.rank" t-on-click="() => this.onDoNextCardClick(item)">
+                                <span class="skj-donext-l1">
+                                    <span class="skj-donext-rank" t-esc="item.rank"/>
+                                    <span class="skj-donext-label" t-esc="item.label"/>
+                                </span>
+                                <span class="skj-donext-l2">
+                                    <span t-esc="item.detail"/>
+                                    <span class="skj-donext-dot">·</span>
+                                    <span t-esc="item.count"/>
+                                </span>
+                            </button>
+                        </div>
+                    </t>
+                </t>
+            </div>
+
+            <!-- 3) chip filter row + Legend -->
+            <div class="skj-frow" role="toolbar" aria-label="Board filters">
+                <button type="button" class="skj-fchip skj-all" t-att-class="{'is-active': allChipActive}" t-att-aria-pressed="allChipAriaPressed" t-on-click="onAllChipClick">All</button>
+                <button type="button" t-foreach="filterChips" t-as="chip" t-key="chip.name"
+                        t-att-class="chip.cls" t-att-disabled="chip.missing" t-att-title="chip.title"
+                        t-att-aria-pressed="chip.ariaPressed" t-on-click="() => this.onFilterChipClick(chip)">
+                    <span class="skj-fchip-label" t-esc="chip.label"/>
+                    <span t-att-class="chip.countCls" t-esc="chip.countText"/>
+                </button>
+                <button type="button" class="skj-legend-btn" t-on-click="onLegendClick">Legend</button>
+            </div>
+        </div>
+    </t>
+
+    <t t-name="southbrook_premium_orchestration.KitchenJobsLegendDialog">
+        <Dialog size="'md'" title="'Kitchen Jobs — legend'">
+            <p class="skj-legend-rule">"Absence of data never renders as good."</p>
+            <div class="skj-legend-table">
+                <div class="skj-legend-row" t-foreach="legendRows" t-as="row" t-key="row.label">
+                    <span t-att-class="row.cls">Sample</span>
+                    <span class="skj-legend-label" t-esc="row.label"/>
+                    <span class="skj-legend-copy" t-esc="row.copy"/>
+                </div>
+            </div>
+            <div class="skj-legend-pareto" t-if="hasPareto">
+                <div class="skj-legend-sublabel">Blocker breakdown (worst first)</div>
+                <div class="skj-legend-prow" t-foreach="paretoRows" t-as="p" t-key="p.gate">
+                    <span class="skj-legend-plabel" t-esc="p.label"/>
+                    <span class="skj-chip skj-blocked" t-esc="p.count"/>
+                </div>
+            </div>
+            <t t-set-slot="footer">
+                <button type="button" class="btn btn-secondary" t-on-click="onLensStationsClick">Stations · Process Explorer</button>
+                <button type="button" class="btn btn-secondary" t-on-click="onLensMaterialClick">Material Catalog</button>
+                <button type="button" class="btn btn-primary" t-on-click="() => this.props.close()">Close</button>
+            </t>
+        </Dialog>
+    </t>
+
+</templates>
