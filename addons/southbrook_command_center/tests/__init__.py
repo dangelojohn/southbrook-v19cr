@@ -4,3 +4,4 @@ from . import test_phase2
 from . import test_dedupe_key
 from . import test_explorer_bridge
 from . import test_dedupe_migration
+from . import test_health_available_points
