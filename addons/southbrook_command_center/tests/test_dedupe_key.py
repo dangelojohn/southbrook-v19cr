@@ -116,10 +116,10 @@ class TestDedupeKey(TransactionCase):
         self.assertIn(":cut:", key_with_mo,
                       "key must have the category in it (format verification)")
 
-        def _count():
+        def _count(mo_id):
             return Exc.search_count([
                 ("source_model", "=", "southbrook.mi.check"),
-                ("exception_type", "=", "cutlist_divergence"),
+                ("mo_id", "=", mo_id),
                 ("active", "=", True),
             ])
 
@@ -131,7 +131,7 @@ class TestDedupeKey(TransactionCase):
         })
         # Scan finds it and creates an exception
         self.Exc._scan_and_materialize()
-        after_first = _count()
+        after_first = _count(mo_id)
         self.assertGreater(after_first, 0, "first scan should create an exception")
 
         # Verify the exception's dedupe_key includes the MO ID
@@ -153,7 +153,7 @@ class TestDedupeKey(TransactionCase):
         })
         # Scan again - should find the same condition via dedupe_key, not create a new exception
         self.Exc._scan_and_materialize()
-        after_second = _count()
+        after_second = _count(mo_id)
 
         self.assertEqual(after_second, after_first,
                          "a recreated check must not add a second exception")
