@@ -76,9 +76,12 @@ class CommandCenterController(http.Controller):
         self._require_cc_member()
         env = request.env
         cid = self._validated_company_id(company_id)
+        payload, provenance = env["southbrook.command.explorer_bridge"].fetch()
         return {
             "company_id": cid,
             "role": role,
+            "provenance": provenance,
+            "chips": self._chips(env, payload),
             "factory_health": self._factory_health(env),
             "flow": self._flow(env, cid),
             "exceptions": self._exceptions(env, cid, role),
@@ -126,6 +129,14 @@ class CommandCenterController(http.Controller):
         except Exception:  # noqa: BLE001
             _logger.exception("command_center: help_lookup failed for %s", term)
         return fallback
+
+    # -- context bar ---------------------------------------------------
+    def _chips(self, env, payload):
+        try:
+            return env["southbrook.command.center"].truth_chips(payload=payload)
+        except Exception:  # noqa: BLE001
+            _logger.exception("command_center: chips panel failed")
+            return []
 
     # -- panel 1 -------------------------------------------------------
     def _factory_health(self, env):

@@ -211,7 +211,51 @@ class SouthbrookCommandCenter(models.AbstractModel):
         }
 
     # ------------------------------------------------------------------
-    # 2. schedule_confidence (per project.task)
+    # 2. Truth chips — the pinned context bar
+    # ------------------------------------------------------------------
+    def truth_chips(self, payload=None):
+        """The eight click-to-filter counts, read from Process Explorer.
+
+        Units are explicit: ``orders`` counts manufacturing orders while
+        ``running``/``ready``/``blocked`` count work orders. Rendered in one
+        row without units they imply a total that does not exist.
+
+        A chip with no payload behind it is ``None``, never 0 — zero is a
+        claim about the factory, and we would not have grounds for it.
+        """
+        if payload is None:
+            payload, _prov = self.env["southbrook.command.explorer_bridge"].fetch()
+        workload = (payload or {}).get("workload") or {}
+        rows = (payload or {}).get("rows") or []
+        stations = (payload or {}).get("workcenters") or []
+        have = bool(payload)
+        over_days = _get_param(self.env, "chips.capacity_over_days", 1.0)
+
+        def _v(value):
+            return value if have else None
+
+        return [
+            {"key": "orders", "label": "orders", "unit": "orders",
+             "value": _v(workload.get("orders", 0))},
+            {"key": "running", "label": "running", "unit": "steps",
+             "value": _v(workload.get("progress", 0))},
+            {"key": "ready", "label": "ready", "unit": "steps",
+             "value": _v(workload.get("ready", 0))},
+            {"key": "blocked", "label": "blocked", "unit": "steps",
+             "value": _v(workload.get("blocked", 0))},
+            {"key": "late", "label": "late", "unit": "orders",
+             "value": _v(workload.get("late", 0))},
+            {"key": "at_risk", "label": "at-risk", "unit": "orders",
+             "value": _v(workload.get("at_risk", 0))},
+            {"key": "material_short", "label": "material-short", "unit": "orders",
+             "value": _v(sum(1 for r in rows if r.get("mat_short")))},
+            {"key": "capacity_over", "label": "capacity-over", "unit": "stations",
+             "value": _v(sum(1 for s in stations
+                             if (s.get("queued_days") or 0) > over_days))},
+        ]
+
+    # ------------------------------------------------------------------
+    # 3. schedule_confidence (per project.task)
     # ------------------------------------------------------------------
     def schedule_confidence(self, task):
         env = self.env
@@ -317,7 +361,7 @@ class SouthbrookCommandCenter(models.AbstractModel):
         return {"score": score, "band": band, "factors": factors, "explanation": explanation}
 
     # ------------------------------------------------------------------
-    # 3. Job margin (per project.task)
+    # 4. Job margin (per project.task)
     # ------------------------------------------------------------------
     def job_margin(self, task):
         env = self.env
@@ -452,7 +496,7 @@ class SouthbrookCommandCenter(models.AbstractModel):
         }
 
     # ------------------------------------------------------------------
-    # 4. PO delivery-risk (rule-based, NOT a forecast)
+    # 5. PO delivery-risk (rule-based, NOT a forecast)
     # ------------------------------------------------------------------
     def po_delivery_risk(self, purchase_order, task=None):
         env = self.env
