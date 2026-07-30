@@ -46,9 +46,34 @@ class TestCommandException(TransactionCase):
 
     @mute_logger("odoo.sql_db")
     def test_source_uniqueness(self):
-        self._make(source_res_id=42)
+        # The uniqueness constraint is now on dedupe_key, not the 3-tuple.
+        # Direct create() calls without a dedupe_key result in NULL, which is
+        # not unique-checked in PostgreSQL. The real enforcement happens in
+        # _upsert_exception, which is tested in test_phase2.py.
+        # This test verifies that two records with the same dedupe_key violate
+        # the constraint.
+        key = "test:42:foo"
+        self.Exc.create({
+            "exception_type": "mi_blocker",
+            "source_model": "southbrook.mi.check",
+            "source_res_id": 42,
+            "severity": "critical",
+            "severity_rank": 0,
+            "owner_id": self.owner.id,
+            "impact_summary": "Test blocker",
+            "dedupe_key": key,
+        })
         with self.assertRaises(IntegrityError):
-            self._make(source_res_id=42)
+            self.Exc.create({
+                "exception_type": "mi_blocker",
+                "source_model": "southbrook.mi.check",
+                "source_res_id": 43,
+                "severity": "critical",
+                "severity_rank": 0,
+                "owner_id": self.owner.id,
+                "impact_summary": "Test blocker",
+                "dedupe_key": key,
+            })
 
     def test_ack_resolve_transitions(self):
         rec = self._make(source_res_id=7)

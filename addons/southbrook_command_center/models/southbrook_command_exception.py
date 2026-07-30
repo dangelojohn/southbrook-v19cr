@@ -228,9 +228,31 @@ class SouthbrookCommandException(models.Model):
     alert_notified = fields.Boolean(default=False, copy=False, index=True)
     alert_notified_date = fields.Datetime(readonly=True, copy=False)
 
-    _source_uniq = models.Constraint(
-        "unique(source_model, source_res_id, exception_type)",
-        "An exception of this type already exists for this source record.",
+    # ------------------------------------------------------------------
+    # Stable business identity (2026-07-30).
+    #
+    # The original uniqueness rule keyed on (source_model, source_res_id,
+    # exception_type). source_res_id is a southbrook.mi.check row id, and the
+    # MI sweep cron DELETES AND RECREATES those rows every 15 minutes — so the
+    # ids churn, the key never matches twice, and every sweep minted a fresh
+    # exception. Measured 2026-07-30: 38,910 open rows tracing to 9 MOs and 17
+    # live checks, growing ~2,600/day.
+    #
+    # dedupe_key holds what is actually stable about the condition (which MO,
+    # which category, which check), so a re-fire updates one row. Archived
+    # historical duplicates carry NULL, and Postgres does not collide NULLs in
+    # a unique index — which is what lets them stay in the table for audit.
+    # ------------------------------------------------------------------
+    dedupe_key = fields.Char(
+        index=True,
+        copy=False,
+        help="Stable identity of the underlying business condition. One open "
+             "exception per key. NULL on archived historical duplicates.",
+    )
+
+    _dedupe_key_uniq = models.Constraint(
+        "unique(dedupe_key)",
+        "An exception already exists for this business condition.",
     )
 
     # ------------------------------------------------------------------
@@ -250,6 +272,27 @@ class SouthbrookCommandException(models.Model):
             if rec.name in (_("New"), False):
                 rec.name = f"CC-{rec.id:06d}"
         return records
+
+    # ------------------------------------------------------------------
+    # Stable key helper — maps business conditions to identity tokens.
+    # ------------------------------------------------------------------
+    @api.model
+    def _dedupe_key_for(self, exception_type, source_model, source_res_id,
+                        source_record=None):
+        """Stable identity for the condition this exception describes.
+
+        For southbrook.mi.check the row id is worthless as an identity (the
+        sweep recreates rows), so the key is built from what survives a sweep:
+        the manufacturing order, the check category, and the check name.
+        Every other source has stable ids and keeps the legacy triple.
+        """
+        if source_model == "southbrook.mi.check" and source_record is not None:
+            mo = getattr(source_record, "production_id", False)
+            mo_part = str(mo.id) if mo else "0"
+            category = (getattr(source_record, "category", "") or "").strip().lower()
+            name = (getattr(source_record, "name", "") or "").strip().lower()[:120]
+            return "mi:%s:%s:%s:%s" % (mo_part, category, name, exception_type)
+        return "%s:%s:%s" % (source_model, source_res_id, exception_type)
 
     # ------------------------------------------------------------------
     # Own-workflow action methods — the only fields this model may ever
