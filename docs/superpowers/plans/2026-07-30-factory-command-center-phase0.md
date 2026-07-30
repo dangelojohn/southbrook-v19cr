@@ -729,7 +729,13 @@ class SouthbrookCommandExplorerBridge(models.AbstractModel):
             _logger.exception("command_center: explorer bridge query failed")
             return {}, "fallback: Process Explorer query failed"
         if not isinstance(data, dict) or not data.get("ok"):
-            reason = (data or {}).get("reason", "unknown")
+            # `(data or {}).get(...)` would look right here and be wrong: once
+            # isinstance() has already failed, a TRUTHY non-dict (a non-empty
+            # string, a list, True) makes `data or {}` evaluate to `data`, and
+            # .get() on it raises AttributeError OUTSIDE the try above — a 500
+            # on an endpoint that runs on every dashboard open.
+            reason = (data.get("reason", "unknown") if isinstance(data, dict)
+                      else "invalid response type")
             return {}, "fallback: Process Explorer returned no data (%s)" % reason
         return data, _PROVENANCE_LIVE
 ```
