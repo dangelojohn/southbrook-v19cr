@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 from collections import Counter
+from datetime import timedelta
 
 import logging
 
@@ -318,6 +319,15 @@ class ProjectTask(models.Model):
         ],
         string="Risk",
         compute="_compute_phase1_operational_context",
+        # store=True so the Floor Analytics pivot can group by the four-band
+        # gradient (low/medium/high/critical) instead of the binary job_at_risk.
+        # Safe to store: readiness_decision already rides this exact same compute
+        # with store=True and no staleness bug, so the @api.depends is proven
+        # complete. The compute's read of self.top_blocker is intra-method (it
+        # reads an output THIS pass already assigned), not an external dependency,
+        # so it needs no depends entry. Indexed because analytics filters on it.
+        store=True,
+        index=True,
         readonly=True,
     )
     risk_reason = fields.Char(
@@ -497,6 +507,17 @@ class ProjectTask(models.Model):
         compute="_compute_southbrook_production_release",
         readonly=True,
     )
+    southbrook_release_review_since = fields.Datetime(
+        string="In Review Since",
+        compute="_compute_southbrook_production_release",
+        store=True,
+        index=True,
+        readonly=True,
+        help="When this job most recently ENTERED `review` — a job waiting only on "
+             "sign-offs. Cleared the moment it leaves `review` in either direction "
+             "(back to blocked, or on to ready), so it always measures the CURRENT "
+             "stretch of pure signature latency, not lifetime-in-review. Indexed "
+             "because the sign-off escalation cron filters on it every hour.")
     cad_cutlist_review_required = fields.Boolean(
         string="Needs CAD / Cutlist",
         compute="_compute_phase3_queue_flags",
@@ -1652,6 +1673,29 @@ class ProjectTask(models.Model):
                     "Missing %s. Sign-off cannot clear: %s."
                     % (", ".join(missing), ", ".join(blocking)))
 
+            # southbrook_release_review_since times the CURRENT stretch of pure
+            # signature latency. It rides this compute rather than getting its own
+            # @api.depends because it derives from the exact same inputs `state`
+            # already reduced — a second compute would just re-run the same gate
+            # walk to ask a question this one already answered.
+            #
+            # Reading the field we are in the middle of computing is normally the
+            # trap that produces stale reads or recompute loops. It is safe here
+            # because nothing else ever writes this field and it has no depends on
+            # itself — the ONLY question is "did an earlier pass of THIS SAME
+            # compute already start the clock", and the previously stored value is
+            # the one place that answer lives. The hourly retick cron
+            # (`_cron_retick_time_sensitive_readiness`) re-runs this compute on
+            # every open kitchen job whether or not anything changed, which is
+            # exactly what re-stamping-on-every-pass would defeat: a job sitting
+            # in `review` for six hours must keep ITS ORIGINAL timestamp, not get
+            # bumped forward every retick.
+            if state == "review":
+                task.southbrook_release_review_since = (
+                    task.southbrook_release_review_since or fields.Datetime.now())
+            else:
+                task.southbrook_release_review_since = False
+
     def _southbrook_missing_install_items(self):
         self.ensure_one()
         missing = []
@@ -1964,7 +2008,105 @@ class ProjectTask(models.Model):
         _logger.info(
             "southbrook_project_mrp: re-ticked %s kitchen job(s) for date-driven "
             "readiness; %s now at risk", len(tasks), len(late))
+        # Chained on purpose, not a separate cron: the re-tick above is what just
+        # refreshed southbrook_release_review_since for every job whose review-gate
+        # inputs moved, so escalation reads current data instead of racing an
+        # independently-scheduled job against this one for the same records.
+        self._cron_escalate_signoff_latency()
         return len(tasks)
+
+    @api.model
+    def _cron_escalate_signoff_latency(self):
+        """Turn stale sign-off latency into a visible activity, not a silent stall.
+
+        A job in `review` is not waiting on the shop floor at all — every outstanding
+        gate is one a human can clear by attesting (ATTESTABLE_GATES /
+        `_southbrook_release_gate_kind`). `southbrook_release_review_since` times how
+        long THIS stretch of review has run, but a timestamp nobody looks at is just
+        data; it takes an actor. Below a threshold that is fine — sign-offs happen
+        within a work day without anyone chasing them. Past it, every additional hour
+        is pure latency on a job that is otherwise done, and the person who can clear
+        it needs to be told, not left to notice on their own next time they open the
+        queue.
+
+        Threshold lives in ir.config_parameter rather than as a constant because "how
+        many hours is acceptable before a sign-off is chased" is a business call
+        Southbrook may retune without a code deploy — default 24.0h, one business day.
+        """
+        param = self.env["ir.config_parameter"].sudo().get_param(
+            "southbrook_project_mrp.review_signoff_escalation_hours", "24.0")
+        try:
+            threshold_hours = float(param)
+        except (TypeError, ValueError):
+            _logger.warning(
+                "southbrook_project_mrp: review_signoff_escalation_hours=%r is not "
+                "numeric; falling back to the 24h default rather than skipping "
+                "sign-off escalation for this run.", param)
+            threshold_hours = 24.0
+
+        cutoff = fields.Datetime.now() - timedelta(hours=threshold_hours)
+        stale = self.search([
+            ("southbrook_production_release_state", "=", "review"),
+            ("southbrook_release_review_since", "!=", False),
+            ("southbrook_release_review_since", "<", cutoff),
+        ])
+        if not stale:
+            return 0
+
+        activity_type = self.env.ref(
+            "southbrook_project_mrp.mail_activity_type_signoff_overdue",
+            raise_if_not_found=False)
+        if not activity_type:
+            _logger.warning(
+                "southbrook_project_mrp: mail_activity_type_signoff_overdue not "
+                "found (data file not loaded?) -- %s stale review job(s) got no "
+                "escalation activity this run.", len(stale))
+            return 0
+
+        escalated = 0
+        for task in stale:
+            try:
+                # Idempotent across hourly runs: an OPEN activity of this type on
+                # this task means a previous run already escalated it and nobody
+                # has actioned it yet. `mail.activity` rows are the open ones by
+                # construction — marking one done deletes it (becomes a chatter
+                # message) — so existence alone is the "still open" test.
+                existing = self.env["mail.activity"].search([
+                    ("res_model", "=", "project.task"),
+                    ("res_id", "=", task.id),
+                    ("activity_type_id", "=", activity_type.id),
+                ], limit=1)
+                if existing:
+                    continue
+                assignee = task.user_ids[:1]
+                if not assignee:
+                    # user_id is not a native project.task field (assignees are the
+                    # user_ids m2m) but some deployments layer one on; read it
+                    # defensively rather than assume it exists.
+                    fallback = getattr(task, "user_id", False)
+                    assignee = fallback if fallback else False
+                if not assignee:
+                    _logger.info(
+                        "southbrook_project_mrp: task %s (%s) is overdue for "
+                        "sign-off but has nobody assigned to escalate to -- "
+                        "skipped this run.", task.id, task.name)
+                    continue
+                missing = task._southbrook_missing_production_release_items()
+                task.activity_schedule(
+                    "southbrook_project_mrp.mail_activity_type_signoff_overdue",
+                    summary=_("Sign-off overdue: %s") % ", ".join(missing),
+                    user_id=assignee.id,
+                )
+                escalated += 1
+            except Exception as exc:  # noqa: BLE001 — one bad task can't sink the cron
+                _logger.warning(
+                    "southbrook_project_mrp: sign-off escalation failed for task "
+                    "%s: %s -- left un-escalated, will retry next hour.",
+                    task.id, exc)
+        _logger.info(
+            "southbrook_project_mrp: escalated %s/%s job(s) past the %.1fh "
+            "sign-off threshold.", escalated, len(stale), threshold_hours)
+        return escalated
 
     def _search_boolean_compute(self, field_name, operator, value):
         if operator not in ("=", "!="):
