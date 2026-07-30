@@ -131,8 +131,7 @@ class ProjectTask(models.Model):
         string="Components", compute="_compute_mrp_status",
         help="'All available' only when EVERY linked MO is fully reserved.")
     job_at_risk = fields.Boolean(
-        string="At Risk", compute="_compute_mrp_status",
-        search="_search_job_at_risk",
+        string="At Risk", compute="_compute_mrp_status", store=True, index=True,
         help="Job is behind or blocked (components waiting on a started MO, "
              "or an MO past its deadline).")
     job_risk_reason = fields.Char(
@@ -165,7 +164,8 @@ class ProjectTask(models.Model):
 
     # --- T1.2 polish: surfaced from the MO's other tabs ---------------------
     job_install_due = fields.Date(
-        string="Earliest Install Due", compute="_compute_mrp_status")
+        string="Earliest Install Due", compute="_compute_mrp_status",
+        store=True, index=True)
     job_cad_status = fields.Char(
         string="CAD Status", compute="_compute_mrp_status")
     job_next_action = fields.Char(
@@ -427,7 +427,8 @@ class ProjectTask(models.Model):
     install_date_missing = fields.Boolean(
         string="Install Date Missing",
         compute="_compute_phase3_queue_flags",
-        search="_search_install_date_missing",
+        store=True,
+        index=True,
         readonly=True,
     )
     southbrook_site_measurement_status = fields.Selection(
@@ -1747,10 +1748,6 @@ class ProjectTask(models.Model):
         return self._search_boolean_compute(
             "cad_cutlist_review_required", operator, value)
 
-    def _search_install_date_missing(self, operator, value):
-        return self._search_boolean_compute(
-            "install_date_missing", operator, value)
-
     def _search_pm_stage_mismatch(self, operator, value):
         return self._search_boolean_compute("pm_stage_mismatch", operator, value)
 
@@ -1776,9 +1773,6 @@ class ProjectTask(models.Model):
     def _search_southbrook_production_release_state(self, operator, value):
         return self._search_selection_compute(
             "southbrook_production_release_state", operator, value)
-
-    def _search_job_at_risk(self, operator, value):
-        return self._search_boolean_compute("job_at_risk", operator, value)
 
     def _search_material_at_risk(self, operator, value):
         return self._search_boolean_compute("material_at_risk", operator, value)

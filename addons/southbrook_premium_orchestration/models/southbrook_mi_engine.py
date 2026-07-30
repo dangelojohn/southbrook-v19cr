@@ -90,10 +90,37 @@ class SouthbrookMiEngineState(models.Model):
     # ------------------------------------------------------------------
     @api.model
     def _get_singleton(self):
-        engine = self.search([], limit=1)
-        if not engine:
-            engine = self.create({})
-        return engine
+        """The one engine-state row. Creates it if absent, collapses it if not.
+
+        This model is a singleton in intent only — nothing stopped a second row being
+        created, and `search([], limit=1)` then silently picked whichever was lowest.
+        In production that produced three rows: id 1 holding every real statistic, ids
+        2 and 3 empty. The menu opened one of the empties, so `Run Engine Now` appeared
+        to do nothing at all — it ran correctly and wrote its results to a row the user
+        was not looking at. The engine was never dead; it was writing to a different
+        record, which is the same class of defect as every other competing-truth bug
+        in this app.
+
+        `order="id"` makes the choice deterministic rather than incidental.
+        """
+        engines = self.search([], order="id")
+        if not engines:
+            return self.create({})
+        primary = engines[0]
+        extras = engines[1:]
+        if extras:
+            # Keep whichever row actually holds a run, not merely the lowest id.
+            ran = engines.filtered("last_run_at").sorted("last_run_at", reverse=True)
+            if ran and ran[0] != primary:
+                primary = ran[0]
+                extras = engines - primary
+            _logger.warning(
+                "MI engine: found %s duplicate state row(s) %s; keeping %s and "
+                "removing the rest. A second row makes Run Engine Now look dead.",
+                len(extras), extras.ids, primary.id)
+            extras.unlink()
+        return primary
+
 
     # ------------------------------------------------------------------
     # Evaluation dispatch
@@ -202,9 +229,25 @@ class SouthbrookMiEngineState(models.Model):
     # Form button — on-demand kick
     # ------------------------------------------------------------------
     def action_run_now(self):
-        """Trigger _cron_refire_gates from the form view button."""
+        """Trigger _cron_refire_gates from the form view button.
+
+        Returns a reload, not just a toast. The previous version wrote the statistics
+        correctly and returned a notification, so the form kept rendering the values it
+        had loaded with — indistinguishable, from the user's seat, from a no-op.
+        """
         self.ensure_one()
         summary = self._cron_refire_gates()
+        # Make sure the row the user is looking at is the row that was written.
+        primary = self._get_singleton()
+        if primary != self:
+            return {
+                "type": "ir.actions.act_window",
+                "res_model": self._name,
+                "res_id": primary.id,
+                "view_mode": "form",
+                "target": "current",
+            }
+        self.invalidate_recordset()
         return {
             "type": "ir.actions.client",
             "tag": "display_notification",
