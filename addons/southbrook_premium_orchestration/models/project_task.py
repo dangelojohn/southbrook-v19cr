@@ -204,3 +204,67 @@ class ProjectTask(models.Model):
             "cur_r": cur_release or _("(unset)"),
         }
         self.message_post(body=body)
+        self._sb_cc_route_release_flip(prev_release, cur_release)
+
+    def _sb_cc_route_release_flip(self, previous_release, current_release):
+        """Route a release-state flip into the Command Center exception queue.
+
+        Detection already existed — this method's caller has been diffing release state
+        every thirty minutes since it was written. What did not exist was delivery: it
+        posted a chatter note and stopped, so whether the person who could act ever found
+        out depended on them being a follower of that task and reading Chatter.
+
+        Meanwhile `southbrook.command.exception` already carries the whole apparatus —
+        owner assignment, severity ranking, `alert_notified` dedup so nothing re-spams,
+        and a thirty-minute digest that delivers one grouped `message_notify` per owner to
+        the Inbox and to email. And its taxonomy has always included a `job_blocked`
+        type that NOTHING has ever created. A landing spot with a working conveyor behind
+        it, never connected.
+
+        So this is a wire, not a mechanism. Building a second digest here would have
+        duplicated `_cron_send_alert_digest` exactly.
+
+        Guarded on the model being present rather than on a manifest dependency:
+        southbrook_command_center depends on southbrook_project_mrp, not on this module,
+        so declaring it the other way would invert the graph. When Command Center is not
+        installed the flip still posts its chatter note and nothing here runs.
+        """
+        self.ensure_one()
+        if "southbrook.command.exception" not in self.env:
+            return
+        Exception_ = self.env["southbrook.command.exception"]
+        if not Exception_._cc_hooks_enabled():
+            return
+        if previous_release == current_release:
+            return
+
+        if current_release != "blocked":
+            # Recovered, or moved to review where a signature is all that is left.
+            # Resolving rather than leaving it open is what stops the queue filling with
+            # exceptions for jobs that unblocked themselves.
+            Exception_._resolve_exception("job_blocked", "project.task", self.id)
+            return
+
+        blocking = self.southbrook_production_release_reason or ""
+        owner = self.user_ids[:1] or self.project_id.user_id or self.env.user
+        Exception_._upsert_exception(
+            "job_blocked", "project.task", self.id,
+            {
+                "severity": "high",
+                "severity_rank": 1,
+                "owner_id": owner.id,
+                "task_id": self.id,
+                "company_id": self.company_id.id or self.env.company.id,
+                "impact_summary": (
+                    "%s is blocked for production release and cannot be scheduled."
+                    % (self.display_name or "This job"))[:280],
+                "recommended_action": (
+                    "Open the job's Production Release tab and clear the outstanding "
+                    "gates. Items a sign-off cannot clear need the shop floor, not an "
+                    "approver — the reason line names which are which."
+                ),
+                "why_text": ("release state %s -> %s. %s"
+                             % (previous_release or "(unset)", current_release, blocking)),
+            },
+            reactivate=True,
+        )
