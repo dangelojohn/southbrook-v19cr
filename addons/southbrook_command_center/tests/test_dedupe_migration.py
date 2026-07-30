@@ -5,12 +5,9 @@ Seeds a synthetic version of the production shape: duplicates from the keying
 bug, with the human-touched-one election rule verified.
 """
 import importlib.util
-import logging
 import os
 
 from odoo.tests import TransactionCase, tagged
-
-_logger = logging.getLogger(__name__)
 
 
 @tagged("post_install", "-at_install", "southbrook_command_center")
@@ -121,10 +118,8 @@ class TestDedupeMigration(TransactionCase):
         self.assertEqual(survivor.state, "acknowledged")
 
         # The survivor has a non-null dedupe_key.
-        self.assertIsNotNone(survivor.dedupe_key,
-                             "Survivor must have a dedupe_key")
-        self.assertNotEqual(survivor.dedupe_key, "",
-                            "Survivor dedupe_key must not be empty")
+        self.assertTrue(survivor.dedupe_key,
+                        "Survivor must have a dedupe_key")
 
         # The survivor's source_res_id matches the live check id.
         self.assertEqual(survivor.source_res_id, check.id,
