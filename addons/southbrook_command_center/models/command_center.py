@@ -24,7 +24,7 @@ Return shape for all four public methods (frozen contract):
         "explanation": str,
     }
 """
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from odoo import models
 
@@ -81,6 +81,7 @@ class SouthbrookCommandCenter(models.AbstractModel):
         pts_per_blocker = get("blocker_penalty_per_blocker", 15.0)
         band_green_min = get("band_green_min", 80)
         band_amber_min = get("band_amber_min", 60)
+        min_coverage_points = get("min_coverage_points", 50)
 
         payload, provenance = env["southbrook.command.explorer_bridge"].fetch()
 
@@ -99,18 +100,23 @@ class SouthbrookCommandCenter(models.AbstractModel):
                 "no_data_reason": no_data_reason,
             })
 
-        # --- OEE: no data unless a snapshot actually exists ---
+        # --- OEE: no data unless a snapshot exists within the 7d window ---
         oee_reason = None
         oee_component = 0.0
         Snap = env.get("southbrook.mes_mps.oee_snapshot")
-        if Snap is None or Snap.sudo().search_count([]) == 0:
+        if Snap is None:
             oee_reason = "no OEE snapshots recorded"
         else:
-            try:
-                tiles = env["southbrook.mes_mps.mi_tiles"].new({})
-                oee_component = _clamp((tiles.avg_oee_last_7d or 0.0) * 100)
-            except Exception:  # noqa: BLE001
-                oee_reason = "OEE tiles unavailable"
+            # Guard must match the 7d window that avg_oee_last_7d reads
+            last_week = datetime.now().date() - timedelta(days=7)
+            if Snap.sudo().search_count([("shift_date", ">=", last_week)]) == 0:
+                oee_reason = "no OEE snapshots in the last 7 days"
+            else:
+                try:
+                    tiles = env["southbrook.mes_mps.mi_tiles"].new({})
+                    oee_component = _clamp((tiles.avg_oee_last_7d or 0.0) * 100)
+                except Exception:  # noqa: BLE001
+                    oee_reason = "OEE tiles unavailable"
         _factor("OEE (7d avg)", w_oee * 100,
                 f"{oee_component:.0f}%", oee_component,
                 "southbrook.mes_mps.oee_snapshot", oee_reason)
@@ -130,12 +136,18 @@ class SouthbrookCommandCenter(models.AbstractModel):
                 otd_component, "mrp.process.explorer.get_data().ontime",
                 otd_reason)
 
-        # --- First-pass yield: needs closed orders to have yielded anything ---
+        # --- First-pass yield: needs closed orders in the 7d window ---
         fpy_reason = None
         fpy_component = 0.0
-        closed = env["mrp.production"].search_count([("state", "=", "done")])
-        if not closed:
-            fpy_reason = "no closed manufacturing orders to yield from"
+        # Guard must match the 7d window and company scope that fpy_pct_7d reads
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        closed_in_window = env["mrp.production"].search_count([
+            ("state", "=", "done"),
+            ("date_finished", ">=", seven_days_ago),
+            ("company_id", "=", env.company.id),
+        ])
+        if closed_in_window == 0:
+            fpy_reason = "no closed manufacturing orders in the last 7 days"
         else:
             try:
                 snapshot = env["southbrook.exec_dashboard.snapshot"].get_or_create_today()
@@ -181,9 +193,9 @@ class SouthbrookCommandCenter(models.AbstractModel):
         no_data_points = round(sum(f["of"] for f in factors
                                    if f["data_state"] == "no_data"))
 
-        if not available:
+        if not available or available < min_coverage_points:
             band = "insufficient"
-            coverage_pct = 0
+            coverage_pct = round(available) if available else 0
         else:
             pct = score / available * 100
             coverage_pct = round(available)

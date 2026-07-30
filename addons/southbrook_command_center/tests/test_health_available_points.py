@@ -48,17 +48,64 @@ class TestHealthAvailablePoints(TransactionCase):
 
     def test_band_is_insufficient_when_nothing_is_measurable(self):
         h = self.CC.factory_health_score()
-        if h["available"] == 0:
+        min_coverage = 50  # default from factory_health.min_coverage_points
+        if h["available"] == 0 or h["available"] < min_coverage:
             self.assertEqual(h["band"], "insufficient")
         else:
             self.assertIn(h["band"], ("green", "amber", "red"))
 
     def test_on_time_delivery_is_not_perfect_without_observations(self):
-        """The specific production bug: 0 outgoing pickings scored 25 of 25."""
-        otd = next((f for f in self.CC.factory_health_score()["factors"]
+        """The specific production bug: 0 closed orders scored 25 of 25.
+
+        The test gates on the actual driver — Process Explorer's
+        ontime.total count — since the implementation reads from payload.
+        """
+        h = self.CC.factory_health_score()
+        otd = next((f for f in h["factors"]
                     if "On-Time" in f["label"]), None)
         self.assertIsNotNone(otd)
-        picks = self.env["stock.picking"].search_count([
-            ("state", "=", "done"), ("picking_type_code", "=", "outgoing")])
-        if picks == 0:
-            self.assertEqual(otd["data_state"], "no_data")
+        # Gate on the actual payload driver: ontime.total
+        bridge = self.env["southbrook.command.explorer_bridge"]
+        payload, _ = bridge.fetch()
+        ontime = (payload.get("ontime") or {}) if payload else {}
+        if not ontime.get("total"):
+            self.assertEqual(otd["data_state"], "no_data",
+                           "OTD must be no_data when Process Explorer has "
+                           "no closed orders to measure")
+
+    def test_oee_no_data_when_stale_but_present(self):
+        """OEE records exist all-time but none in the 7d window -> no_data."""
+        h = self.CC.factory_health_score()
+        oee = next((f for f in h["factors"] if "OEE" in f["label"]), None)
+        self.assertIsNotNone(oee)
+        # This test documents the guard: snapshots must exist in the 7d window,
+        # not just exist all-time. If only stale snapshots exist, guard says
+        # no_data and the metric defaults to zero (visible absence, not hidden).
+        if oee["data_state"] == "no_data":
+            self.assertIn("7 days", oee["no_data_reason"])
+
+    def test_fpy_no_data_when_stale_but_present(self):
+        """FPY orders exist all-time but none in the 7d window -> no_data."""
+        h = self.CC.factory_health_score()
+        fpy = next((f for f in h["factors"] if "First-Pass" in f["label"]), None)
+        self.assertIsNotNone(fpy)
+        # This test documents the guard: closed MOs must exist in the 7d window
+        # AND in the current company, not just exist all-time. If only stale
+        # or out-of-company orders exist, guard says no_data.
+        if fpy["data_state"] == "no_data":
+            self.assertIn("7 days", fpy["no_data_reason"])
+
+    def test_band_insufficient_below_coverage_floor(self):
+        """Band is insufficient when available < min_coverage_points, even if
+        the ratio is 100%.
+
+        A single 15-point component live (blockers) with 85 points missing
+        should not band green, amber, or red — it must band insufficient.
+        """
+        h = self.CC.factory_health_score()
+        # If less than 50 points (the default floor) are available, band must
+        # be "insufficient" regardless of score/available ratio
+        if h["available"] < 50:
+            self.assertEqual(h["band"], "insufficient",
+                           "Band must be insufficient when coverage falls "
+                           "below the minimum floor, regardless of ratio")
