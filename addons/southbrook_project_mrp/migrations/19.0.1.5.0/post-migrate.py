@@ -44,12 +44,24 @@ def migrate(cr, version):
     tasks._compute_phase3_queue_flags()
     tasks.flush_recordset()
 
+    # southbrook_production_release_state is STORED, so changing the compute that
+    # decides between `blocked` and the newly-emitted `review` does not by itself
+    # revisit the rows already on disk. Without this, every existing job keeps the
+    # `blocked` it was given when the compute was binary, and the Production Release
+    # Queue looks exactly as broken as before the fix.
+    tasks._compute_southbrook_production_release()
+    tasks.flush_recordset()
+
     at_risk = tasks.filtered("job_at_risk")
     missing = tasks.filtered("install_date_missing")
+    by_state = {}
+    for task in tasks:
+        key = task.southbrook_production_release_state or "unset"
+        by_state[key] = by_state.get(key, 0) + 1
     _logger.info(
         "southbrook_project_mrp: recomputed readiness on %s task(s) — "
-        "%s at risk, %s missing an install date",
-        len(tasks), len(at_risk), len(missing))
+        "%s at risk, %s missing an install date, release states %s",
+        len(tasks), len(at_risk), len(missing), by_state)
 
     # If this reports zero at-risk jobs, the recompute did not take and Install Risk is
     # still lying. Say so loudly rather than let a silent all-clear ship twice.

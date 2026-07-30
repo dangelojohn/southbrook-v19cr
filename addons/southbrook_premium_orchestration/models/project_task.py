@@ -52,6 +52,48 @@ _READINESS_RECOMPUTE_METHODS = (
 class ProjectTask(models.Model):
     _inherit = "project.task"
 
+
+    @api.model
+    def default_get(self, fields_list):
+        """Land a hand-created kitchen job in the kitchen project, not Private.
+
+        `Kitchen Jobs -> New` passed no default project, so the task was created with
+        project_id unset — which in Odoo is a PRIVATE task, and private tasks carry the
+        personal Inbox/Today/This Week pipeline instead of Design & Quote -> ... ->
+        Delivery & Install. The first thing a user saw on the flagship board was the
+        wrong process.
+
+        The project and stage are resolved with the SAME helpers the sale-order confirm
+        path already uses, rather than a second lookup that could disagree with it: a
+        job typed in by hand and a job raised from a confirmed order must land in the
+        same place, or the board has two populations that only look alike. Both helpers
+        are stateless and safe to call on an empty recordset.
+
+        Gated on an explicit context flag so this only fires from the Kitchen Ops board.
+        Every other way of creating a task — including a genuine private task — is
+        untouched.
+        """
+        values = super().default_get(fields_list)
+        if not self.env.context.get("kitchen_job_intake"):
+            return values
+        if values.get("project_id"):
+            return values
+        SaleOrder = self.env["sale.order"]
+        project = SaleOrder._resolve_kitchen_project()
+        if not project:
+            # No project configured and none exists. Leaving it unset is honest; the
+            # alternative is inventing a project, which is an admin decision.
+            _logger.warning(
+                "kitchen_job_intake: no kitchen project resolved. Set the config "
+                "parameter southbrook_premium.default_kitchen_project_id.")
+            return values
+        values["project_id"] = project.id
+        if "stage_id" in fields_list and not values.get("stage_id"):
+            stage = SaleOrder._resolve_design_quote_stage(project)
+            if stage:
+                values["stage_id"] = stage.id
+        return values
+
     # ------------------------------------------------------------------
     # Telemetry field — last successful recompute timestamp
     # ------------------------------------------------------------------

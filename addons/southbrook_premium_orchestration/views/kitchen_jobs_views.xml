@@ -147,7 +147,10 @@
         <field name="res_model">project.task</field>
         <field name="view_mode">kanban,list,form</field>
         <field name="domain">[('x_southbrook_sale_order_id','!=',False)]</field>
-        <field name="context">{'search_default_open': 1}</field>
+        <!-- kitchen_job_intake makes project.task.default_get land a hand-created job in
+             the kitchen project instead of Private. Scoped to this action so no other
+             way of creating a task is affected. -->
+        <field name="context">{'search_default_open': 1, 'kitchen_job_intake': True}</field>
         <field name="search_view_id" ref="view_kitchen_jobs_search"/>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">

@@ -1418,6 +1418,33 @@ class ProjectTask(models.Model):
             task.southbrook_specs_complete = not bool(
                 task._southbrook_missing_cabinet_specs())
 
+    # Gates a human can clear by attesting, versus gates only the factory can clear.
+    # The distinction is the whole point of the `review` state: a planner needs to know
+    # whether a job is waiting on a signature or waiting on the shop.
+    ATTESTABLE_GATES = frozenset({
+        "Final site measurements",
+        "CAD approved",
+        "Cutlist approved",
+        "BoM verified",
+        "Crew assigned/reserved",
+        "Critical equipment available",
+    })
+
+    def _southbrook_release_gate_kind(self, missing):
+        """'review' when every outstanding gate is one a sign-off can clear.
+
+        `blocked` and `review` were both in the selection, both decorated in the views,
+        and `review` is half of the Production Release Queue's own domain — but the
+        compute only ever emitted `blocked` or `ready`, so every one of the twelve live
+        jobs read identically whether it needed one signature or had no manufacturing
+        orders at all. A queue that cannot distinguish those is not a queue.
+        """
+        if not missing:
+            return "ready"
+        if set(missing) <= self.ATTESTABLE_GATES:
+            return "review"
+        return "blocked"
+
     def _southbrook_missing_production_release_items(self):
         self.ensure_one()
         missing = []
@@ -1524,14 +1551,20 @@ class ProjectTask(models.Model):
     def _compute_southbrook_production_release(self):
         for task in self:
             missing = task._southbrook_missing_production_release_items()
-            if missing:
-                task.southbrook_production_release_state = "blocked"
-                task.southbrook_production_release_reason = (
-                    "Missing %s." % ", ".join(missing))
-            else:
-                task.southbrook_production_release_state = "ready"
+            state = task._southbrook_release_gate_kind(missing)
+            task.southbrook_production_release_state = state
+            if state == "ready":
                 task.southbrook_production_release_reason = (
                     "Production release checklist is complete.")
+            elif state == "review":
+                task.southbrook_production_release_reason = (
+                    "Awaiting sign-off only: %s. Nothing on the shop floor is "
+                    "outstanding." % ", ".join(missing))
+            else:
+                blocking = [m for m in missing if m not in task.ATTESTABLE_GATES]
+                task.southbrook_production_release_reason = (
+                    "Missing %s. Sign-off cannot clear: %s."
+                    % (", ".join(missing), ", ".join(blocking)))
 
     def _southbrook_missing_install_items(self):
         self.ensure_one()
