@@ -77,3 +77,46 @@ class TestDedupeKey(TransactionCase):
         k2 = self.Exc._dedupe_key_for(
             "cutlist_divergence", "southbrook.mi.check", 222, rec)
         self.assertEqual(k1, k2, "the key must not contain the row id")
+
+    def test_scan_is_idempotent_across_recreated_checks(self):
+        """Two sweeps over the same condition, with the mi.check row deleted
+        and recreated between them, must leave ONE exception."""
+        Check = self.env["southbrook.mi.check"]
+        Exc = self.Exc.with_context(active_test=False)
+
+        # Find or use a production order ID from existing data,
+        # or use a non-existent ID for the source tracking
+        mo = self.env["mrp.production"].search([], limit=1)
+        mo_id = mo.id if mo else False
+
+        def _count():
+            return Exc.search_count([
+                ("source_model", "=", "southbrook.mi.check"),
+                ("exception_type", "=", "cutlist_divergence"),
+                ("active", "=", True),
+            ])
+
+        # Create first check with id 9001
+        first = Check.create({
+            "name": "Missing cutlist (scan test)", "category": "cut",
+            "severity": "blocker", "production_id": mo_id if mo_id else False,
+            "message": "Cutlist is missing",
+        })
+        # Scan finds it and creates an exception
+        self.Exc._scan_and_materialize()
+        after_first = _count()
+        self.assertGreater(after_first, 0, "first scan should create an exception")
+
+        # Delete the check row and recreate with a different ID
+        first.unlink()
+        Check.create({
+            "name": "Missing cutlist (scan test)", "category": "cut",
+            "severity": "blocker", "production_id": mo_id if mo_id else False,
+            "message": "Cutlist is missing",
+        })
+        # Scan again - should find the same condition via dedupe_key, not create a new exception
+        self.Exc._scan_and_materialize()
+        after_second = _count()
+
+        self.assertEqual(after_second, after_first,
+                         "a recreated check must not add a second exception")

@@ -164,6 +164,8 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
                 is_cut = getattr(c, "category", False) in ("cut", "cutlist")
                 etype = "cutlist_divergence" if is_cut else "mi_blocker"
                 mo = getattr(c, "production_id", False)
+                key = self._dedupe_key_for(
+                    etype, "southbrook.mi.check", c.id, c)
                 self._upsert_exception(etype, "southbrook.mi.check", c.id, {
                     "exception_type": etype,
                     "source_model": "southbrook.mi.check",
@@ -176,7 +178,7 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
                         "Review the MI check and clear the blocker.",
                     "why_text": getattr(c, "message", False) or c.name or "",
                     "company_id": self.env.company.id,
-                })
+                }, dedupe_key=key)
                 n += 1
         except Exception:  # noqa: BLE001
             _logger.exception("command_center: mi_blocker scan failed")
