@@ -25,7 +25,7 @@ manufacturing logic (BoMs, work orders, routings, costing all stay in mrp).
 Reuses the custom MO tabs (CAD / Intelligence / Production Costs / Shop Floor)
 rather than duplicating them — material/BoM/cost are pulled FROM the linked MO.
 """,
-    "version": "19.0.1.5.0",
+    "version": "19.0.1.6.0",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry / OdooIQ",
     "category": "Services/Project",
@@ -45,10 +45,12 @@ rather than duplicating them — material/BoM/cost are pulled FROM the linked MO
     "data": [
         "security/ir.model.access.csv",
         "data/ir_cron_readiness_retick.xml",
+        "data/mail_activity_signoff.xml",
         "data/project_job_templates.xml",
         "views/data_quality_report_views.xml",
         "views/mrp_production_views.xml",
         "views/project_task_views.xml",
+        "views/floor_manager_analytics_views.xml",
     ],
     "assets": {
         "web.assets_backend": [
