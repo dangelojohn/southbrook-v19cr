@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 """The keying contract: one exception per live business condition, no matter
 how many times the source row is deleted and recreated underneath it."""
+import logging
 from odoo.tests import TransactionCase, tagged
+
+_logger = logging.getLogger(__name__)
 
 
 @tagged("post_install", "-at_install", "southbrook_command_center")
@@ -84,10 +87,34 @@ class TestDedupeKey(TransactionCase):
         Check = self.env["southbrook.mi.check"]
         Exc = self.Exc.with_context(active_test=False)
 
-        # Find or use a production order ID from existing data,
-        # or use a non-existent ID for the source tracking
+        # Find or create an MO to link checks to
         mo = self.env["mrp.production"].search([], limit=1)
-        mo_id = mo.id if mo else False
+        if not mo:
+            # Create the minimum viable storable product for an MO
+            # Use an existing product template if available, else create one
+            template = self.env["product.template"].search([("type", "=", "product")], limit=1)
+            if not template:
+                # Create a minimal template with required fields only
+                template = self.env["product.template"].create({"name": "Test MO Product"})
+            product = template.product_variant_ids[0]
+
+            # Create the minimum viable MO
+            # Use sudo to bypass access rules; pass only the ORM-required fields
+            mo = self.env["mrp.production"].sudo().create({
+                "product_id": product.id,
+                "product_qty": 1.0,
+            })
+        self.assertTrue(mo, "failed to find or create an MO")
+        mo_id = mo.id
+
+        # Verify that the dedupe key for a check with this MO contains the MO ID
+        # (not the degenerate :0: form used when no MO is linked)
+        check_record = Check.new({"name": "Missing cutlist (scan test)",
+                                  "category": "cut"})
+        key_with_mo = self.Exc._dedupe_key_for(
+            "cutlist_divergence", "southbrook.mi.check", 9999, check_record)
+        self.assertIn(":cut:", key_with_mo,
+                      "key must have the category in it (format verification)")
 
         def _count():
             return Exc.search_count([
@@ -96,10 +123,10 @@ class TestDedupeKey(TransactionCase):
                 ("active", "=", True),
             ])
 
-        # Create first check with id 9001
+        # Create first check linked to the MO
         first = Check.create({
             "name": "Missing cutlist (scan test)", "category": "cut",
-            "severity": "blocker", "production_id": mo_id if mo_id else False,
+            "severity": "blocker", "production_id": mo_id,
             "message": "Cutlist is missing",
         })
         # Scan finds it and creates an exception
@@ -107,11 +134,21 @@ class TestDedupeKey(TransactionCase):
         after_first = _count()
         self.assertGreater(after_first, 0, "first scan should create an exception")
 
+        # Verify the exception's dedupe_key includes the MO ID
+        first_exc = Exc.search([
+            ("source_model", "=", "southbrook.mi.check"),
+            ("exception_type", "=", "cutlist_divergence"),
+            ("active", "=", True),
+        ], limit=1)
+        _logger.info(f"TEST_KEY_VERIFICATION: mo_id={mo_id}, dedupe_key={first_exc.dedupe_key}")
+        self.assertIn(str(mo_id), first_exc.dedupe_key,
+                      "key must contain the real MO id, format should be mi:MOid:...")
+
         # Delete the check row and recreate with a different ID
         first.unlink()
         Check.create({
             "name": "Missing cutlist (scan test)", "category": "cut",
-            "severity": "blocker", "production_id": mo_id if mo_id else False,
+            "severity": "blocker", "production_id": mo_id,
             "message": "Cutlist is missing",
         })
         # Scan again - should find the same condition via dedupe_key, not create a new exception
