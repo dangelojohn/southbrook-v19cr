@@ -116,30 +116,45 @@ class TestHealthAvailablePoints(TransactionCase):
     def test_fpy_no_data_when_stale_but_present(self):
         """FPY orders exist all-time but none in the 7d window -> no_data.
 
-        The guard checks: search_count([("state", "=", "done"),
-        ("date_finished", ">=", seven_days_ago), ("company_id", "=", company_id)]).
+        Construct: create a closed mrp.production with date_finished 30 days ago,
+        in the current company. With the correct guard (date_finished >= 7d_ago
+        AND company_id), this is no_data. Under the buggy all-time guard
+        (search_count([("state", "=", "done")])), this is live with 100% FPY
+        (the default when mo_count_7d is 0 — the invisible-inflation defect).
 
-        With the correct guard, only recent closed MOs in the current company
-        unlock 'live'. The underlying fpy_pct_7d defaults to 100.0 when
-        mo_count_7d is 0, so stale-but-present records combined with the
-        all-time guard (the bug) would read as 'live' at 100%.
-
-        Note: mrp.production has many cascading overrides in this environment
-        (southbrook_manufacturing_intelligence, southbrook_project_mrp,
-        southbrook_mrp_pm) that make fixture construction complex. This test
-        documents the guard contract; the OEE test (below) exercises the same
-        pattern with a simpler model.
+        This tests the regression the fix prevents: stale orders unlocking 'live'
+        at a perfect 100% score on zero observations.
         """
-        # The guard contract: FPY is no_data unless closed MOs exist in the
-        # last 7 days AND in the current company.
+        # Set up: create a stale closed MO (30 days old)
+        stale_date = datetime.now() - timedelta(days=30)
+        company = self.env.company
+
+        # Create a simple product
+        product = self.env["product.product"].create({
+            "name": "Test FPY Product",
+            "type": "consu",
+        })
+
+        # Create an MO and close it with stale date_finished
+        mo = self.env["mrp.production"].create({
+            "product_id": product.id,
+            "product_qty": 1.0,
+            "product_uom_id": product.uom_id.id,
+            "company_id": company.id,
+            "state": "done",
+            "date_finished": stale_date,
+        })
+        self.assertIsNotNone(mo, "Stale closed MO created")
+
+        # Now score: the FPY guard should say no_data because the closed MO
+        # is outside the 7d window, even though it exists all-time.
         h = self.CC.factory_health_score()
         fpy = next((f for f in h["factors"] if "First-Pass" in f["label"]), None)
         self.assertIsNotNone(fpy)
-        # If no recent closed MOs exist, guard says no_data (correct behavior).
-        # If the guard were buggy (all-time check), stale MOs would unlock
-        # 'live' at 100% invisible inflation — that regression is prevented.
-        if fpy["data_state"] == "no_data":
-            self.assertIn("7 days", fpy["no_data_reason"])
+        self.assertEqual(fpy["data_state"], "no_data",
+                       "FPY must be no_data when only stale closed MOs exist "
+                       "(outside the 7d window)")
+        self.assertIn("7 days", fpy["no_data_reason"])
 
     def test_band_insufficient_below_coverage_floor(self):
         """Band is insufficient when available < min_coverage_points, even if
