@@ -41,6 +41,6 @@ class SouthbrookCommandExplorerBridge(models.AbstractModel):
             _logger.exception("command_center: explorer bridge query failed")
             return {}, "fallback: Process Explorer query failed"
         if not isinstance(data, dict) or not data.get("ok"):
-            reason = (data or {}).get("reason", "unknown")
+            reason = data.get("reason", "unknown") if isinstance(data, dict) else "invalid response type"
             return {}, "fallback: Process Explorer returned no data (%s)" % reason
         return data, _PROVENANCE_LIVE

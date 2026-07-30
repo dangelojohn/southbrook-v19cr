@@ -37,3 +37,14 @@ class TestExplorerBridge(TransactionCase):
             payload, provenance = self.Bridge.fetch()
         self.assertEqual(payload, {})
         self.assertIn("no routing", provenance)
+
+    def test_degrades_when_explorer_returns_non_dict(self):
+        Explorer = self.env.get("mrp.process.explorer")
+        if Explorer is None:
+            self.skipTest("mrp_process_explorer not installed here")
+        with patch.object(type(Explorer), "get_data",
+                          return_value="invalid response"):
+            payload, provenance = self.Bridge.fetch()
+        self.assertEqual(payload, {})
+        self.assertIn("fallback", provenance)
+        self.assertTrue(provenance, "provenance must never be empty")
