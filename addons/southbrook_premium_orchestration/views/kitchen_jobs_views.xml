@@ -34,7 +34,7 @@
                 <field name="current_bottleneck_workcenter_id"/>
                 <field name="top_blocker"/>
                 <field name="next_best_action"/>
-                <field name="unscheduled_workorder_count"/>
+                <field name="skj_unscheduled_wo_count"/>
                 <field name="unassigned_workorder_count"/>
                 <field name="job_at_risk"/>
                 <field name="user_ids"/>
@@ -112,14 +112,20 @@
                                 <field name="next_best_action"/>
                             </div>
 
-                            <!-- L4: WO reality + at-risk chip -->
+                            <!-- L4: WO reality + at-risk chip.
+                                 skj_unscheduled_wo_count is the BOTH-schedules truth
+                                 (native leave + shop-floor-control date), not the
+                                 stored native-only counter — af0b386 two-schedule
+                                 finding: the stored column over-reports on this
+                                 instance and would tell the shop to schedule work a
+                                 planner already dated. -->
                             <div class="skj-l4">
-                                <t t-if="record.unscheduled_workorder_count.raw_value === 0 &amp;&amp; record.unassigned_workorder_count.raw_value === 0">
+                                <t t-if="record.skj_unscheduled_wo_count.raw_value === 0 &amp;&amp; record.unassigned_workorder_count.raw_value === 0">
                                     <span class="skj-chip skj-ok">WOs scheduled ✓</span>
                                 </t>
                                 <t t-else="">
                                     <span class="skj-chip skj-warn">
-                                        <field name="unscheduled_workorder_count"/> unscheduled</span>
+                                        <field name="skj_unscheduled_wo_count"/> unscheduled</span>
                                     <span class="skj-chip skj-warn">
                                         <field name="unassigned_workorder_count"/> unassigned</span>
                                 </t>
@@ -213,8 +219,11 @@
                 <filter name="unassigned"
                         string="Unassigned"
                         domain="[('user_ids','=',False)]"/>
+                <!-- Stored field = native schedule column only; the honest
+                     label says so (the SFC schedule is a second live plan
+                     this filter cannot see — af0b386). -->
                 <filter name="unscheduled"
-                        string="Has Unscheduled WOs"
+                        string="Unplanned (Native Schedule)"
                         domain="[('unscheduled_workorder_count','&gt;',0)]"/>
                 <filter name="late"
                         string="Past Deadline"

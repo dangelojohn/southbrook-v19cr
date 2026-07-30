@@ -124,7 +124,8 @@ class TestKitchenJobsBoard(TransactionCase):
                 for key in (
                     "total", "blocked", "review", "ready", "undecided",
                     "at_risk", "missing_install", "unassigned",
-                    "unscheduled_wos", "unassigned_wos", "max_days_late",
+                    "unscheduled_wos", "unscheduled_native",
+                    "unassigned_wos", "max_days_late",
                     "late", "deadline_coverage",
                 ):
                     self.assertIn(key, result["kpis"], "missing kpis key %s" % key)
@@ -153,6 +154,47 @@ class TestKitchenJobsBoard(TransactionCase):
             self.assertEqual(entry["count"], 0)
         self.assertEqual(result["equipment"]["blocked_workcenters"], [])
         self.assertEqual(result["do_next"], [])
+
+    def test_unscheduled_respects_both_schedules(self):
+        # af0b386 two-schedule finding: a WO dated only in
+        # mrp_shop_floor_control's date_planned_start_wo has no native
+        # leave, so the stored unscheduled_workorder_count calls it
+        # unscheduled — but the board's headline count and DO NEXT must
+        # NOT, or they tell the shop to schedule work a planner already
+        # dated. Only runs the SFC half when that module's field exists.
+        so = self._make_so()
+        task = self._make_task(so=so, name="Two Schedules")
+        mo = self._make_mo(task)
+        mo.action_confirm()
+        wos = mo.workorder_ids.filtered(
+            lambda w: w.state in ("blocked", "ready") and not w.leave_id)
+        if not wos:
+            self.skipTest("fixture produced no plannable work order")
+        wo = wos[0]
+
+        result = self.Task.skj_board_intel([("id", "=", task.id)])
+        self.assertGreaterEqual(
+            result["kpis"]["unscheduled_wos"], 1,
+            "a WO with no date in either schedule must count as unscheduled")
+        self.assertEqual(task.skj_unscheduled_wo_count,
+                         result["kpis"]["unscheduled_wos"])
+
+        if "date_planned_start_wo" not in wo._fields:
+            self.skipTest("mrp_shop_floor_control not installed here — "
+                          "native half asserted above, SFC half not testable")
+        before = result["kpis"]["unscheduled_wos"]
+        wo.date_planned_start_wo = fields.Datetime.now()
+        task.invalidate_recordset()
+        result = self.Task.skj_board_intel([("id", "=", task.id)])
+        self.assertEqual(
+            result["kpis"]["unscheduled_wos"], before - 1,
+            "an SFC-dated WO is scheduled, whatever the native column says")
+        rank2 = [i for i in result["do_next"]
+                 if i["action"]["res_model"] == "mrp.workorder"]
+        for item in rank2:
+            self.assertNotIn(
+                wo.id, item["action"]["domain"][0][2],
+                "DO NEXT must never list an SFC-dated WO as needing a date")
 
     def test_pareto_includes_all_ten_gates(self):
         so = self._make_so()

@@ -88,7 +88,11 @@ _SKJ_GATE_TAXONOMY = (
      [("material_at_risk", "=", True)]),
     ("workcenter_over_capacity", "Station over capacity",
      [("workcenter_over_capacity", "=", True)]),
-    ("unscheduled_workorder_count", "Unscheduled work orders",
+    # Label says "native" because the stored field reads only the native
+    # schedule column (af0b386: the SFC schedule is a second live plan the
+    # stored count can't see) — the header's headline "WOs unscheduled" KPI
+    # uses the true both-schedules count instead.
+    ("unscheduled_workorder_count", "Unplanned (native schedule)",
      [("unscheduled_workorder_count", ">", 0)]),
     ("crew_gap", "No crew reserved",
      [("crew_gap", "=", True)]),
@@ -420,6 +424,54 @@ class ProjectTask(models.Model):
             task.skj_identity_needs_naming = (
                 "TBD" in name or name.startswith("Job: S"))
 
+    skj_unscheduled_wo_count = fields.Integer(
+        string="Unscheduled WOs (Both Schedules)",
+        compute="_compute_skj_unscheduled_wo_count",
+        help="Work orders on this job that nobody has planned in EITHER "
+             "schedule — neither a native leave (leave_id) nor "
+             "mrp_shop_floor_control's date_planned_start_wo. The stored "
+             "unscheduled_workorder_count reads only the native column and "
+             "over-reports on this instance (af0b386: 76 of 93 in-flight "
+             "WOs are SFC-dated with no native leave); the card renders "
+             "THIS field so it never tells the shop to schedule work a "
+             "planner already dated.",
+    )
+
+    # date_planned_start_wo is deliberately NOT in the depends — it belongs
+    # to mrp_shop_floor_control, a sibling this module must not hard-require
+    # (naming a sibling's field in @api.depends refuses to load where it's
+    # absent — same trap documented on job_install_due's x_sbk_* trigger in
+    # southbrook_project_mrp). Unstored + read-time compute means the card
+    # is fresh on every web_read anyway.
+    @api.depends("production_ids.workorder_ids.leave_id",
+                 "production_ids.workorder_ids.state")
+    def _compute_skj_unscheduled_wo_count(self):
+        for task in self:
+            task.skj_unscheduled_wo_count = len(
+                self._skj_truly_unscheduled_wos(task))
+
+    @api.model
+    def _skj_truly_unscheduled_wos(self, tasks):
+        """Work orders on ``tasks`` that no one has planned in EITHER schedule.
+
+        Mirrors ``action_southbrook_schedule_unscheduled_workorders``
+        (southbrook_project_mrp/models/project_task.py) — the source of
+        truth for what "unscheduled" means on this instance: native Odoo
+        plans live behind ``leave_id``, and the installed
+        mrp_shop_floor_control keeps a second, independent plan in
+        ``date_planned_start_wo``. A count guarded on the native column
+        alone over-reports by every SFC-dated work order (the stored
+        unscheduled_workorder_count still does — known wrong-column issue).
+        getattr with a default, matching that method, so this also works on
+        a DB without the SFC module. sudo(): same posture as the equipment
+        payload — a user who can see the job may see how much of it is
+        unplanned."""
+        candidates = tasks.sudo().production_ids.workorder_ids.filtered(
+            lambda w: w.state in ("blocked", "ready"))
+        return candidates.filtered(
+            lambda w: not w.leave_id
+            and not getattr(w, "date_planned_start_wo", False))
+
     # ------------------------------------------------------------------
     # Kitchen Jobs board — skj_board_intel RPC (contract §1)
     # ------------------------------------------------------------------
@@ -453,12 +505,13 @@ class ProjectTask(models.Model):
         """
         combined_domain = AND([_SKJ_BASE_DOMAIN, domain or []])
         tasks = self.search(combined_domain)
-        task_ids = tasks.ids
 
-        kpis = self._skj_kpis(combined_domain, tasks)
+        truly_unscheduled = self._skj_truly_unscheduled_wos(tasks)
+        kpis = self._skj_kpis(combined_domain, tasks, truly_unscheduled)
         equipment = self._skj_equipment_payload(tasks)
         pareto = self._skj_pareto(combined_domain)
-        do_next = self._skj_do_next(kpis, equipment, pareto, task_ids)
+        do_next = self._skj_do_next(kpis, equipment, pareto,
+                                    truly_unscheduled.ids)
 
         recomputed_ats = [
             d for d in tasks.mapped("readiness_last_recomputed_at") if d]
@@ -477,7 +530,7 @@ class ProjectTask(models.Model):
             "server_now": _skj_iso(fields.Datetime.now()),
         }
 
-    def _skj_kpis(self, combined_domain, tasks):
+    def _skj_kpis(self, combined_domain, tasks, truly_unscheduled):
         """Header KPI chip counts (contract §1).
 
         Stored fields (readiness_decision, job_at_risk,
@@ -487,7 +540,14 @@ class ProjectTask(models.Model):
         after this method's first draft. unassigned_wos sums
         unassigned_workorder_count — UNSTORED — so it is summed by
         iterating ``tasks`` in Python instead; that field must never reach
-        a search domain or read_group (contract §1)."""
+        a search domain or read_group (contract §1).
+
+        Two "unscheduled" numbers, on purpose (af0b386 two-schedule
+        finding): ``unscheduled_wos`` is the TRUE both-schedules count
+        (``truly_unscheduled``, precomputed by the caller) — the headline
+        KPI and what DO NEXT acts on; ``unscheduled_native`` is the stored
+        native-column sum — it exists so the "Unplanned (native)" filter
+        chip's count matches what clicking that filter actually returns."""
         total = len(tasks)
         blocked = self.search_count(
             AND([combined_domain, [("readiness_decision", "=", "blocked")]]))
@@ -526,7 +586,8 @@ class ProjectTask(models.Model):
 
         rows = self._read_group(
             combined_domain, aggregates=["unscheduled_workorder_count:sum"])
-        unscheduled_wos = (rows[0][0] or 0) if rows else 0
+        unscheduled_native = (rows[0][0] or 0) if rows else 0
+        unscheduled_wos = len(truly_unscheduled)
 
         # UNSTORED — never a search domain or read_group target. tasks is
         # already the fetched recordset for this domain, so mapped() here
@@ -546,6 +607,7 @@ class ProjectTask(models.Model):
             "missing_install": missing_install,
             "unassigned": unassigned,
             "unscheduled_wos": unscheduled_wos,
+            "unscheduled_native": unscheduled_native,
             "unassigned_wos": unassigned_wos,
             "max_days_late": max_days_late,
             "late": late,
@@ -610,7 +672,7 @@ class ProjectTask(models.Model):
         entries.sort(key=lambda entry: (-entry["jobs_blocked"], entry["name"]))
         return {"blocked_workcenters": entries}
 
-    def _skj_do_next(self, kpis, equipment, pareto, task_ids):
+    def _skj_do_next(self, kpis, equipment, pareto, unscheduled_wo_ids):
         """Deterministic DO NEXT ranking (contract §1). Equipment first —
         it blocks work outright and the fix is a single maintenance
         action. Unscheduled work orders second — a scheduling gap is one
@@ -641,18 +703,17 @@ class ProjectTask(models.Model):
             items.append({
                 "rank": len(items) + 1,
                 "label": "Schedule %d work orders" % unscheduled_wos,
-                "detail": "no planned start date set",
+                "detail": "not planned in either schedule",
                 "count": unscheduled_wos,
                 "action": {
                     "type": "act_window",
                     "res_model": "mrp.workorder",
-                    # Backlink VERIFIED: mrp.production.project_task_id
-                    # (southbrook_project_mrp/models/mrp_production.py:8).
-                    "domain": [
-                        ("date_start", "=", False),
-                        ("state", "not in", ["done", "cancel"]),
-                        ("production_id.project_task_id", "in", task_ids),
-                    ],
+                    # Exact ids from _skj_truly_unscheduled_wos — a field
+                    # domain here would need date_planned_start_wo, which
+                    # is mrp_shop_floor_control's and can't be assumed
+                    # searchable (or present) client-side. Ids keep the
+                    # list identical to what the count promised.
+                    "domain": [("id", "in", unscheduled_wo_ids)],
                     "filter_name": None,
                 },
             })

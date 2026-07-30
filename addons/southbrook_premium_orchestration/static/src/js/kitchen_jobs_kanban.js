@@ -53,7 +53,11 @@ const FILTER_CHIPS = [
     { name: "at_risk", label: _t("At Risk"), kpiKey: "at_risk", cls: "skj-atrisk" },
     { name: "missing_install_date", label: _t("Missing Install"), kpiKey: "missing_install", cls: "skj-unknown" },
     { name: "unassigned", label: _t("Unassigned"), kpiKey: "unassigned", cls: "skj-warn" },
-    { name: "unscheduled", label: _t("Unscheduled WOs"), kpiKey: "unscheduled_wos", cls: "skj-warn" },
+    // Stored native-schedule column only (af0b386 two-schedule finding) —
+    // count comes from kpis.unscheduled_native so the chip's number always
+    // matches what clicking the filter returns; the headline KPI chip's
+    // "N WOs unscheduled" uses the true both-schedules kpis.unscheduled_wos.
+    { name: "unscheduled", label: _t("Unplanned (native)"), kpiKey: "unscheduled_native", cls: "skj-warn" },
     { name: "late", label: _t("Past Deadline"), kpiKey: null, cls: "skj-late" },
 ];
 
