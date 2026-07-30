@@ -199,6 +199,7 @@ class CommandCenterController(http.Controller):
             domain = [("state", "in", ("draft", "ready"))]
             if cid and "company_id" in Rec._fields:
                 domain.append(("company_id", "=", cid))
+            domain.append(("summary", "not ilike", "smoke test"))
             return Rec.search_read(
                 domain=domain,
                 fields=["summary", "rationale", "priority", "state",
