@@ -165,7 +165,10 @@ class TestKitchenJobsBoard(TransactionCase):
         so = self._make_so()
         task = self._make_task(so=so, name="Two Schedules")
         mo = self._make_mo(task)
-        mo.action_confirm()
+        # This module's own action_confirm override gates on component
+        # availability (models/mrp_production.py) — the fixture has no
+        # stock, so use the override's documented manager bypass.
+        mo.with_context(bypass_availability_gate=True).action_confirm()
         wos = mo.workorder_ids.filtered(
             lambda w: w.state in ("blocked", "ready") and not w.leave_id)
         if not wos:
@@ -281,12 +284,13 @@ class TestKitchenJobsBoard(TransactionCase):
             "(pinned by southbrook_project_mrp's own "
             "test_manufacturing_readiness_decision_blocks_unscheduled_job)")
 
-        # web_read_group, not formatted_read_group/_read_group directly —
-        # group_expand is only honoured under the read_group_expand=True
-        # context that web_read_group sets internally (verified against
-        # odoo/addons/web/models/models.py:1479). This is also the actual
-        # entry point the Kitchen Jobs kanban uses to build its columns.
-        result = self.Task.web_read_group(
+        # web_read_group + read_group_expand=True context — group_expand is
+        # only honoured under that context (web/models/models.py:908), and
+        # it is the WEB CLIENT that sends it on every grouped kanban read
+        # (web/static/src/model/relational_model/relational_model.js:855),
+        # not web_read_group itself. The test mirrors exactly what the
+        # Kitchen Jobs kanban sends.
+        result = self.Task.with_context(read_group_expand=True).web_read_group(
             [("id", "=", task.id)],
             groupby=["readiness_decision"],
             aggregates=["__count"],
