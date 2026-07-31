@@ -78,11 +78,27 @@ Phase 5 — Tests + a11y
         # The Southbrook estimating addon — owns the 12 cabinet
         # templates with their attribute_lines that this UX renders.
         "southbrook_estimating",
-        # Phase 0 design-system consolidation (2026-07-31) —
-        # configurator.scss already reads var(--sb-*) tokens;
-        # southbrook_ui is the new canonical, dependency-light token
-        # layer those names should resolve through going forward.
-        "southbrook_ui",
+        # Phase 0 design-system consolidation (2026-07-31) — this addon
+        # SHOULD depend on southbrook_ui (its configurator.scss already
+        # reads var(--sb-*) tokens), but the dependency is DEFERRED.
+        #
+        # Declaring it pulls this module into the upgrade graph whenever
+        # southbrook_ui is installed or upgraded, and `-u
+        # southbrook_configurator_ux` currently FAILS on prod:
+        #     ParseError: while parsing
+        #     southbrook_configurator_ux/data/catalog_expansion.xml:13
+        # That is the <function> seeder calling build_catalog(), which
+        # creates variants — a pre-existing landmine unrelated to the
+        # token work (the only change made here was this one line, and
+        # removing it clears the failure). It blocked the Phase 0 deploy
+        # three times.
+        #
+        # Nothing is lost meanwhile: southbrook_ui contributes to
+        # web.assets_backend/frontend, and Odoo merges every installed
+        # addon's contribution into one global bundle, so the tokens
+        # still resolve at runtime. The declaration is what makes that
+        # a contract rather than an accident — restore it in the same
+        # change that fixes catalog_expansion's re-run behaviour.
     ],
     "external_dependencies": {
         # Phase 4 import pipeline (controllers/main.py
