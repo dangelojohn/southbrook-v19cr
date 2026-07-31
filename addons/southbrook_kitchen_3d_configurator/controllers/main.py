@@ -20,6 +20,27 @@ from odoo.addons.southbrook_estimating.models.kitchen_layout_engine import (
 
 _logger = logging.getLogger(__name__)
 
+# Task 9b (corner-remediation, 2026-07-30) — server-side write-path guard
+# against the client's 1e6 sort-key sentinel (kitchen_configurator.js
+# `_addCabinetFromProduct`'s `sortX` fallback) leaking into a save_design
+# payload when packRow is skipped in multiWall mode (Task 9 report,
+# "producer" section). Same threshold/name as the debris-repair migration
+# (migrations/19.0.5.34.1/post-migrate.py's `_DEBRIS_THRESHOLD_IN`) —
+# comfortably above any real room dimension, comfortably below the
+# verified prod sentinel (1,000,000).
+_DEBRIS_THRESHOLD_IN = 9999
+
+
+def _is_sentinel_position(value):
+    """True if `value` (an incoming x/z position, still raw JSON) is at
+    or beyond the debris-sentinel threshold in either direction. Any
+    non-numeric input is NOT a sentinel here — it fails elsewhere
+    (Line.create's own field validation) and is not this guard's job."""
+    try:
+        return abs(float(value)) >= _DEBRIS_THRESHOLD_IN
+    except (TypeError, ValueError):
+        return False
+
 
 class SouthbrookKitchenConfiguratorController(http.Controller):
 
@@ -481,6 +502,11 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # layout_key) so the non-back-wall engine-placement pass below
         # can find them without a second search.
         saved_lines_by_key = {}
+        # Task 9b — layout_keys this save wrote as sentinel/debris lines
+        # (see _is_sentinel_position below). Excluded from the wall-
+        # placement pass further down so the engine never computes a
+        # real pose for a line we've just archived out of the design.
+        sentinel_keys = set()
         for seq, item in enumerate(items, start=1):
             try:
                 pid = int(item["product_id"])
@@ -513,17 +539,49 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             layout_key = item.get("layout_key") or "auto-%d" % seq
             incoming_keys.add(layout_key)
             is_appliance = tmpl.southbrook_cabinet_type == "appliance"
+            # Task 9b — server-side sentinel guard (Task 9 report,
+            # "producer" section). The client's 1e6 sort-key sentinel
+            # (kitchen_configurator.js `_addCabinetFromProduct`'s
+            # `sortX` fallback) is meant to be transient, overwritten by
+            # a real packed position before save — but `packRow` is
+            # skipped whenever `multiWall` is true, so a newly-added
+            # back-wall item can reach this endpoint still carrying it.
+            # This save path previously wrote x/z_position_in verbatim,
+            # letting the sentinel land in the DB as an active, priced,
+            # "real" line (prod-verified: design 99). Any incoming
+            # position at/beyond the debris threshold — in either axis,
+            # regardless of sign — is never persisted as active,
+            # positioned-for-billing, or priced: it's written archived +
+            # is_unresolved so it never counts toward totals/price
+            # (cabinet_line_ids excludes inactive lines by default) and
+            # never silently vanishes (still a real row, still logged,
+            # still visible to an admin who unarchives it to inspect).
+            is_sentinel = (_is_sentinel_position(item.get("x_position_in", 0))
+                           or _is_sentinel_position(item.get("z_position_in", 0)))
+            if is_sentinel:
+                sentinel_keys.add(layout_key)
+                _logger.warning(
+                    "save_design: sentinel/out-of-bounds position on "
+                    "design=%s product=%s (%s, layout_key=%s) — "
+                    "x=%r z=%r (threshold=%s). Persisting archived + "
+                    "is_unresolved + unpriced instead of an active line.",
+                    design.id, product.id, product.display_name,
+                    layout_key, item.get("x_position_in"),
+                    item.get("z_position_in"), _DEBRIS_THRESHOLD_IN,
+                )
             line_vals = {
                 "sequence":       seq * 10,
                 "product_id":     product.id,
                 "quantity":       1,
                 # Task 16 (SBK-028) — appliance placeholders are ALWAYS
-                # free: never route through _channel_price. This is the
-                # actual price-vector gate for the ctype='appliance'
-                # widening above — every other product type is unaffected
-                # and keeps pricing from the resolved channel pricelist.
-                "price_unit":     (0.0 if is_appliance else
+                # free: never route through _channel_price. Task 9b adds
+                # the sentinel gate alongside it: neither an appliance
+                # stand-in nor a debris line is ever priced from the
+                # resolved channel pricelist.
+                "price_unit":     (0.0 if (is_appliance or is_sentinel) else
                                     self._channel_price(product, pricelist, partner)),
+                "active":         not is_sentinel,
+                "is_unresolved":  is_sentinel,
                 "cabinet_type":   tmpl.southbrook_cabinet_type,
                 # Whitelist, not passthrough — an unrecognised selection
                 # value would raise ValueError deep in Line.create and
@@ -582,8 +640,17 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # guess with the pure kitchen_layout_engine's pose. Back-wall
         # lines are LEFT ALONE — the client's own back-wall packing is
         # correct today and must not change (backward compat).
+        # Task 9b — a sentinel line is archived + unpriced on purpose;
+        # never route it through the engine-placement pass, which would
+        # otherwise compute and write it a real pose (undoing the guard
+        # above for its x/y/z, even though `active`/`is_unresolved`/
+        # `price_unit` would still hold). Its debris position is left
+        # exactly as the client sent it, same as the migration leaves
+        # existing debris rows untouched apart from `active`.
         wall_lines = Line.browse([])
-        for line in saved_lines_by_key.values():
+        for key, line in saved_lines_by_key.items():
+            if key in sentinel_keys:
+                continue
             if (line.wall or "back") != "back":
                 wall_lines |= line
         placed = []

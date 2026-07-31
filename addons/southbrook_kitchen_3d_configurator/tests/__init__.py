@@ -116,3 +116,22 @@ from . import test_debris_repair_migration
 # product genuinely outside the auto-seed logic (sibling-variant BOM
 # shadowing the template fast path) still blocks.
 from . import test_bom_gate_coherence
+
+# Task 10, corner-remediation (2026-07-30) — /layout filler-remainder
+# honesty gate: no phantom filler/remainder on a 0-cabinet (undersized)
+# room, honest geometric remainder once populated, all four filler
+# strategies place correctly. Shipped alongside Task 10's fix but never
+# wired into this package's discovery until Task 9b (this file was
+# never imported, so Odoo's test loader never picked it up — flagged in
+# task-9-report.md's Concerns §3).
+from . import test_filler_remainder_gate
+
+# Task 9b, corner-remediation (2026-07-30) — save_design write-path
+# sentinel guard: an incoming line at/beyond the debris threshold
+# (abs(x)>=9999 or abs(z)>=9999) is persisted archived + is_unresolved +
+# unpriced instead of an active/positioned/priced line, normal lines in
+# the same batch are unaffected, and design totals exclude the sentinel
+# line. Closes the write-path gap task-9-report.md's "producer" section
+# identified (controllers/main.py's "back-wall lines are LEFT ALONE"
+# write previously persisted x/z verbatim).
+from . import test_sentinel_write_guard
