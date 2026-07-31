@@ -154,6 +154,11 @@ from . import test_corner_hand_swap
 # invariants for EVERY active shipped kitchen template.
 from . import test_invariant_matrix
 
+# Task 11, corner-remediation (2026-07-30, SBK-024) — placed_width_in()
+# unit + placement-call-site integration tests, decoupled from catalog
+# data drift via a synthetic two-width cabinet family.
+from . import test_placed_width_in
+
 # Task 7, corner-remediation (2026-07-30, SBK-033 expanded scope) — ONE
 # server-computed counter summary: tall_count/corner_count/panel_count/
 # appliance_count/unplaced_count/summary_total, the sum-of-parts ==

@@ -131,11 +131,29 @@ class TestTemplateInstantiate(TransactionCase):
         floor = design.cabinet_line_ids.filtered(
             lambda l: l.wall == "back" and l.cabinet_type != "wall"
         ).sorted(lambda l: l.x_position_in)
-        # SINK(33) + B1(24) + B1(24) + RANGE(30) — nothing absorbed
+        # SINK(36) + B1(24) + B1(24) + RANGE(30) — nothing absorbed
         # (no corner in this template) and nothing dropped.
+        #
+        # Task 11 (SBK-024) pin update — SINK is a hard PIN onto
+        # `southbrook_estimating.sink_base`'s single materialized
+        # variant. That variant carries a REAL "Width" attribute value
+        # of 36in (`env.ref("southbrook_estimating.sink_base")
+        # .product_variant_id.product_template_attribute_value_ids`,
+        # confirmed via odoo shell on this fixture's DB), diverging from
+        # the TEMPLATE's own nominal `southbrook_width_in=33` (data seed:
+        # canonical_catalog_dimensions.xml). Pre-fix, this SINK line
+        # placed at the template's assumed 33in (111 total); post-fix it
+        # honestly places at the pinned variant's OWN 36in (114 total) —
+        # the identical class of defect V5-partc.md's live "SINK slot
+        # 30in resolves to a 24in-Width variant" evidence documents, just
+        # the opposite direction (a variant WIDER than its template's
+        # nominal, instead of narrower). `test_appliance_reservation_
+        # bounds_repeat_growth`'s own n_max=3 pin is untouched: floor((120
+        # -63)/24)=2 and floor((120-66)/24)=2 give the identical capacity
+        # either way.
         self.assertEqual(len(floor), 4)
         widths = floor.mapped("width_in")
-        self.assertEqual(sum(widths), 111.0)
+        self.assertEqual(sum(widths), 114.0)
         # No overlap: each line's [x, x+width] interval is disjoint from
         # the next along the run.
         prev_end = 0.0

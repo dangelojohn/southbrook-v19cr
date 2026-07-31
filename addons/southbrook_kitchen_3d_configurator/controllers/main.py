@@ -29,6 +29,14 @@ from odoo.addons.southbrook_estimating.models.kitchen_layout_engine import (
 from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
     DEBRIS_THRESHOLD_IN as _DEBRIS_THRESHOLD_IN,
 )
+# Task 11 (corner-remediation 2026-07-30, SBK-024) — the ONE helper that
+# resolves a product.product variant's actual placed width (its own Width
+# PTAV when present, else the template's shared southbrook_width_in).
+# Imported the same way DEBRIS_THRESHOLD_IN is above — single definition
+# on the model, shared here.
+from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
+    placed_width_in,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -166,7 +174,8 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 "warnings": [],
             }
 
-        module_w = base.product_tmpl_id.southbrook_width_in or 24.0
+        # Task 11 (SBK-024) — the resolved base variant's own Width.
+        module_w = placed_width_in(base) or 24.0
         rw = float(room_width_in)
         n  = max(0, int(math.floor(rw / module_w)))
         # Task 10 (SBK-023) — remainder only has meaning in the context of
@@ -630,7 +639,11 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                                         "range", "fridge", "dishwasher",
                                         "hood", "other")
                                     else False),
-                "width_in":       item.get("width_in",  tmpl.southbrook_width_in or 24.0),
+                # Task 11 (SBK-024) — client normally echoes back the
+                # server-computed width_in (from /products or /layout,
+                # both now placed_width_in-sourced below); the variant's
+                # own Width is the honest fallback when it's omitted.
+                "width_in":       item.get("width_in",  placed_width_in(product) or 24.0),
                 "height_in":      item.get("height_in", tmpl.southbrook_height_in or 34.5),
                 "depth_in":       item.get("depth_in",  tmpl.southbrook_depth_in or 24.0),
                 "x_position_in":  item.get("x_position_in", 0),
@@ -1211,7 +1224,12 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             "name":          product.display_name,
             "sku":           product.default_code or "",
             "cabinet_type":  tmpl.southbrook_cabinet_type,
-            "width_in":      tmpl.southbrook_width_in  or 24.0,
+            # Task 11 (SBK-024) — this is THE payload feeding both
+            # /products and /layout (which the client echoes back
+            # verbatim into save_design's item.width_in), so it's the
+            # primary fix site: the variant's own Width, not the
+            # template's shared nominal default.
+            "width_in":      placed_width_in(product) or 24.0,
             "height_in":     tmpl.southbrook_height_in or 34.5,
             "depth_in":      tmpl.southbrook_depth_in  or 24.0,
             "material":      tmpl.southbrook_material   or "white_melamine",

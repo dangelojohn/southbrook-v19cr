@@ -17,7 +17,12 @@ from odoo import api, fields, models
 
 # Reuse — never fork — the room lexicon and the design-line zone lexicon.
 from odoo.addons.southbrook_estimating.models.southbrook_room import _LAYOUT_SHAPES
-from .kitchen_design import ZONE_SELECTION, _ZONE_FROM_CABINET_TYPE
+from .kitchen_design import (
+    ZONE_SELECTION, _ZONE_FROM_CABINET_TYPE,
+    # Task 11 (SBK-024) — a pinned slot's own Width, not its template's
+    # shared nominal default.
+    placed_width_in,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -178,6 +183,15 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             ]).filtered("product_variant_ids")
             if tmpls:
                 # Prefer a width match when the archetype maps to several.
+                # Task 11 (SBK-024) note — deliberately NOT switched to
+                # placed_width_in(): this is a TEMPLATE search filter
+                # (choosing which of several candidate templates to
+                # resolve to), not a placement write of an already-
+                # resolved product's width. `.product_variant_id` below
+                # still takes Odoo's arbitrary "first" variant, which is
+                # the separate "duplicate SB-BASE-1DR" resolution-by-SKU
+                # class of bug V5-partc.md §SBK-024 documents as
+                # related-but-distinct — out of scope for this task.
                 exact = tmpls.filtered(
                     lambda t: abs((t.southbrook_width_in or 0.0) - width_in) < 0.51)
                 return (exact[:1] or tmpls[:1]).product_variant_id
@@ -212,6 +226,8 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             ("southbrook_is_cabinet", "=", True),
             ("southbrook_cabinet_type", "=", slot.cabinet_type),
         ]).filtered("product_variant_ids")
+        # Task 11 (SBK-024) note — same template-search-filter rationale
+        # as the archetype rung above; not a placement write.
         exact = tmpls.filtered(
             lambda t: abs((t.southbrook_width_in or 0.0) - width_in) < 0.51)
         return exact[:1].product_variant_id if exact else Product
@@ -224,8 +240,11 @@ class SouthbrookKitchenTemplateResolve(models.Model):
                 s.appliance_type or "", s.nominal_width_in or 0.0))
         return float(
             s.nominal_width_in
-            or (s.product_id.product_tmpl_id.southbrook_width_in
-                if s.product_id else 0.0)
+            # Task 11 (SBK-024) — a pinned product's own Width, not its
+            # template's shared nominal default; this feeds the run-
+            # length arithmetic below, so an under-reported width here
+            # would silently shrink this slot's claim on the run.
+            or (placed_width_in(s.product_id) if s.product_id else 0.0)
             or module_w)
 
     def parametric_fit(self, cabinet_count=None, module_width_in=None,
@@ -420,6 +439,42 @@ class SouthbrookKitchenTemplateResolve(models.Model):
                 if is_unresolved:
                     product = unresolved_tmpl.product_variant_id
                 tmpl = product.product_tmpl_id
+                # Task 11 (SBK-024) — a FIXED slot resolved to a real
+                # catalog product places at THAT product's OWN width
+                # (variant Width PTAV when present, else its template's
+                # nominal default via placed_width_in's own fallback),
+                # not the slot's originally-REQUESTED nominal width —
+                # this is the exact live defect this task fixes ("SINK
+                # slot 30in resolves to a 24in-Width variant but places
+                # at the template's 30").
+                #
+                # Three slot shapes deliberately OPT OUT and keep the
+                # planned `width_in` as-is — none of them represent "a
+                # resolved catalog SKU's own true size":
+                #   - is_unresolved: no real product to report a
+                #     footprint for (honesty contract, matches the
+                #     "UNRESOLVED: <slot>" label — design.line._compute_
+                #     position_label).
+                #   - appliance slots: width is a pure user/caller
+                #     reservation size (appliance_widths dict / the
+                #     slot's own nominal_width_in — "dropdown width
+                #     wins", test_template_instantiate.py); the linked
+                #     SBK-APPL-* stand-in product's own template width
+                #     is an unrelated placeholder default, never the
+                #     intended appliance footprint.
+                #   - repeat_ok (parametric-growth) slots: these
+                #     represent a CUSTOM-BUILT, made-to-order module
+                #     sized by the room-fill math (module_width_in /
+                #     nominal_width_in), not a fixed off-the-shelf SKU
+                #     width — the linked product is a pricing/BOM
+                #     stand-in, not a size constraint ("module_width_in
+                #     is a real parameter", test_module_width_
+                #     parametric).
+                skip_resolved_width = (
+                    is_unresolved or slot.cabinet_type == "appliance"
+                    or slot.repeat_ok)
+                line_width_in = width_in if skip_resolved_width else (
+                    placed_width_in(product) or width_in)
                 Line.create({
                     "design_id": design.id,
                     "sequence": (idx + 1) * 10,
@@ -430,7 +485,7 @@ class SouthbrookKitchenTemplateResolve(models.Model):
                     "cabinet_type": slot.cabinet_type,
                     "zone": _ZONE_FROM_CABINET_TYPE.get(
                         slot.cabinet_type, "other"),
-                    "width_in": width_in,
+                    "width_in": line_width_in,
                     "height_in": tmpl.southbrook_height_in or 34.5,
                     "depth_in": tmpl.southbrook_depth_in or 24.0,
                     "wall": slot.wall,

@@ -69,6 +69,70 @@ def _line_ref(*items):
     return "".join(" (line #%d)" % i for i in ids)
 
 
+# ── Task 11 (corner-remediation 2026-07-30, SBK-024) ──────────────────────
+# `southbrook_width_in` (models/product_template.py) is a single TEMPLATE-
+# level Float — one number shared by every variant of that template. Every
+# placement/geometry call site in this addon used to read it unconditionally,
+# so a slot that resolved to e.g. SB-BASE-2DR-24 (Width PTAV = 24in) still
+# placed at the template's nominal 30in. southbrook_estimating already knows
+# how to read a real width pick correctly (product_config_line.py's
+# `_extract_cabinet_inputs`, via `session.value_ids` for an in-progress
+# config session) — this is the equivalent for an already-committed
+# `product.product` variant, using the SAME dual-storage field
+# (`product.attribute.value.value_inches`, southbrook_estimating/models/
+# product_attribute_value.py) via the standard `product_template_
+# attribute_value_ids -> product_attribute_value_id` traversal
+# (mrp_bom.py:107-120 uses the identical path for lead_time_extra).
+#
+# Height/depth are deliberately NOT given the same treatment: verified
+# (data/attributes.xml) there is no "Height" or "Depth" product.attribute
+# in the catalog today — Width is the only per-variant dimension attribute.
+# southbrook_height_in/southbrook_depth_in stay template-level truth.
+#
+# Corner-cell sizing is OUT OF SCOPE — corner footprints are owned by the
+# placement-rule payloads in kitchen_layout_engine.py / the corner-specific
+# write sites in this file (`_swap_derived_corner`), never this helper.
+_WIDTH_FALLBACK_LOGGED_IDS = set()
+
+
+def placed_width_in(product):
+    """The width (inches) `product` (a `product.product` variant) should
+    actually PLACE/render at.
+
+    Precedence:
+      1. The variant's own "Width" PTAV, read via the canonical
+         `value_inches` field on the master `product.attribute.value`.
+      2. `product.product_tmpl_id.southbrook_width_in` — the template's
+         nominal default, for products with no Width pick at all (e.g.
+         fillers/panels/accessories, or a config_ok template that never
+         materialized a variant). Logged ONCE per product id so a
+         catalog audit can find every SKU still relying on the guess.
+
+    Accepts an empty recordset (returns 0.0, matching the pre-existing
+    `tmpl.southbrook_width_in or 24.0` callers' own `or` fallback) or a
+    multi-record set (uses the first record, mirroring every call site's
+    existing single-product usage).
+    """
+    if not product:
+        return 0.0
+    product = product[:1]
+    ptav = product.product_template_attribute_value_ids.filtered(
+        lambda p: p.attribute_id.name == "Width")[:1]
+    width_in = ptav.product_attribute_value_id.value_inches if ptav else 0.0
+    if width_in:
+        return float(width_in)
+    if product.id not in _WIDTH_FALLBACK_LOGGED_IDS:
+        _WIDTH_FALLBACK_LOGGED_IDS.add(product.id)
+        _logger.info(
+            "[placed_width_in] product %s (id=%d) carries no 'Width' "
+            "attribute value (or its value_inches is unset) — falling "
+            "back to template southbrook_width_in=%.2f. This message "
+            "logs once per product id.",
+            product.display_name, product.id,
+            product.product_tmpl_id.southbrook_width_in or 0.0)
+    return float(product.product_tmpl_id.southbrook_width_in or 0.0)
+
+
 class SouthbrookKitchenDesign(models.Model):
     _name = "southbrook.kitchen.design"
     _description = "Southbrook Kitchen Design"
@@ -627,7 +691,9 @@ class SouthbrookKitchenDesign(models.Model):
             module_w = 24.0
             bp = design._find_cabinet_product("base", raise_if_missing=False)
             if bp:
-                module_w = bp.product_tmpl_id.southbrook_width_in or 24.0
+                # Task 11 (SBK-024) — the variant's own Width, not the
+                # template's shared nominal default.
+                module_w = placed_width_in(bp) or 24.0
             n = max(0, int(math.floor(design.room_width_in / module_w)))
             design.remainder_in = max(0.0, design.room_width_in - n * module_w)
 
@@ -2329,7 +2395,9 @@ class SouthbrookKitchenDesign(models.Model):
                 "quantity":      1,
                 "price_unit":    variant.lst_price or tmpl.list_price,
                 "cabinet_type":  cabinet_type,
-                "width_in":      tmpl.southbrook_width_in or 24.0,
+                # Task 11 (SBK-024) — the materialized variant's own
+                # Width, not the shared template default.
+                "width_in":      placed_width_in(variant) or 24.0,
                 "height_in":     tmpl.southbrook_height_in or 34.5,
                 "depth_in":      tmpl.southbrook_depth_in or 24.0,
                 "x_position_in": x,
@@ -2435,6 +2503,16 @@ class SouthbrookKitchenDesign(models.Model):
         # Inches → mm (25.4). Templates carry the inch-native fields
         # exposed by southbrook_kitchen_3d_configurator.product_template;
         # _compute_panel_dimensions is metric per NF14.
+        #
+        # Task 11 (SBK-024) note — deliberately NOT switched to
+        # `placed_width_in()`: this method is keyed on `product_tmpl`
+        # (a `product.template`), and `mrp.bom` in this codebase is
+        # seeded ONE PER TEMPLATE (`bom_ids` lives on product.template,
+        # not product.product — see the `existing` lookup just above),
+        # not per variant. There is no per-variant BOM to attach a
+        # variant-resolved width to; making the cutlist variant-aware
+        # would mean restructuring BOM generation itself, a separate,
+        # larger change than placement geometry. Out of scope here.
         w_in = product_tmpl.southbrook_width_in or 24.0
         h_in = product_tmpl.southbrook_height_in or 34.5
         d_in = product_tmpl.southbrook_depth_in or 24.0
@@ -2710,7 +2788,8 @@ class SouthbrookKitchenDesign(models.Model):
         """Fill the wall run with base + wall cabinet pairs, plus a filler if needed."""
         base_product = self._find_cabinet_product("base")
         wall_product = self._find_cabinet_product("wall")
-        module_w = base_product.product_tmpl_id.southbrook_width_in or 24.0
+        # Task 11 (SBK-024) — the resolved base variant's own Width.
+        module_w = placed_width_in(base_product) or 24.0
         n = max(0, int(math.floor(self.room_width_in / module_w)))
         remainder = self.room_width_in - n * module_w
 
@@ -2756,7 +2835,10 @@ class SouthbrookKitchenDesign(models.Model):
             "quantity":       qty,
             "price_unit":     product.lst_price,
             "cabinet_type":   tmpl.southbrook_cabinet_type,
-            "width_in":       override_width or tmpl.southbrook_width_in or 24.0,
+            # Task 11 (SBK-024) — an explicit override (e.g. a filler's
+            # remainder width) always wins; otherwise the product's own
+            # Width, not the shared template default.
+            "width_in":       override_width or placed_width_in(product) or 24.0,
             "height_in":      tmpl.southbrook_height_in or 34.5,
             "depth_in":       tmpl.southbrook_depth_in or 24.0,
             "x_position_in":  x,
@@ -3388,7 +3470,11 @@ class SouthbrookKitchenDesignLine(models.Model):
             # T5 — same shared formula every corner write site uses.
             "price_unit": self._sb_variant_price(product, tmpl),
             "cabinet_type": tmpl.southbrook_cabinet_type or self.cabinet_type,
-            "width_in": tmpl.southbrook_width_in or self.width_in,
+            # Task 11 (SBK-024) — the newly-swapped-in variant's own
+            # Width. (The derived-corner swap above is a SEPARATE path
+            # — _swap_derived_corner — and stays on the corner-cell
+            # sizing it already owns; not touched here.)
+            "width_in": placed_width_in(product) or self.width_in,
             "height_in": tmpl.southbrook_height_in or self.height_in,
             "depth_in": tmpl.southbrook_depth_in or self.depth_in,
             "is_unresolved": False,

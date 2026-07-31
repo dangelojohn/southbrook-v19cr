@@ -538,19 +538,25 @@ class TestInvariantMatrix(TransactionCase):
         match its own product variant's 'Width' product.attribute.value
         wherever the variant actually carries one.
 
-        KNOWN OPEN TICKET (per the task-25 brief) — southbrook_width_in
-        lives on `product.template` (ONE float shared by every variant
-        of that template, models/product_template.py), so it structurally
-        cannot represent a specific multi-variant cabinet's own Width
-        PTAV. If this reproduces on HEAD, skipTest carries the concrete
-        evidence rather than either deleting the check or "fixing"
-        production code from a test file.
+        FIXED (Task 11, corner-remediation 2026-07-30, SBK-024) —
+        `southbrook_width_in` lives on `product.template` (ONE float
+        shared by every variant of that template, models/product_
+        template.py), so it structurally cannot represent a specific
+        multi-variant cabinet's own Width PTAV on its own. Every
+        placement/geometry call site now resolves width through
+        `kitchen_design.placed_width_in()` (variant Width PTAV first,
+        template southbrook_width_in only as a fallback for products
+        with no Width pick at all), so this invariant is asserted for
+        real rather than skipped. See task-11-report.md for the call-
+        site inventory and the pre-fix evidence this skip used to carry.
         """
         # subTest here groups per-template diagnostics for readability
-        # (Task 25 review minor); the actual pass/skip verdict is a
-        # single decision made AFTER the full sweep below (skipTest
-        # can't be scoped per-subTest -- it always ends the whole test
-        # method, so it deliberately stays outside the loop).
+        # (Task 25 review minor); the overall pass/fail verdict is a
+        # single decision made AFTER the full sweep below, so one
+        # template's mismatch doesn't stop the sweep from finding every
+        # other one too (subTest already reports each failure
+        # individually via the loop; this final assert is the backstop
+        # in case subTest isolation ever changes).
         mismatches = []
         checked = 0
         for tpl in self.templates:
@@ -568,9 +574,20 @@ class TestInvariantMatrix(TransactionCase):
                             % (tpl.code, line.layout_key,
                                line.product_id.default_code,
                                line.width_in or 0, variant_w))
-        if mismatches:
-            self.skipTest(
-                "KNOWN OPEN TICKET — variant Width attribute not wired to "
-                "placed width_in (%d/%d checked lines mismatched); "
-                "evidence: %s"
-                % (len(mismatches), checked, "; ".join(mismatches[:10])))
+        # A vacuous pass (zero lines actually carrying a Width PTAV)
+        # would be as dishonest as the old skip — the shipped T4
+        # catalog is known to seed at least a few Width-attributed
+        # variants (see test_template_catalog.py), so this floor
+        # catches a fixture regression that silently emptied the
+        # sweep instead of silently passing it.
+        self.assertGreater(
+            checked, 0,
+            "no design line in the active template catalog carries a "
+            "variant with a 'Width' attribute value — the invariant "
+            "swept nothing; check the catalog fixtures")
+        self.assertFalse(
+            mismatches,
+            "%d/%d checked lines placed at the wrong width (template "
+            "southbrook_width_in instead of the variant's own Width "
+            "attribute): %s"
+            % (len(mismatches), checked, "; ".join(mismatches[:10])))
