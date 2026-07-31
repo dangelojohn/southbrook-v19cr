@@ -173,6 +173,65 @@ _CORNER_FAMILY_SPECS = [
      "33", "24", None),
 ]
 
+_CABINET_FLAG_COLUMNS = (
+    "southbrook_cabinet_type", "southbrook_is_cabinet",
+    "southbrook_width_in", "southbrook_height_in", "southbrook_depth_in",
+)
+
+
+def _cabinet_flag_columns(cr):
+    """Which of the classification-flag columns actually exist on
+    product_template in the DATABASE right now (independent of whether
+    the ORM's Template._fields has registered them yet in THIS process
+    — see repair_corner_family_skus's module-load-order comment).
+    """
+    cr.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'product_template'
+        AND column_name IN %s
+    """, (_CABINET_FLAG_COLUMNS,))
+    return {row[0] for row in cr.fetchall()}
+
+
+def _write_cabinet_flags_sql(env, tmpl, flags, columns=None):
+    """Write classification flags via raw SQL, bypassing the ORM field
+    registry entirely. This is the fallback repair_corner_family_skus
+    reaches for when southbrook_kitchen_3d_configurator's fields aren't
+    registered in Template._fields yet at call time (the module-load-
+    order trap) — but it's also a standalone, independently callable/
+    testable unit on its own: a test can invoke it directly (forcing
+    this path even when the ORM path IS available, since a
+    TransactionCase always has the full registry loaded) and compare
+    its result to the ORM path (`tmpl.write(flags)`) for the same input.
+
+    `columns` is the set of matching DB column names (see
+    `_cabinet_flag_columns`); pass None to have this function look it
+    up itself. Idempotent: only writes when at least one flag's current
+    DB value differs from the target (`IS DISTINCT FROM`, which handles
+    NULL correctly, unlike `!=`). Returns True iff a row was changed.
+    """
+    if columns is None:
+        columns = _cabinet_flag_columns(env.cr)
+    if not columns.issuperset(flags.keys()):
+        return False
+    cols = list(flags.keys())
+    set_clause = ", ".join("%s = %%s" % c for c in cols)
+    guard_clause = " OR ".join("%s IS DISTINCT FROM %%s" % c for c in cols)
+    params = [flags[c] for c in cols]
+    env.cr.execute(
+        "UPDATE product_template SET %s WHERE id = %%s AND (%s)"
+        % (set_clause, guard_clause),
+        params + [tmpl.id] + params,
+    )
+    # No env-level cache invalidation here: in the real fallback
+    # scenario, these fields aren't part of the model's _fields in that
+    # registry generation (that's the whole reason for the fallback),
+    # so nothing in that process has — or could have — a cached value
+    # for them. A test that calls this directly and then reads the
+    # field back via the ORM (where the field DOES exist) is
+    # responsible for its own invalidate_recordset() first.
+    return bool(env.cr.rowcount)
+
 
 def repair_corner_family_skus(env):
     """Promote SB-CORNER-BLIND / SB-CORNER-DIAG / SB-WALL-CORNER to real
@@ -241,16 +300,16 @@ def repair_corner_family_skus(env):
     # regardless of which side of this ordering it happens to run on;
     # the ORM path above (when available, e.g. every test bootstrap,
     # which runs after the full registry loads) stays the primary path.
-    cabinet_columns = set()
-    if not has_cabinet_fields:
-        env.cr.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'product_template'
-            AND column_name IN ('southbrook_cabinet_type',
-                'southbrook_is_cabinet', 'southbrook_width_in',
-                'southbrook_height_in', 'southbrook_depth_in')
-        """)
-        cabinet_columns = {row[0] for row in env.cr.fetchall()}
+    #
+    # The decision of WHICH path to use lives here (has_cabinet_fields);
+    # the SQL path itself is the module-level _write_cabinet_flags_sql
+    # below so a test can call it directly — forcing the fallback branch
+    # even in a TransactionCase, where the ORM path is always the one
+    # that would naturally fire (the full registry, including kitchen_
+    # 3d_configurator's fields, is already loaded by the time any test
+    # runs) — and compare its result to the ORM path for the same input.
+    cabinet_columns = (None if has_cabinet_fields
+                        else _cabinet_flag_columns(env.cr))
 
     def _write_cabinet_flags(tmpl, flags):
         if has_cabinet_fields:
@@ -259,23 +318,7 @@ def repair_corner_family_skus(env):
                 tmpl.write(diff)
                 return True
             return False
-        if not cabinet_columns.issuperset(flags.keys()):
-            return False
-        cols = list(flags.keys())
-        set_clause = ", ".join("%s = %%s" % c for c in cols)
-        guard_clause = " OR ".join(
-            "%s IS DISTINCT FROM %%s" % c for c in cols)
-        params = [flags[c] for c in cols]
-        env.cr.execute(
-            "UPDATE product_template SET %s WHERE id = %%s AND (%s)"
-            % (set_clause, guard_clause),
-            params + [tmpl.id] + params,
-        )
-        # No env-level cache invalidation: these fields aren't part of
-        # the model's _fields in THIS registry generation (that's the
-        # whole reason for this fallback), so nothing in this process
-        # has — or could have — a cached value for them yet.
-        return bool(env.cr.rowcount)
+        return _write_cabinet_flags_sql(env, tmpl, flags, cabinet_columns)
 
     for default_code, flags, stale_prefix, target_prefix, new_value_name \
             in _CORNER_FAMILY_SPECS:

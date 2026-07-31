@@ -19,6 +19,7 @@ a skip rather than a false failure.
 """
 from odoo.tests.common import TransactionCase, tagged
 
+from odoo.addons.southbrook_estimating.models import corner_sku_repair
 from odoo.addons.southbrook_estimating.models.corner_sku_repair import (
     repair_corner_family_skus,
 )
@@ -194,3 +195,92 @@ class TestCornerFamilyRepair(TransactionCase):
              "codes_set": 0, "lh_created": 0, "lh_combo_backfilled": 0,
              "rh_created": 0, "renamed": False, "lsusan_archived": False},
             "second run must be a strict no-op: %s" % second)
+
+    def test_sql_fallback_writes_match_orm_path(self):
+        """Code review finding 2 — the raw-SQL fallback branch inside
+        _write_cabinet_flags (module-level _write_cabinet_flags_sql)
+        only ever executes in PRODUCTION at the exact moment kitchen_3d
+        _configurator's fields aren't registered in Template._fields
+        yet — a state a TransactionCase test can't reproduce, since the
+        full registry (fields included) is always loaded by the time
+        any test runs, so `has_cabinet_fields` is always True there and
+        the ORM branch is the one that naturally fires. Call the SQL
+        path directly — forcing exactly the branch that would otherwise
+        have zero CI coverage — and prove it writes the identical
+        values the ORM path (`tmpl.write(flags)`) would for the same
+        input, including its own idempotency and its unknown-column
+        skip guard."""
+        if not self.has_cabinet_fields:
+            self.skipTest("southbrook_kitchen_3d_configurator not installed.")
+        flags = {
+            "southbrook_cabinet_type": "corner",
+            "southbrook_is_cabinet": True,
+            "southbrook_width_in": 42.0,
+            "southbrook_height_in": 33.0,
+            "southbrook_depth_in": 22.0,
+        }
+        orm_tmpl = self.Template.create(
+            {"name": "T4 SQL-fallback probe (ORM)"})
+        sql_tmpl = self.Template.create(
+            {"name": "T4 SQL-fallback probe (SQL)"})
+
+        orm_tmpl.write(flags)
+
+        changed = corner_sku_repair._write_cabinet_flags_sql(
+            self.env, sql_tmpl, flags)
+        self.assertTrue(
+            changed, "SQL fallback must report a change on first write")
+        # The SQL path deliberately doesn't invalidate the ORM cache
+        # (see its own docstring) — a caller reading the field back via
+        # the ORM afterward is responsible for that itself.
+        sql_tmpl.invalidate_recordset(list(flags.keys()))
+
+        for field in flags:
+            self.assertEqual(
+                sql_tmpl[field], orm_tmpl[field],
+                "SQL fallback wrote a different %s than the ORM path "
+                "for the same input" % field)
+
+        # Idempotent: identical values a second time report no change
+        # (the IS DISTINCT FROM guard).
+        self.assertFalse(
+            corner_sku_repair._write_cabinet_flags_sql(
+                self.env, sql_tmpl, flags),
+            "re-running the SQL fallback with identical values must "
+            "be a no-op")
+
+        # Unknown/fabricated column name is skipped, not attempted —
+        # attempting it would raise a SQL error instead of degrading
+        # gracefully the way the ORM's `"x" in Template._fields` guard
+        # does for the primary path.
+        self.assertFalse(
+            corner_sku_repair._write_cabinet_flags_sql(
+                self.env, sql_tmpl, {"not_a_real_column": True}),
+            "an unrecognised column must be skipped, not written")
+
+    def test_lsusan_archive_self_heals_a_reappeared_duplicate(self):
+        """Minor (code review) — corroborates the report's self-heal
+        claim: if something else (e.g. southbrook_configurator_ux's
+        catalog_expansion, on its own next upgrade — see corner_sku_
+        repair.py's Item 5 comment) re-mints a fresh ACTIVE
+        SB-CORNER-LSUSAN duplicate after this repair already archived
+        the original, the NEXT call to the repair archives that one
+        too, not just the first one it ever saw."""
+        reappeared = self.Template.create({
+            "name": "Corner Base · Lazy-Susan",
+            "default_code": "SB-CORNER-LSUSAN",
+        })
+        self.assertTrue(reappeared.active)
+
+        summary = repair_corner_family_skus(self.env)
+        self.assertTrue(
+            summary["lsusan_archived"],
+            "repair must report archiving the reappeared duplicate")
+        self.assertFalse(
+            reappeared.active,
+            "a duplicate created after the first archive must also "
+            "get archived on the next repair call")
+        self.assertFalse(
+            self.Template.search(
+                [("default_code", "=", "SB-CORNER-LSUSAN")]),
+            "no active SB-CORNER-LSUSAN record may remain")

@@ -50,6 +50,19 @@ _W_TINY = ["9 in", "12 in"]
 _W_SINK = ["30 in", "33 in", "36 in"]
 # Corner / wide-corner — large.
 _W_CORNER = ["33 in", "36 in"]
+# T4 (corner-remediation-2026-07-30, code review finding 1b): SB-CORNER-
+# BLIND is a real 45in-wide blind-corner base — southbrook_estimating's
+# corner_sku_repair.repair_corner_family_skus() adds "45 in" to the
+# shared Width vocabulary and relinks the BLIND variant onto it. Without
+# its own width subset here, the reconcile loop below (write-only-if-
+# changed, ~line 396) would see this line's actual value_ids (33/36/45)
+# differ from the plain _W_CORNER list (33/36) on the very next upgrade
+# that touches this module and strip 45in straight back out — silently
+# reverting that repair every time (southbrook_configurator_ux depends
+# on southbrook_estimating, so it re-upgrades, and this data reloads,
+# on every -u that includes the latter). DIAG/LSUSAN stay on the plain
+# _W_CORNER list — their Width vocabulary is genuinely just 33/36.
+_W_CORNER_BLIND = ["33 in", "36 in", "45 in"]
 # Vanity — bath sizes (use same width values).
 _W_VANITY_SMALL = ["12 in", "15 in", "18 in", "21 in", "24 in"]
 _W_VANITY_LARGE = ["24 in", "27 in", "30 in", "33 in", "36 in"]
@@ -190,7 +203,7 @@ _CATALOG = [
 
     # ----- CORNER cabinets -----
     ("SB-CORNER-LSUSAN","Corner Base · Lazy-Susan", "Corner","Base",  "corner", 625.00, _ATTRS_CORNER,      _W_CORNER),
-    ("SB-CORNER-BLIND","Corner Base · Blind",       "Corner","Base",  "corner", 545.00, _ATTRS_CORNER,      _W_CORNER),
+    ("SB-CORNER-BLIND","Corner Base · Blind",       "Corner","Base",  "corner", 545.00, _ATTRS_CORNER,      _W_CORNER_BLIND),
     ("SB-CORNER-DIAG","Corner Base · Diagonal",     "Corner","Base",  "corner", 685.00, _ATTRS_CORNER,      _W_CORNER),
 
     # ----- PULL-OUT base cabinets -----
@@ -290,10 +303,20 @@ class CatalogExpansion(models.AbstractModel):
             # Look up by default_code, OR by name as fallback (covers
             # re-runs after a prior build wrote the template but lost
             # default_code through variant recompute — see SKU-fix note
-            # below).
+            # below). active_test=False (T4 code review finding 1a):
+            # a plain, active-only search can't see a template another
+            # repair archived on purpose (e.g. SB-CORNER-LSUSAN, retired
+            # as a duplicate by corner_sku_repair.repair_corner_family_
+            # skus()) — without this, this loop would conclude "doesn't
+            # exist yet" and mint a fresh ACTIVE duplicate with a new id
+            # on every upgrade, silently un-doing that archive. Since
+            # `vals` below never sets "active", finding an archived
+            # record here just updates its name/price/etc in place and
+            # leaves it archived — it does not resurrect it.
+            ArchiveAwareTemplate = Template.with_context(active_test=False)
             existing = (
-                Template.search([("default_code", "=", sku)], limit=1)
-                or Template.search([("name", "=", name)], limit=1)
+                ArchiveAwareTemplate.search([("default_code", "=", sku)], limit=1)
+                or ArchiveAwareTemplate.search([("name", "=", name)], limit=1)
             )
             # NB: default_code is set in TWO places (template-level AND
             # variant-level) because Odoo's product.template.default_code
