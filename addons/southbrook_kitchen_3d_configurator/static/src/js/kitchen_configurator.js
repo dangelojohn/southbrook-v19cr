@@ -885,6 +885,41 @@ class SouthbrookKitchenConfigurator extends Component {
         }
     }
 
+    // Shared by _startNewDesign/_continueDesign — the landing screen
+    // lets a rep bounce between designs (or bounce to New) WITHOUT a
+    // full component remount, a scenario that essentially didn't exist
+    // before this task (previously the only way to switch designs was
+    // the "Kitchen Designs" list's doAction, which always destroys and
+    // remounts the whole component, wiping state for free). Without
+    // this, a stale `state.selected`/`state.items` entry from whatever
+    // was on screen before landing could survive into the new session:
+    // _hydrateFromDesign/_refreshLayout only backfill `state.selected`
+    // when it's currently falsy (`if (!this.state.selected && ...)`),
+    // so a leftover selection from a PRIOR design would silently stick
+    // around pointing at an object that isn't in the new items array —
+    // the edit drawer's `findIndex(it => it.layout_key === sel.
+    // layout_key)` guard (the same F14 defect class this codebase has
+    // already fixed elsewhere) would then make every drawer action a
+    // silent no-op against the new design. Also clears any debounced
+    // autosave timer left armed by the design being left behind — same
+    // cleanup onWillUnmount already does for a real unmount.
+    _resetForNewSession() {
+        if (this._autoSaveTimer) {
+            clearTimeout(this._autoSaveTimer);
+            this._autoSaveTimer = null;
+        }
+        this.state.items = [];
+        this.state.selected = null;
+        this.state.catalogPreview = null;
+        this.state.activeWall = null;
+        this.state.warnings = [];
+        this.state.designName = "";
+        this.state.hydratedFromDesign = false;
+        this._hydratedFromDesign = false;
+        this._hydrationFailed = false;
+        this._userActed = false;
+    }
+
     // The landing screen's "New Design" button. This — a genuine,
     // explicit user click — is the ONLY place a brand-new session's
     // product catalog + starter layout are ever fetched/generated on
@@ -894,6 +929,7 @@ class SouthbrookKitchenConfigurator extends Component {
     // first real write only happens on an explicit Save (see
     // _saveDesign/_autoSave), unchanged by this task.
     async _startNewDesign() {
+        this._resetForNewSession();
         this.state.screen = "workspace";
         this.state.loading = true;
         this.state.error = "";
@@ -913,6 +949,7 @@ class SouthbrookKitchenConfigurator extends Component {
     // the time it's clicked).
     async _continueDesign(designId) {
         if (!designId) return;
+        this._resetForNewSession();
         this.state.designId = designId;
         this.state.screen = "workspace";
         this.state.loading = true;

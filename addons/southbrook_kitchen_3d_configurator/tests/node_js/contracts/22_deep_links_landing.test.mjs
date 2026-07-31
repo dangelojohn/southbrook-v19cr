@@ -249,6 +249,53 @@ test("landing screen's 'Continue' (_continueDesign) hydrates the chosen design i
     h.destroy();
 });
 
+test("bouncing landing -> Continue design A -> back to landing -> Continue design B never leaks design A's selection/items into B", async () => {
+    // The landing screen lets a rep switch designs without a full
+    // component remount (unlike the pre-existing "Kitchen Designs"
+    // list doAction, which always destroys + remounts). Without an
+    // explicit reset, a stale `state.selected` from design A would
+    // survive into design B's session — _hydrateFromDesign only
+    // backfills `state.selected` when it's currently falsy — silently
+    // pointing the edit drawer at an object that isn't even in B's
+    // items array.
+    const linesA = [{ id: 701, layout_key: "a1", cabinet_type: "base",
+        product_name: "Design A Base", width_in: 24, height_in: 34.5,
+        depth_in: 24, x_position_in: 0, y_position_in: 0, z_position_in: 0 }];
+    const linesB = [{ id: 702, layout_key: "b1", cabinet_type: "wall",
+        product_name: "Design B Wall", width_in: 30, height_in: 30,
+        depth_in: 12, x_position_in: 0, y_position_in: 54, z_position_in: 0 }];
+    const h = await mountConfigurator({
+        autoAdvancePastLanding: false,
+        rpcRoutes: {
+            "/southbrook_kitchen/configurator/load_design_lines": (params) => {
+                if (params.design_id === 701) return { lines: linesA, design_name: "Design A" };
+                if (params.design_id === 702) return { lines: linesB, design_name: "Design B" };
+                throw new Error("unexpected design_id " + params.design_id);
+            },
+        },
+    });
+    await h.component._continueDesign(701);
+    await tick();
+    assert.equal(h.component.state.designId, 701);
+    assert.equal(h.component.state.selected.layout_key, "a1");
+    assert.equal(h.component.state.designName, "Design A");
+
+    h.component._backToLanding();
+    await tick();
+    assert.equal(h.component.state.screen, "landing");
+
+    await h.component._continueDesign(702);
+    await tick();
+    assert.equal(h.component.state.designId, 702);
+    assert.equal(h.component.state.items.length, 1);
+    assert.equal(h.component.state.items[0].layout_key, "b1",
+        "design B's items must not carry design A's line");
+    assert.equal(h.component.state.selected.layout_key, "b1",
+        "the selected cabinet must be design B's, never a leftover from A");
+    assert.equal(h.component.state.designName, "Design B");
+    h.destroy();
+});
+
 test("landing screen renders in the real DOM with a New Design button and no workspace/canvas markup", async () => {
     const h = await mountConfigurator({ autoAdvancePastLanding: false });
     await tick();
