@@ -54,6 +54,8 @@ dist/
 venv/
 env/
 
-# Claude Code session config (per-clone, not shared)
-.claude/
+# Claude Code session config (per-clone, not shared) — EXCEPT skills, which
+# encode project standards the whole team should get (see .claude/skills/).
+.claude/*
+!.claude/skills/
 .superpowers/
