@@ -276,3 +276,98 @@ class TestCornerPricingConvergence(TransactionCase):
             line.price_unit, 1.0,
             "the design line's own authored price_unit must stay "
             "untouched — the mirror never writes back")
+
+    def test_reconcile_does_not_reprice_a_confirmed_order(self):
+        """T5 review fix (CRITICAL) — the corner-price heal must never
+        touch a line on a quote the customer already saw. This runs from
+        BOTH the 5-min cron (any design whose write_date advanced) and
+        synchronously from action_auto_arrange(sync=True) on a design
+        tied to an already-confirmed order, so a later catalog
+        price_extra edit must not silently rewrite that order's frozen
+        corner line."""
+        corner_variant = self.env["product.product"].search(
+            [("default_code", "=", "SB-CORNER")], limit=1)
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T5 Reconcile Confirmed-Order Test Design",
+            "partner_id": self.partner.id,
+        })
+        original_price = 999.0
+        line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": corner_variant.id,
+            "quantity": 1,
+            "price_unit": original_price,
+            "cabinet_type": "corner",
+            "zone": "base_run",
+            "width_in": 36.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t5-reconcile-confirmed-corner",
+            "layout_role": "derived",
+        })
+        Reconcile = self.env["southbrook.design.reconcile"]
+        stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
+                  "created_lines": 0, "divergence": 0, "errors": 0}
+        # First tick (still draft) mirrors + freezes the SO line at the
+        # design line's own price_unit (999.0 — deliberately NOT the
+        # variant's current lst_price, so a later "heal" would be
+        # detectable).
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(design.sale_order_id)
+        design.sale_order_id.state = "sale"  # confirm the quote
+        frozen_price = line.sale_order_line_id.price_unit
+
+        # A catalog edit after confirmation — the exact scenario the
+        # guard exists for. Bump the TEMPLATE's list_price directly
+        # (rather than a specific attribute's price_extra) — this DB
+        # clone's pre-existing SB-CORNER variant carries whatever
+        # attribute combo Harness B's corner-repair data drift left it
+        # with (baseline-tests.md), so a specific PTAV bump isn't
+        # guaranteed to land on THIS variant's actual combination;
+        # list_price unconditionally moves lst_price
+        # (`= list_price + price_extra`) regardless of combo specifics.
+        corner_variant.product_tmpl_id.list_price += 500.0
+        current_variant_price = self.Line._sb_variant_price(
+            corner_variant, corner_variant.product_tmpl_id)
+
+        Reconcile._reconcile_one(design, stats)
+
+        self.assertNotEqual(
+            current_variant_price, frozen_price,
+            "fixture must actually diverge for this test to prove the "
+            "guard did something")
+        self.assertEqual(
+            line.sale_order_line_id.price_unit, frozen_price,
+            "a confirmed order's corner line must NOT be repriced by a "
+            "later catalog edit")
+
+    def test_reconcile_still_heals_a_draft_orders_corner_price(self):
+        """Companion to the confirmed-order guard above: the draft case
+        must still heal (the guard must be state-scoped, not a blanket
+        regression of the T5 fix)."""
+        corner_variant = self.env["product.product"].search(
+            [("default_code", "=", "SB-CORNER")], limit=1)
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T5 Reconcile Draft-Order Heal Test Design",
+            "partner_id": self.partner.id,
+        })
+        line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": corner_variant.id,
+            "quantity": 1,
+            "price_unit": 1.0,
+            "cabinet_type": "corner",
+            "zone": "base_run",
+            "width_in": 36.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t5-reconcile-draft-heal-corner",
+            "layout_role": "derived",
+        })
+        Reconcile = self.env["southbrook.design.reconcile"]
+        stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
+                  "created_lines": 0, "divergence": 0, "errors": 0}
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(design.sale_order_id)
+        self.assertEqual(design.sale_order_id.state, "draft")
+        expected = self.Line._sb_variant_price(
+            corner_variant, corner_variant.product_tmpl_id)
+        self.assertEqual(line.sale_order_line_id.price_unit, expected)

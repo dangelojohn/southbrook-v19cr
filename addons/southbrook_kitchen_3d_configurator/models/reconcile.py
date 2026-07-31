@@ -239,8 +239,41 @@ class SouthbrookDesignReconcile(models.AbstractModel):
             # design's own price_unit (a Sprint-1 one-way mirror never
             # writes back to the design side). Non-corner lines keep the
             # design line's authored price_unit verbatim, unchanged.
+            #
+            # T5 review fix (CRITICAL) — this recompute must NEVER touch a
+            # line on a quote the customer has already seen. This method
+            # runs both from the 5-min cron (cron_reconcile_designs, any
+            # design whose write_date advanced) and synchronously from
+            # action_auto_arrange(sync=True) whenever a design tied to an
+            # already-confirmed sale order is re-arranged — a later
+            # price_extra edit anywhere in the catalog must not silently
+            # rewrite that order's corner line. Gate the recompute to
+            # draft orders only.
+            #
+            # "Coherent unit" is the PER-LINE MIRROR WRITE of price_unit
+            # on an ALREADY-mirrored corner line, not just the recompute
+            # call above — and it has to be enforced with an explicit
+            # re-pin AFTER `sol.write(...)` below, not just by omitting
+            # "price_unit" from that write's vals dict: sale.order.line.
+            # price_unit is itself `compute='_compute_price_unit',
+            # store=True, readonly=False` in stock Odoo — writing ANY of
+            # its OTHER dependencies (product_id, product_uom_qty, ...,
+            # all of which line_vals legitimately still needs to carry
+            # for geometry/product sync) re-triggers that compute and
+            # silently overwrites price_unit from the product's
+            # pricelist price regardless of what key set the write() call
+            # used. Explicitly re-pinning price_unit back to its pre-
+            # write value after `sol.write()` is the only way to make
+            # "don't touch this line's price" actually hold.
+            #
+            # Pre-existing, OUT OF SCOPE for this guard (noted for the
+            # next reviewer): this mirror — corner recompute or not —
+            # writes the variant's retail lst_price straight onto the SO
+            # line, bypassing the order's own pricelist_id entirely. That
+            # channel-pricing gap predates T5 and is not fixed here.
+            draft_order = design.sale_order_id.state == "draft"
             price_unit = dline.price_unit
-            if dline.cabinet_type == "corner" and dline.product_id:
+            if dline.cabinet_type == "corner" and dline.product_id and draft_order:
                 price_unit = self.env[
                     "southbrook.kitchen.design.line"
                 ].sudo()._sb_variant_price(
@@ -279,7 +312,17 @@ class SouthbrookDesignReconcile(models.AbstractModel):
                 dline.sudo().sale_order_line_id = sol.id
                 stats["created_lines"] += 1
             else:
+                # T5 review fix — an ALREADY-mirrored corner line on a
+                # non-draft order: capture the price BEFORE the write so
+                # it can be re-pinned after (see the long comment above
+                # `draft_order` — omitting "price_unit" from write_vals
+                # is NOT sufficient on its own).
+                pin_price_unit = (dline.cabinet_type == "corner"
+                                   and not draft_order)
+                frozen_price_unit = sol.price_unit if pin_price_unit else None
                 sol.sudo().write(line_vals)
+                if pin_price_unit:
+                    sol.sudo().price_unit = frozen_price_unit
                 dline.sudo().sale_order_line_id = sol.id
 
         # 5) Unlink SO lines whose design.line disappeared. Only touches
