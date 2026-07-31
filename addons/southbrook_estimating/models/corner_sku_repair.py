@@ -97,17 +97,31 @@ def repair_corner_sku(env):
     rh = _ptav("Hinge Side", "RH")
 
     if p33 and p36:
-        bad = tmpl.product_variant_ids.filtered(
-            lambda v: p33 in v.product_template_attribute_value_ids)
+        bad = _repair_eligible(
+            tmpl.product_variant_ids, tmpl, "SB-CORNER",
+        ).filtered(lambda v: p33 in v.product_template_attribute_value_ids)
         for variant in bad:
+            new_pavs = ((variant.product_template_attribute_value_ids
+                         - p33) | p36).mapped("product_attribute_value_id")
+            dup = _variant_with_value_set(
+                Product, tmpl, new_pavs.ids, exclude=variant)
+            if dup:
+                _logger.warning(
+                    "[T4a corner repair] SB-CORNER: NOT relinking variant "
+                    "id=%s 33->36 — variant id=%s (active=%s) already "
+                    "carries that exact value combination; rewriting "
+                    "would mint a duplicate. Needs human review.",
+                    variant.id, dup.id, dup.active)
+                continue
             variant.write({"product_template_attribute_value_ids": [
                 (3, p33.id), (4, p36.id)]})
             summary["width_fixed"] += 1
 
     if lh and rh:
         variants = tmpl.product_variant_ids
-        lh_variants = variants.filtered(
-            lambda v: lh in v.product_template_attribute_value_ids)
+        lh_variants = _repair_eligible(variants.filtered(
+            lambda v: lh in v.product_template_attribute_value_ids),
+            tmpl, "SB-CORNER")
         rh_variants = variants.filtered(
             lambda v: rh in v.product_template_attribute_value_ids)
         for variant in lh_variants.filtered(lambda v: not v.default_code):
@@ -116,12 +130,23 @@ def repair_corner_sku(env):
         if lh_variants and not rh_variants:
             combo = (lh_variants[0].product_template_attribute_value_ids
                      - lh) | rh
-            env["product.product"].create({
-                "product_tmpl_id": tmpl.id,
-                "product_template_attribute_value_ids": [(6, 0, combo.ids)],
-                "default_code": "SB-CORNER-R",
-            })
-            summary["rh_created"] = True
+            dup = _variant_with_value_set(
+                Product, tmpl,
+                combo.mapped("product_attribute_value_id").ids)
+            if dup:
+                _logger.warning(
+                    "[T4a corner repair] SB-CORNER: NOT creating the RH "
+                    "twin — variant id=%s (active=%s, code=%r) already "
+                    "carries that exact value combination.",
+                    dup.id, dup.active, dup.default_code)
+            else:
+                env["product.product"].create({
+                    "product_tmpl_id": tmpl.id,
+                    "product_template_attribute_value_ids":
+                        [(6, 0, combo.ids)],
+                    "default_code": "SB-CORNER-R",
+                })
+                summary["rh_created"] = True
 
     if any(v for v in summary.values()):
         _logger.info("[T4a corner repair] %s", summary)
@@ -256,6 +281,53 @@ def _is_corner_family_code(code):
     if code in _CORNER_FAMILY_BASE_CODES:
         return True
     return code.endswith("-R") and code[:-2] in _CORNER_FAMILY_BASE_CODES
+
+
+def _variant_with_value_set(Product, tmpl, pav_ids, exclude=None):
+    """Existing variant on `tmpl` (INCLUDING archived ones) whose
+    underlying product.attribute.value set equals `pav_ids` — the same
+    identity both duplicate gates enforce (OCA's
+    _check_duplicate_product compares product_attribute_value_id sets,
+    and core's (product_tmpl_id, combination_indices) unique index keys
+    on the sorted PTAV combination): PTAV row ids are NOT the identity,
+    the value combination is."""
+    exclude_ids = set(exclude.ids) if exclude else set()
+    target = set(pav_ids)
+    for cand in Product.with_context(active_test=False).search(
+            [("product_tmpl_id", "=", tmpl.id)]):
+        if cand.id in exclude_ids:
+            continue
+        cand_vals = set(cand.product_template_attribute_value_ids
+                        .mapped("product_attribute_value_id").ids)
+        if cand_vals == target:
+            return cand
+    return Product.browse()
+
+
+def _repair_eligible(variants, tmpl, family_code):
+    """Subset of `variants` this repair may MODIFY: the family's own
+    seeded rows (carrying the family code or its "-R" twin code), or
+    the template's sole variant (the bare-seed state, before any code
+    backfill has run). Everything else — in practice wizard-created
+    dynamic config variants, which are code-less rows on a
+    multi-variant template — is live USER data and must never be
+    rewritten by catalog repair.
+
+    Prod fact (2026-07-31, deploy-gate): a user configured a 33in
+    blind and a 33in diagonal corner in the live wizard the same day
+    (product.product 1422/1423, create_uid a real user, no
+    default_code). The stale-width relink treated 1423 as the
+    known-bad seeded row and rewrote its 33in PTAV to 36in — an exact
+    value-combination duplicate of the seeded 36in variant (id 530),
+    which the OCA duplicate constraint correctly refused, killing
+    every subsequent cold upgrade at configurator_ux's build_catalog
+    self-heal. The stale-width repair's one legitimate target has
+    only ever been the family's own mis-seeded row."""
+    if len(tmpl.product_variant_ids) == 1:
+        return variants
+    ok_codes = {family_code, family_code + "-R"}
+    return variants.filtered(
+        lambda v: (v.default_code or "") in ok_codes)
 
 
 _CABINET_FLAG_COLUMNS = (
@@ -436,9 +508,25 @@ def repair_corner_family_skus(env):
         rh = _ptav(tmpl, "Hinge Side", "RH")
 
         if stale_ptav and target_ptav:
-            bad = tmpl.product_variant_ids.filtered(
+            bad = _repair_eligible(
+                tmpl.product_variant_ids, tmpl, default_code,
+            ).filtered(
                 lambda v: stale_ptav in v.product_template_attribute_value_ids)
             for variant in bad:
+                new_pavs = ((variant.product_template_attribute_value_ids
+                             - stale_ptav) | target_ptav).mapped(
+                    "product_attribute_value_id")
+                dup = _variant_with_value_set(
+                    Product, tmpl, new_pavs.ids, exclude=variant)
+                if dup:
+                    _logger.warning(
+                        "[T4 corner family repair] %s: NOT relinking "
+                        "variant id=%s %s->%s — variant id=%s (active=%s) "
+                        "already carries that exact value combination; "
+                        "rewriting would mint a duplicate. Needs human "
+                        "review.", default_code, variant.id, stale_prefix,
+                        target_prefix, dup.id, dup.active)
+                    continue
                 variant.write({"product_template_attribute_value_ids": [
                     (3, stale_ptav.id), (4, target_ptav.id)]})
                 summary["width_fixed"] += 1
@@ -447,8 +535,9 @@ def repair_corner_family_skus(env):
             continue
 
         variants = tmpl.product_variant_ids
-        lh_variants = variants.filtered(
-            lambda v: lh in v.product_template_attribute_value_ids)
+        lh_variants = _repair_eligible(variants.filtered(
+            lambda v: lh in v.product_template_attribute_value_ids),
+            tmpl, default_code)
         rh_variants = variants.filtered(
             lambda v: rh in v.product_template_attribute_value_ids)
 
@@ -458,11 +547,21 @@ def repair_corner_family_skus(env):
 
         if not lh_variants and not rh_variants:
             combo = target_ptav | lh
+            combo_pav_ids = combo.mapped("product_attribute_value_id").ids
             existing = Product.search([
                 ("product_tmpl_id", "=", tmpl.id),
                 ("default_code", "=", default_code),
             ], limit=1)
-            if existing and not existing.product_template_attribute_value_ids:
+            combo_taken = _variant_with_value_set(
+                Product, tmpl, combo_pav_ids, exclude=existing)
+            if combo_taken:
+                _logger.warning(
+                    "[T4 corner family repair] %s: NOT seeding the LH "
+                    "variant — variant id=%s (active=%s, code=%r) already "
+                    "carries that exact value combination.",
+                    default_code, combo_taken.id, combo_taken.active,
+                    combo_taken.default_code)
+            elif existing and not existing.product_template_attribute_value_ids:
                 # The "zero variants" trap's other face: a variant
                 # already carries this default_code (e.g. a prior
                 # bare-vals repair) but has no attribute combination at
@@ -493,12 +592,23 @@ def repair_corner_family_skus(env):
         if lh_variants and not rh_variants:
             combo = (lh_variants[0].product_template_attribute_value_ids
                      - lh) | rh
-            Product.create({
-                "product_tmpl_id": tmpl.id,
-                "product_template_attribute_value_ids": [(6, 0, combo.ids)],
-                "default_code": default_code + "-R",
-            })
-            summary["rh_created"] += 1
+            dup = _variant_with_value_set(
+                Product, tmpl,
+                combo.mapped("product_attribute_value_id").ids)
+            if dup:
+                _logger.warning(
+                    "[T4 corner family repair] %s: NOT creating the RH "
+                    "twin — variant id=%s (active=%s, code=%r) already "
+                    "carries that exact value combination.",
+                    default_code, dup.id, dup.active, dup.default_code)
+            else:
+                Product.create({
+                    "product_tmpl_id": tmpl.id,
+                    "product_template_attribute_value_ids":
+                        [(6, 0, combo.ids)],
+                    "default_code": default_code + "-R",
+                })
+                summary["rh_created"] += 1
 
     # Item 4 — SB-CORNER IS the operative diagonal-lazy-susan carcass
     # (southbrook.placement.rule's diagonal-corner-lazy-susan rule

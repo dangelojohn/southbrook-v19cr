@@ -107,12 +107,28 @@ class TestCornerFamilyRepair(TransactionCase):
                 rh_variants[0].default_code,
                 "the RH twin must carry a resolvable default_code")
 
+    def _family_variants(self, tmpl, code):
+        """The variants the repair is allowed to MODIFY — the family's
+        own seeded rows (family code or its -R twin) or the sole
+        variant. Wizard-created dynamic config variants (code-less rows
+        on a multi-variant template) are live user data the repair must
+        leave alone (prod fact 2026-07-31: user-configured 33in
+        blind/diag variants; the old unscoped relink rewrote one into
+        an exact duplicate of the seeded row and blocked the deploy),
+        so the width-promotion assertions only bind the seeded rows."""
+        if len(tmpl.product_variant_ids) == 1:
+            return tmpl.product_variant_ids
+        ok = {code, code + "-R"}
+        return tmpl.product_variant_ids.filtered(
+            lambda v: (v.default_code or "") in ok)
+
     def test_blind_width_promoted_to_45(self):
         """Item 1 — SB-CORNER-BLIND's Width relinks 33->45 (a real,
         correct blind-corner-base width missing from the shared Width
-        vocabulary until this repair adds it)."""
+        vocabulary until this repair adds it). Binds the family's own
+        seeded rows only — see _family_variants."""
         tmpl = self._tmpl("SB-CORNER-BLIND")
-        variants = tmpl.product_variant_ids
+        variants = self._family_variants(tmpl, "SB-CORNER-BLIND")
         self.assertTrue(variants, "SB-CORNER-BLIND must have variants")
         for v in variants:
             widths = v.product_template_attribute_value_ids.filtered(
@@ -120,21 +136,22 @@ class TestCornerFamilyRepair(TransactionCase):
             self.assertTrue(widths, "every variant must carry a Width")
             self.assertTrue(
                 all((w.name or "").startswith("45") for w in widths),
-                "no SB-CORNER-BLIND variant may keep a non-45in width "
-                "after the repair (got %s)" % widths.mapped("name"))
+                "no seeded SB-CORNER-BLIND variant may keep a non-45in "
+                "width after the repair (got %s)" % widths.mapped("name"))
 
     def test_diag_width_promoted_to_36(self):
-        """Item 2 — SB-CORNER-DIAG's Width relinks 33->36."""
+        """Item 2 — SB-CORNER-DIAG's Width relinks 33->36. Binds the
+        family's own seeded rows only — see _family_variants."""
         tmpl = self._tmpl("SB-CORNER-DIAG")
-        variants = tmpl.product_variant_ids
+        variants = self._family_variants(tmpl, "SB-CORNER-DIAG")
         self.assertTrue(variants, "SB-CORNER-DIAG must have variants")
         for v in variants:
             widths = v.product_template_attribute_value_ids.filtered(
                 lambda p: p.attribute_id.name == "Width")
             self.assertTrue(
                 all((w.name or "").startswith("36") for w in widths),
-                "no SB-CORNER-DIAG variant may keep a non-36in width "
-                "after the repair (got %s)" % widths.mapped("name"))
+                "no seeded SB-CORNER-DIAG variant may keep a non-36in "
+                "width after the repair (got %s)" % widths.mapped("name"))
 
     def test_wall_corner_dims_and_type(self):
         """Item 3 — SB-WALL-CORNER: W24 x H30 x D24, tagged corner (not
@@ -364,3 +381,143 @@ class TestRepairCornerSkuWallCornerHotfix(TransactionCase):
         # exactly once more".
         third_summary = repair_corner_sku(self.env)
         self.assertFalse(third_summary["wall_corner_created"])
+
+
+@tagged("post_install", "-at_install", "southbrook", "southbrook_estimating",
+        "corner_catalog_truth")
+class TestWizardVariantsSurviveRepair(TransactionCase):
+    """Deploy-gate regression (2026-07-31, prod): a user configured a
+    33in blind and a 33in diagonal corner in the LIVE wizard
+    (product.product 1422/1423 — code-less dynamic config variants,
+    create_uid a real user). The unscoped stale-width relink treated
+    the 33in diag as the known-bad seeded row and rewrote its Width
+    PTAV 33->36, minting an exact value-combination duplicate of the
+    seeded 36in variant — the OCA duplicate constraint refused it and
+    every cold upgrade died at configurator_ux's build_catalog
+    self-heal (data/catalog_expansion.xml:13).
+
+    Pins both halves of the fix in repair_corner_family_skus:
+    - SCOPING (_repair_eligible): wizard variants — code-less rows on a
+      multi-variant template — are never modified, collision or not;
+    - COLLISION GUARD (_variant_with_value_set): no rewrite/create may
+      ever produce a value combination another variant (active or
+      archived) already carries.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.Product = cls.env["product.product"]
+        cls.PTAV = cls.env["product.template.attribute.value"]
+        # Settle the catalog first — seeded rows repaired, twins built.
+        repair_corner_family_skus(cls.env)
+        variant = cls.Product.search(
+            [("default_code", "=", "SB-CORNER-DIAG")], limit=1)
+        if not variant:
+            return  # individual tests skip below
+        cls.diag_tmpl = variant.product_tmpl_id
+        cls.diag_seed = variant
+
+    def _ptav(self, tmpl, attr_name, prefix):
+        return self.PTAV.search([
+            ("product_tmpl_id", "=", tmpl.id),
+            ("attribute_id.name", "=", attr_name),
+            ("name", "=like", prefix + "%"),
+        ], limit=1)
+
+    def _require_diag(self):
+        if not getattr(self, "diag_tmpl", False):
+            self.skipTest("SB-CORNER-DIAG not seeded on this DB.")
+        p33 = self._ptav(self.diag_tmpl, "Width", "33")
+        p36 = self._ptav(self.diag_tmpl, "Width", "36")
+        if not (p33 and p36):
+            self.skipTest("DIAG Width 33/36 PTAVs not present here.")
+        return p33, p36
+
+    def test_wizard_variant_colliding_rewrite_is_skipped(self):
+        """The exact prod shape: a code-less wizard variant whose combo
+        equals the seeded 36in variant's except Width=33. The old code
+        rewrote it 33->36 (= exact duplicate of the seed) and raised
+        ValidationError; the fixed repair leaves it untouched and
+        completes."""
+        p33, p36 = self._require_diag()
+        seed_combo = self.diag_seed.product_template_attribute_value_ids
+        if p36 not in seed_combo:
+            self.skipTest("seeded DIAG variant is not on 36in here.")
+        wizard_combo = (seed_combo - p36) | p33
+        wizard = self.Product.create({
+            "product_tmpl_id": self.diag_tmpl.id,
+            "product_template_attribute_value_ids":
+                [(6, 0, wizard_combo.ids)],
+        })
+        self.assertFalse(wizard.default_code or "")
+
+        # Must not raise, and must not touch the wizard variant.
+        repair_corner_family_skus(self.env)
+
+        self.assertIn(
+            p33, wizard.product_template_attribute_value_ids,
+            "the user's wizard-configured 33in width must survive the "
+            "repair unchanged (old code rewrote it into a duplicate of "
+            "the seeded 36in variant)")
+        self.assertIn(
+            p36, self.diag_seed.product_template_attribute_value_ids,
+            "the seeded variant must be untouched")
+
+    def test_wizard_variant_width_never_rewritten_even_without_collision(self):
+        """Scoping, not just collision-dodging: a wizard variant whose
+        33->36 rewrite would NOT collide with anything must still be
+        left alone — user data is out of repair scope entirely."""
+        p33, p36 = self._require_diag()
+        seed_combo = self.diag_seed.product_template_attribute_value_ids
+        if p36 not in seed_combo:
+            self.skipTest("seeded DIAG variant is not on 36in here.")
+        # Differ from the seed on a second axis too (drop one non-Width
+        # value), so the post-rewrite combo would be unique — the old
+        # unscoped code WOULD have rewritten this one successfully.
+        non_width = (seed_combo - p36).filtered(
+            lambda p: p.attribute_id.name != "Hinge Side")[-1:]
+        if not non_width:
+            self.skipTest("no second attribute axis available here.")
+        wizard_combo = (seed_combo - p36 - non_width) | p33
+        wizard = self.Product.create({
+            "product_tmpl_id": self.diag_tmpl.id,
+            "product_template_attribute_value_ids":
+                [(6, 0, wizard_combo.ids)],
+        })
+
+        repair_corner_family_skus(self.env)
+
+        self.assertIn(
+            p33, wizard.product_template_attribute_value_ids,
+            "a code-less wizard variant on a multi-variant template is "
+            "user data — the width repair must never rewrite it, even "
+            "when the rewrite would not collide")
+
+    def test_rh_twin_creation_guarded_against_existing_combo(self):
+        """The RH-twin creation must never mint a variant whose value
+        combination an existing (even archived) variant already
+        carries — same identity the OCA constraint enforces."""
+        p33, p36 = self._require_diag()
+        rh = self._ptav(self.diag_tmpl, "Hinge Side", "RH")
+        if not rh:
+            self.skipTest("DIAG RH PTAV not present here.")
+        twin = self.Product.search(
+            [("default_code", "=", "SB-CORNER-DIAG-R")], limit=1)
+        if not twin:
+            self.skipTest("RH twin not materialized on this DB.")
+        # Archive the twin: detection-by-active-variants goes blind, so
+        # only the value-set collision guard stands between the repair
+        # and a duplicate create.
+        twin.active = False
+
+        repair_corner_family_skus(self.env)  # must not raise
+
+        twins = self.Product.with_context(active_test=False).search([
+            ("product_tmpl_id", "=", self.diag_tmpl.id),
+            ("default_code", "=", "SB-CORNER-DIAG-R"),
+        ])
+        self.assertEqual(
+            len(twins), 1,
+            "no second RH twin may be minted while an archived variant "
+            "already carries the combination (got %s)" % twins.ids)
