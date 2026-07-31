@@ -181,6 +181,36 @@ _CORNER_FAMILY_SPECS = [
      "33", "24", None),
 ]
 
+# Task 23 (SBK-037) code-review finding 2 — the corner family's OWN
+# default_code convention ("SB-CORNER" / "SB-CORNER-R" for the LH/RH
+# hand pair, same for -BLIND/-DIAG/-WALL-CORNER) is owned entirely by
+# T4a's repair_corner_sku() and T4's repair_corner_family_skus() above
+# — repair_cabinet_variant_refs() below must never re-derive or
+# rewrite it with its own generic Width-suffix convention. Today the
+# corner repairs always run FIRST (repair_corner_sku calls them, then
+# repair_cabinet_variant_refs, in that order) and leave every corner
+# variant uniquely coded, so the generic dedup naturally never finds a
+# duplicate/empty corner ref to touch — but that safety is incidental
+# to call ORDER, not guaranteed by anything structural. This explicit
+# exclusion set makes it structural: repair_cabinet_variant_refs()
+# skips any row whose OWN code (bare or the corner family's own "-R"
+# hand-twin suffix) or whose TEMPLATE's raw default_code column is one
+# of these, full stop, regardless of call order or of whether a future
+# bug ever leaves a corner variant duplicated or empty.
+_CORNER_FAMILY_BASE_CODES = frozenset(
+    {"SB-CORNER"} | {spec[0] for spec in _CORNER_FAMILY_SPECS})
+
+
+def _is_corner_family_code(code):
+    """True for a bare corner-family code (e.g. "SB-CORNER",
+    "SB-WALL-CORNER") or its "-R" hand-twin (e.g. "SB-CORNER-R")."""
+    if not code:
+        return False
+    if code in _CORNER_FAMILY_BASE_CODES:
+        return True
+    return code.endswith("-R") and code[:-2] in _CORNER_FAMILY_BASE_CODES
+
+
 _CABINET_FLAG_COLUMNS = (
     "southbrook_cabinet_type", "southbrook_is_cabinet",
     "southbrook_width_in", "southbrook_height_in", "southbrook_depth_in",
@@ -631,6 +661,33 @@ def repair_cabinet_variant_refs(env):
 
     cabinet_rows = [r for r in rows if r[3]]
     noncabinet_rows = [r for r in rows if not r[3]]
+
+    # -- corner family exclusion (code review finding 2) -------------
+    # The corner family's OWN code convention ("SB-CORNER"/"SB-CORNER-R"
+    # etc.) is owned entirely by repair_corner_sku/repair_corner_family
+    # _skus above -- never re-derived or rewritten here, regardless of
+    # call order. A template counts as corner-family either by its own
+    # raw default_code column (catches a template whose corner repair
+    # hasn't materialized a coded variant yet at all) or by any of its
+    # variants already carrying a corner-family code.
+    corner_family_tmpl_ids = set()
+    cr.execute(
+        "SELECT id FROM product_template WHERE default_code = ANY(%s)",
+        (list(_CORNER_FAMILY_BASE_CODES),))
+    corner_family_tmpl_ids.update(row[0] for row in cr.fetchall())
+    for _vid, tmpl_id, code, _is_cab in cabinet_rows:
+        if _is_corner_family_code((code or "").strip()):
+            corner_family_tmpl_ids.add(tmpl_id)
+    if corner_family_tmpl_ids:
+        excluded = [r for r in cabinet_rows if r[1] in corner_family_tmpl_ids]
+        if excluded:
+            _logger.info(
+                "[SBK-037] excluded %d corner-family variant(s) across "
+                "%d template(s) from the generic dedup/empty-ref repair "
+                "-- owned exclusively by T4/T4a's corner-family repair.",
+                len(excluded), len(corner_family_tmpl_ids))
+        cabinet_rows = [
+            r for r in cabinet_rows if r[1] not in corner_family_tmpl_ids]
 
     # -- report-only: non-cabinet products ---------------------------
     nc_by_code = {}

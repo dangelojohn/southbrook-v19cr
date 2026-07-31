@@ -300,6 +300,165 @@ class TestGeometryWritebackVariantCreation(TransactionCase):
             unresolved_session._extract_cabinet_inputs()["_geo_resolved"],
         )
 
+    def test_extract_cabinet_inputs_resolves_via_variant_after_hygiene_repair(self):
+        """Task 23 (SBK-037) code review finding 1 — a multi-variant
+        template whose variants carry suffixed codes (the post-repair
+        state `corner_sku_repair.py::repair_cabinet_variant_refs`
+        leaves behind after splitting a duplicate default_code, e.g.
+        "SB-WALL-2DR" -> "SB-WALL-2DR-24"/"SB-WALL-2DR-30") must still
+        resolve the correct `_SKU_DEFAULTS` row via
+        `_resolve_template_sku()`'s variant-code fallback — not
+        silently fall through to the hard (base/1-door/609mm)
+        defaults just because `product.template.default_code` now
+        correctly reads blank (Odoo only mirrors a genuinely
+        single-variant template's code onto the template field; see
+        `_SKU_DEFAULTS`'s own docstring for the pre-repair assumption
+        this used to ride)."""
+        ProductTemplate = self.env["product.template"]
+        Attribute = self.env["product.attribute"]
+        Value = self.env["product.attribute.value"]
+        AttrLine = self.env["product.template.attribute.line"]
+        Product = self.env["product.product"]
+        PTAV = self.env["product.template.attribute.value"]
+
+        # create_variant='dynamic' — same convention every real
+        # cabinet attribute in this catalogue uses (data/attributes.
+        # xml: "Per Q6: all create_variant='dynamic'") — never
+        # auto-materializes variants; they're created explicitly
+        # below, exactly as corner_sku_repair.py's own repair does.
+        attr = Attribute.create({
+            "name": "TestAttr_T23MultiVariant", "create_variant": "dynamic",
+        })
+        val_a = Value.create({"name": "A", "attribute_id": attr.id})
+        val_b = Value.create({"name": "B", "attribute_id": attr.id})
+        tmpl = ProductTemplate.create({
+            "name": "Post-Repair Multi-Variant Wall 2-Door",
+            "config_ok": True,
+            # Deliberately no default_code at creation — this
+            # constructs the post-repair END STATE directly (two
+            # coded variants, blank template field) rather than
+            # relying on Odoo's own recompute timing to get there.
+        })
+        AttrLine.create({
+            "product_tmpl_id": tmpl.id,
+            "attribute_id": attr.id,
+            "value_ids": [(6, 0, (val_a | val_b).ids)],
+        })
+        ptav_a = PTAV.search([
+            ("product_tmpl_id", "=", tmpl.id),
+            ("product_attribute_value_id", "=", val_a.id),
+        ], limit=1)
+        ptav_b = PTAV.search([
+            ("product_tmpl_id", "=", tmpl.id),
+            ("product_attribute_value_id", "=", val_b.id),
+        ], limit=1)
+        Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav_a.id])],
+            "default_code": "SB-WALL-2DR-24",
+        })
+        Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav_b.id])],
+            "default_code": "SB-WALL-2DR-30",
+        })
+        tmpl.invalidate_recordset(["default_code"])
+        self.assertFalse(
+            tmpl.default_code,
+            "sanity: a genuinely multi-variant template's default_code "
+            "must read blank — this is the exact condition the fix "
+            "guards against, not a fixture artifact")
+
+        session = self.Session.create({
+            "product_tmpl_id": tmpl.id,
+            "user_id": self.env.uid,
+        })
+        cab = session._extract_cabinet_inputs()
+
+        expected = self.Session._SKU_DEFAULTS["SB-WALL-2DR"]
+        fam, doors, drawers, w, h, d = expected
+        self.assertEqual(
+            cab["family"], fam,
+            "must resolve the SB-WALL-2DR row via the variant-code "
+            "fallback, not silently fall through to the base hard "
+            "default (this was the exact regression: wrong family/"
+            "door-count/dims on first render for every multi-variant "
+            "Q8 template split by the catalogue-hygiene repair)")
+        self.assertEqual(cab["door_count"], doors)
+        self.assertEqual(cab["drawer_count"], drawers)
+        self.assertEqual(cab["width_mm"], w)
+        self.assertEqual(cab["height_mm"], h)
+        self.assertEqual(cab["depth_mm"], d)
+        self.assertTrue(cab["_geo_resolved"])
+
+    def test_resolve_template_sku_single_variant_behavior_unchanged(self):
+        """Byte-identical to the pre-Task-23 behaviour: when
+        `tmpl.default_code` is truthy (the normal single-variant
+        case), `_resolve_template_sku()` returns it as-is — no variant
+        walk, no reverse lookup."""
+        tmpl = self.env.ref(
+            "southbrook_estimating.base_1dr", raise_if_not_found=False)
+        if not tmpl:
+            self.skipTest("base_1dr template not present")
+        session = self.Session.create({
+            "product_tmpl_id": tmpl.id,
+            "user_id": self.env.uid,
+        })
+        self.assertEqual(session._resolve_template_sku(), tmpl.default_code)
+        self.assertEqual(session._resolve_template_sku(), "SB-BASE-1DR")
+
+    def test_resolve_template_sku_unresolvable_multivariant_returns_empty(self):
+        """A blank-template-code, multi-variant template whose variant
+        codes match NO known `_SKU_DEFAULTS` prefix resolves to "" —
+        never guesses, never raises."""
+        ProductTemplate = self.env["product.template"]
+        Attribute = self.env["product.attribute"]
+        Value = self.env["product.attribute.value"]
+        AttrLine = self.env["product.template.attribute.line"]
+        Product = self.env["product.product"]
+        PTAV = self.env["product.template.attribute.value"]
+
+        attr = Attribute.create({
+            "name": "TestAttr_T23Unresolvable", "create_variant": "dynamic",
+        })
+        val_a = Value.create({"name": "A", "attribute_id": attr.id})
+        val_b = Value.create({"name": "B", "attribute_id": attr.id})
+        tmpl = ProductTemplate.create({
+            "name": "Unresolvable Multi-Variant Tmpl",
+            "config_ok": True,
+        })
+        AttrLine.create({
+            "product_tmpl_id": tmpl.id,
+            "attribute_id": attr.id,
+            "value_ids": [(6, 0, (val_a | val_b).ids)],
+        })
+        ptav_a = PTAV.search([
+            ("product_tmpl_id", "=", tmpl.id),
+            ("product_attribute_value_id", "=", val_a.id),
+        ], limit=1)
+        ptav_b = PTAV.search([
+            ("product_tmpl_id", "=", tmpl.id),
+            ("product_attribute_value_id", "=", val_b.id),
+        ], limit=1)
+        Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav_a.id])],
+            "default_code": "TST-UNKNOWN-A",
+        })
+        Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav_b.id])],
+            "default_code": "TST-UNKNOWN-B",
+        })
+        tmpl.invalidate_recordset(["default_code"])
+
+        session = self.Session.create({
+            "product_tmpl_id": tmpl.id,
+            "user_id": self.env.uid,
+        })
+        self.assertEqual(session._resolve_template_sku(), "")
+        self.assertFalse(session._extract_cabinet_inputs()["_geo_resolved"])
+
 
 @tagged("post_install", "-at_install", "sb_geo")
 class TestGeometryBackfill(TransactionCase):

@@ -135,9 +135,7 @@ class ProductConfigSession(models.Model):
                 self.pricelist_id.display_name
                 if self.pricelist_id else ""
             )
-            payload["metadata"]["template_code"] = (
-                self.product_tmpl_id.default_code or ""
-            )
+            payload["metadata"]["template_code"] = self._resolve_template_sku()
         except Exception:
             payload.setdefault("metadata", {})
             payload["metadata"]["price"] = None
@@ -211,6 +209,56 @@ class ProductConfigSession(models.Model):
         # that isn't a cabinet.
     }
 
+    def _resolve_template_sku(self, tmpl=None):
+        """Best-effort recovery of the SKU prefix `_SKU_DEFAULTS` is
+        keyed on, for a (possibly multi-variant) cabinet template.
+
+        Task 23 (SBK-037) review finding — `product.template.
+        default_code` is a stored compute that only mirrors a SINGLE
+        variant's code onto the template (product/models/
+        product_template.py's `_compute_template_field_from_variant_
+        field`; see `_SKU_DEFAULTS`' own docstring for why the
+        pre-repair catalogue relied on this). Once the catalogue-
+        hygiene repair (`corner_sku_repair.py::
+        repair_cabinet_variant_refs`) splits a duplicate/empty variant
+        ref into "<base>-<suffix>" codes, a genuinely multi-variant
+        template's OWN `default_code` correctly reads blank — falling
+        straight through to the hard defaults at that point silently
+        mis-renders (wrong family/door-count/dims) for every
+        multi-variant Q8 template split by that repair. This is the
+        exact class of bug the SKU-defaults table exists to prevent.
+
+        Single-variant behaviour is untouched: when `tmpl.default_code`
+        is truthy it is returned as-is, byte-identical to the prior
+        (pre-Task-23) behaviour. Only when it is falsy does this fall
+        back to matching each active variant's own `default_code`
+        against the KNOWN `_SKU_DEFAULTS` keys — exact match first
+        (checked across every variant before any prefix match is
+        tried, since a key can itself contain a "-", e.g. "W24-2" —
+        prefix-matching that against the unrelated "W24" key first
+        would misfire), then the repair's own "<key>-<suffix>" prefix
+        convention. `_SKU_DEFAULTS` is a small, closed, known table,
+        so this reverse lookup — not a generic string-split heuristic
+        — is what stays safe as the table grows.
+        """
+        tmpl = tmpl or self.product_tmpl_id
+        if not tmpl:
+            return ""
+        if tmpl.default_code:
+            return tmpl.default_code
+        variant_codes = [
+            c for c in tmpl.product_variant_ids.sorted("id").mapped("default_code")
+            if c
+        ]
+        for variant_code in variant_codes:
+            if variant_code in self._SKU_DEFAULTS:
+                return variant_code
+        for variant_code in variant_codes:
+            for key in self._SKU_DEFAULTS:
+                if variant_code.startswith(key + "-"):
+                    return key
+        return ""
+
     def _extract_cabinet_inputs(self):
         """Walk product_tmpl_id default_code + session.value_ids → cabinet inputs.
 
@@ -278,8 +326,11 @@ class ProductConfigSession(models.Model):
             # material (default walnut).
             "finish": "",
         }
-        # 2. SKU lookup.
-        sku = (self.product_tmpl_id and self.product_tmpl_id.default_code) or ""
+        # 2. SKU lookup. _resolve_template_sku() falls back to a
+        # variant-code reverse lookup when the template-level
+        # default_code is blank (multi-variant template, post-Task-23
+        # catalogue-hygiene repair) — see its docstring.
+        sku = self._resolve_template_sku() if self.product_tmpl_id else ""
         sku_row = self._SKU_DEFAULTS.get(sku)
         if sku_row:
             fam, doors, drawers, w, h, d = sku_row

@@ -307,6 +307,83 @@ class TestCabinetVariantRefRepair(TransactionCase):
             "a multi-variant cabinet template must never carry a "
             "template-level default_code after this repair")
 
+    # ── corner-family exclusion (code review finding 2) ──────────────
+
+    def test_is_corner_family_code_recognizes_bare_and_hand_twin(self):
+        self.assertTrue(corner_sku_repair._is_corner_family_code("SB-CORNER"))
+        self.assertTrue(corner_sku_repair._is_corner_family_code("SB-CORNER-R"))
+        self.assertTrue(
+            corner_sku_repair._is_corner_family_code("SB-WALL-CORNER-R"))
+        self.assertTrue(
+            corner_sku_repair._is_corner_family_code("SB-CORNER-BLIND"))
+        self.assertFalse(
+            corner_sku_repair._is_corner_family_code("SB-BASE-2DR"))
+        self.assertFalse(
+            corner_sku_repair._is_corner_family_code("SB-BASE-2DR-R"),
+            "the bare '-R' suffix convention is corner-family-specific, "
+            "not a generic pattern to match against any code")
+        self.assertFalse(corner_sku_repair._is_corner_family_code(""))
+        self.assertFalse(corner_sku_repair._is_corner_family_code(None))
+
+    def test_corner_family_duplicate_code_survives_repair_untouched(self):
+        """Code review finding 2 — the corner family's own code
+        convention is owned exclusively by T4/T4a's repair (called
+        earlier in repair_corner_sku, ahead of this generic one). Even
+        a synthetic, artificially-forced duplicate on a corner-family
+        code must never be rewritten by the generic dedup, regardless
+        of call order."""
+        if not self.has_cabinet_fields:
+            self.skipTest("southbrook_kitchen_3d_configurator not installed.")
+        corner_code = sorted(corner_sku_repair._CORNER_FAMILY_BASE_CODES)[0]
+        tmpl, ptav = self._cabinet_template(
+            "T23 Corner-Family Dup Probe", ["24 in", "30 in"])
+        v1 = self.Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav["24 in"].id])],
+            "default_code": corner_code,
+        })
+        v2 = self.Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav["30 in"].id])],
+            "default_code": corner_code,
+        })
+
+        repair_cabinet_variant_refs(self.env)
+
+        v1.invalidate_recordset(["default_code"])
+        v2.invalidate_recordset(["default_code"])
+        self.assertEqual(
+            v1.default_code, corner_code,
+            "a corner-family code must never be rewritten by the "
+            "generic dedup, even when duplicated")
+        self.assertEqual(v2.default_code, corner_code)
+
+    def test_corner_family_empty_code_survives_repair_unfilled(self):
+        """Same exclusion for the empty-ref case: a variant on a
+        corner-family-coded template must be left for T4/T4a to
+        resolve, never filled by the generic empty-ref repair."""
+        if not self.has_cabinet_fields:
+            self.skipTest("southbrook_kitchen_3d_configurator not installed.")
+        corner_code = sorted(corner_sku_repair._CORNER_FAMILY_BASE_CODES)[1]
+        tmpl, ptav = self._cabinet_template(
+            "T23 Corner-Family Empty Probe", ["24 in"])
+        self.env.cr.execute(
+            "UPDATE product_template SET default_code = %s WHERE id = %s",
+            (corner_code, tmpl.id))
+        empty = self.Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav["24 in"].id])],
+        })
+        self.assertFalse(empty.default_code)
+
+        repair_cabinet_variant_refs(self.env)
+
+        empty.invalidate_recordset(["default_code"])
+        self.assertFalse(
+            empty.default_code,
+            "a variant on a corner-family-coded template must be "
+            "left empty by the generic repair — owned by T4/T4a")
+
     # ── non-cabinet products: report-only ────────────────────────────
 
     def test_noncabinet_duplicate_is_report_only_never_written(self):
