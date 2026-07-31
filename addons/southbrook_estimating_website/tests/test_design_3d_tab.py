@@ -144,3 +144,125 @@ class TestDesign3dTab(TransactionCase):
         with stubbed_request(self.env, user=other):
             payload = self.controller.southbrook_api_design_3d(self.order.id)
         self.assertEqual(payload.get("error"), "forbidden")
+
+
+@tagged("post_install", "-at_install", "southbrook", "southbrook_design_3d")
+class TestDesign3dSeedDimSnapping(TransactionCase):
+    """SBK-025 (V5-partc.md) pin.
+
+    `_southbrook_seed_design_lines` used to write `width_in`/`height_in`/
+    `depth_in`/`x_position_in`/`y_position_in`/`z_position_in` as a raw,
+    unrounded `mm * (1/25.4)` — e.g. SB-BASE-1DR's 609mm width landing at
+    23.9763779...in instead of a clean 24.00in — which then echoed
+    verbatim in the OWL UI (`kitchen_configurator.js:2604`,
+    `t-att-value="state.selected.width_in"`, no rounding). The fix routes
+    every seeded dimension/position through `_snap_quarter_in`, the same
+    `round(inches * 4) / 4` convention already used at every other mm<->
+    inch display boundary in this codebase (`kitchen_viewport.esm.js`/
+    `cabinet_viewport.esm.js`'s `_formatMm`, and this same controller
+    file's own inline `round((width_mm / 25.4) * 4) / 4` a few hundred
+    lines below `_southbrook_seed_design_lines`).
+
+    Uses freshly `.create()`d product templates rather than
+    `env.ref("southbrook_estimating.base_1dr"/"wall_1dr")` — see
+    `test_design_3d_add_new_wall.py`'s setUpClass comment: a shared dev-DB
+    clone's demo product variants are not a stable fixture to pin unit
+    tests against (confirmed here too: those two xml-ref'd templates have
+    zero product.product variants on the CI dev-DB clone this suite runs
+    against, an unrelated pre-existing data-drift issue that already
+    errors `TestDesign3dTab.setUpClass` above, independent of this
+    change — verified via a controlled before/after diff)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.controller = ctrl_main.SouthbrookOrderBuilderPortal()
+        cls.partner = cls.env["res.partner"].create({
+            "name": "SnapTest Customer",
+            "email": "snaptest.customer@southbrook.test",
+        })
+        portal_group = cls.env.ref("base.group_portal")
+        cls.user = cls.env["res.users"].create({
+            "name": "SnapTest Customer",
+            "login": "snaptest.customer@southbrook.test",
+            "partner_id": cls.partner.id,
+            "group_ids": [(6, 0, [portal_group.id])],
+        })
+
+        # SB-BASE-1DR: product_config_line.py's _SKU_DEFAULTS row is
+        # (family="base", doors=1, drawers=0, w=609, h=762, d=609)mm.
+        # 609 / 25.4 = 23.9763779...in raw — the exact drift example
+        # V5-partc.md traces for this SKU.
+        base_tmpl = cls.env["product.template"].create({
+            "name":         "SnapTest Base Cabinet",
+            "default_code": "SB-BASE-1DR",
+            "type":         "consu",
+            "sale_ok":      True,
+            "list_price":   500.0,
+        })
+        base_tmpl.write({
+            "southbrook_is_cabinet":   True,
+            "southbrook_cabinet_type": "base",
+        })
+        cls.base_product = base_tmpl.product_variant_id
+
+        # SB-WALL-1DR: (family="wall", w=457, h=762, d=350)mm.
+        # 350 / 25.4 = 13.7795275591...in raw (*4 = 55.118110236..., the
+        # exact "55.12"-style drift digits named in the task brief's
+        # title); snapped -> 13.75.
+        wall_tmpl = cls.env["product.template"].create({
+            "name":         "SnapTest Wall Cabinet",
+            "default_code": "SB-WALL-1DR",
+            "type":         "consu",
+            "sale_ok":      True,
+            "list_price":   300.0,
+        })
+        wall_tmpl.write({
+            "southbrook_is_cabinet":   True,
+            "southbrook_cabinet_type": "wall",
+        })
+        cls.wall_product = wall_tmpl.product_variant_id
+
+        cls.order = cls.env["sale.order"].create({
+            "partner_id": cls.partner.id,
+            "order_line": [
+                (0, 0, {"product_id": cls.base_product.id,
+                        "product_uom_qty": 1,
+                        "name": cls.base_product.display_name,
+                        "zone": "base_run"}),
+                (0, 0, {"product_id": cls.wall_product.id,
+                        "product_uom_qty": 1,
+                        "name": cls.wall_product.display_name,
+                        "zone": "wall"}),
+            ],
+        })
+
+    def test_seeded_dims_are_snapped_to_quarter_inch_not_raw_mm_division(self):
+        with stubbed_request(self.env, user=self.user):
+            payload = self.controller.southbrook_api_design_3d(self.order.id)
+        self.assertNotIn("error", payload, f"unexpected: {payload}")
+        items = {i["sku"]: i for i in payload["items"]}
+        self.assertIn("SB-BASE-1DR", items)
+        self.assertIn("SB-WALL-1DR", items)
+
+        base_item = items["SB-BASE-1DR"]
+        self.assertEqual(base_item["width_in"], 24.0)
+        self.assertEqual(base_item["height_in"], 30.0)
+        self.assertEqual(base_item["depth_in"], 24.0)
+
+        wall_item = items["SB-WALL-1DR"]
+        self.assertEqual(wall_item["width_in"], 18.0)
+        self.assertEqual(wall_item["height_in"], 30.0)
+        self.assertEqual(wall_item["depth_in"], 13.75)
+
+        # No seeded dimension/position for either cabinet may land off
+        # the 1/4in grid.
+        for item in payload["items"]:
+            for key in ("width_in", "height_in", "depth_in",
+                        "x_position_in", "y_position_in", "z_position_in"):
+                value = item[key]
+                snapped = round(value * 4) / 4.0
+                self.assertEqual(
+                    value, snapped,
+                    f"{item['sku']}.{key}={value} is not snapped to the "
+                    "nearest 1/4in")

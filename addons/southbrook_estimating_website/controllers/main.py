@@ -39,6 +39,26 @@ from odoo.addons.southbrook_estimating.models import kitchen_layout_engine
 _logger = logging.getLogger(__name__)
 
 
+def _snap_quarter_in(value):
+    """Snap a raw inch value to the nearest 1/4in (cabinet-industry-
+    standard display granularity).
+
+    SBK-025 (V5-partc.md) — the same `round(inches * 4) / 4` convention
+    already used by every other mm<->inch display boundary in this
+    codebase: `kitchen_viewport.esm.js:_formatMm`,
+    `cabinet_viewport.esm.js:_formatMm`, and the inline
+    `round((width_mm / 25.4) * 4) / 4` a few hundred lines below in this
+    same file. Applying it here, at the mm-table -> design-line write
+    boundary in `_southbrook_seed_design_lines`, means the persisted
+    `width_in`/`height_in`/`depth_in`/`x_position_in`/`y_position_in`/
+    `z_position_in` values are already clean (e.g. 24.00, not
+    23.9763779...) before they ever reach the raw client echo at
+    `kitchen_configurator.js:2604` — no second rounding convention, and
+    no client-side change needed for values seeded through this path.
+    """
+    return round(value * 4) / 4.0
+
+
 # ======================================================================
 # G5 + G4 + G8 (customer-flow JTBD gap analysis 2026-06-01) — capture
 # the visitor's project name at signup so we can label their first
@@ -2397,7 +2417,9 @@ class SouthbrookOrderBuilderPortal(_SouthbrookOrderAccessMixin, CustomerPortal):
         walls later. The golden back-wall parity test guarantees this
         produces the same coordinates as the historical cursor pack (and
         as the read-only Preview), so existing designs are unchanged. mm →
-        inches."""
+        inches, snapped to the nearest 1/4in via `_snap_quarter_in`
+        (SBK-025) so the persisted Float-inch fields don't carry the
+        609/25.4 = 23.9763779... style drift into the UI."""
         SaleOrder = request.env["sale.order"]
         Session = request.env["product.config.session"]
         Line = request.env["southbrook.kitchen.design.line"].sudo()
@@ -2453,12 +2475,12 @@ class SouthbrookOrderBuilderPortal(_SouthbrookOrderAccessMixin, CustomerPortal):
                 "quantity":      1,
                 "price_unit":    oline.price_unit or (tmpl.list_price if tmpl else 0.0),
                 "cabinet_type":  cabinet_type,
-                "width_in":      w * mm_to_in,
-                "height_in":     h * mm_to_in,
-                "depth_in":      d * mm_to_in,
-                "x_position_in": place["x"] * mm_to_in,
-                "y_position_in": place["y"] * mm_to_in,
-                "z_position_in": place["z"] * mm_to_in,
+                "width_in":      _snap_quarter_in(w * mm_to_in),
+                "height_in":     _snap_quarter_in(h * mm_to_in),
+                "depth_in":      _snap_quarter_in(d * mm_to_in),
+                "x_position_in": _snap_quarter_in(place["x"] * mm_to_in),
+                "y_position_in": _snap_quarter_in(place["y"] * mm_to_in),
+                "z_position_in": _snap_quarter_in(place["z"] * mm_to_in),
                 "pinned":        False,
                 "rotation_deg":  place["rotation_deg"],
                 "wall":          "back",
