@@ -357,3 +357,171 @@ this task cleans the display boundary.
 AC: a 36-in cabinet reads 36.00 everywhere in the UI; wall-cabinet mount height
 displays 55.0 not 55.12 (or the design's true inch value post-Task-3); no new
 suite failures.
+
+# Continuation tranche (SBK-026..039, folded 2026-07-30 evening)
+
+## Task 14: Wall-cabinet mount height honours the selector (SBK-026)
+
+The 55.12in mount height is `kitchen_layout_engine.py:359` — a hardcoded 1400mm
+zone elevation; the client "Wall Cab Top" selector never reaches it. Fix at the
+CALLER (zone constants are passed into the engine — engine unchanged):
+`fixed_gap` → Y = base carcass 34.5 + counter thickness (new setting, default
+1.5) + gap (selector value) = 54.00 for 18in; `to_ceiling` already correct —
+keep; `to_soffit` disabled until a new Soffit Height input on the Room panel is
+set, then cabinet top = soffit bottom. Live helper text shows resulting
+bottom-of-cabinet height. Existing saved designs keep their stored Y (no
+position migration). Update any 1400/55.12 test pins deliberately.
+AC: 96in ceiling / 34.5 carcass / 1.5 top / 18 gap → Y == 54.00; to_ceiling
+Y == ceiling − cab_h; to_soffit gated then resolves; three states visibly
+different in Front view; no new suite failures.
+
+## Task 15: Wall-run / base-run coordination (SBK-027) — scoped
+
+(a) Validator (lane A): BLOCK wall run shorter than its base run on the same
+wall; WARN wall/base vertical joints misaligned > 0.5in (corner cells and
+appliance gaps excluded from the comparison).
+(b) Generation: wall auto-fill targets the base run's length using available
+wall widths (fill the remaining length; prefer edge alignment with base module
+boundaries). The engine's golden parity tests are LAW — if (b) cannot be done
+without breaking byte-identical legacy paths, ship (a) + a written options
+report for (b). Verify-then-fix.
+AC: 144in wall fills fully in the default flow OR the design blocks with the
+new rule; regenerated record-100-shaped data produces ≥1 issue; no new
+failures.
+
+## Task 16: Persist appliance slots as real lines (SBK-028)
+
+Live-verified: SBK-APPL-RANGE (tmpl 1089) is ctype='appliance',
+is_cabinet=False, 1 active variant; design 102 has NO appliance line; the
+save_design "/products catalog contract" gate (controllers/main.py:420-471)
+rejects non-is_cabinet products — that is the drop point. Fix: extend the
+contract to admit ctype='appliance' placeholder products (zero price) WITHOUT
+widening the HIGH-1 money-vector gate otherwise; template instantiation writes
+appliance lines (cabinet_type='appliance', price 0, footprint reserved by run
+maths — verify reservation actually holds); chatter message reports
+written/absorbed/dropped computed from the actual result; is_unresolved
+truthful. Appliance clearance rules (seeded rules 4-6) validated against
+neighbours.
+AC: every appliance slot appears as a persisted line; reserved length excluded
+from filler/remainder; chatter reconciles with len(line_ids); no new failures.
+
+## Task 17: Toast discipline (SBK-030)
+
+Client only. Dedupe identical messages into one toast with a count;
+auto-dismiss non-blocking after ~8s; cap stack at 3 with "N more" roll-up;
+close target ≥32×32px; "Dismiss all"; anchor where it cannot cover the sidebar
+or header. Over-length add: refuse by default with explicit "Add anyway"
+(Shrink-to-fit / new-wall offers optional if cheap).
+AC: repeated identical warnings never stack; every toast dismisses first
+click; no toast covers an interactive control; over-length add is prevented or
+explicitly opted into.
+
+## Task 18: Walk-in button crash (SBK-031) — P0
+
+kitchen_design.py:303 `get_or_create_walkin_partner(self)`; called via JS
+call_kw (kitchen_configurator.js:464) AND as a form object button
+(kitchen_design_views.xml:306). The "takes 1 positional argument but 2 were
+given" TypeError is an @api.model-vs-object-button invocation mismatch — make
+BOTH paths work; the form button must also ASSIGN the partner to the design
+(not merely return an id) so the copy needs no instructions. Align validator
+copy with the actual partner the method resolves ("Walk-in Customer" is what
+:306-311 searches/creates; check the clone for an existing "Walk-in Retail"
+partner and reuse-don't-duplicate if the business record already exists).
+Regression test exercises the BUTTON invocation semantics, not just a direct
+python call.
+AC: button assigns walk-in partner and closes, no traceback; copy names the
+real partner; test covers the button path; no new failures.
+
+## Task 19: Validation surfaced in the configurator (SBK-032 + C9 UX)
+
+Server: refactor the validation core to return a structured issue list (rule
+key, severity, line_ids, user-safe message — Task 1 already adds line refs);
+JSON endpoint in controllers/main.py; the record-form button renders from the
+same structure. Client: persistent status chip in the configurator header
+(Ready / N warnings / N blockers) refreshed after save/arrange; panel grouped
+by severity; clicking an issue selects+reveals the line; dedupe by rule+line;
+strip raw coordinates/enum literals from user copy. Fix actions: "Assign
+walk-in customer" (Task 18) and select-line; others listed but inert.
+AC: a blocking issue is visible without leaving the configurator; click
+selects the offending cabinet; no duplicate messages; no raw
+coordinate/sentinel in user copy; record form and configurator render the same
+data.
+
+## Task 20: Deep links + no silent new design (SBK-034)
+
+The configurator route treats the design id in the URL as source of truth:
+loading state, explicit error when the record is missing/unreadable — NEVER a
+silent fresh-design fallback; fix the blank first paint (scene must not
+initialise before the record resolves); entry without an id shows a minimal
+landing state (recent designs list + New design). No record creation on bare
+page load (coordinates with Task 21).
+AC: reload restores the design; bad id → error not empty design; first paint
+never blanks; entry offers Continue and New.
+
+## Task 21: Naming + lifecycle guards (SBK-035, scoped)
+
+Computed display name `KD<seq> · <partner or Walk-in> · <W>x<D>` tracking the
+room, with user-entered name as override; state guard: cannot reach
+'configured' with zero active cabinet lines; archive action + "empty designs"
+filter. Record pruning/deletion itself stays John's. AC per ticket minus
+deletion.
+
+## Task 22: Selection feedback in the scene (SBK-036)
+
+Outline + tint + bounding box on the selected cabinet in all views; stable
+ordered ←/→ cycling with wrap; canvas focus ring; read-only views visually
+marked (not body-text hints). Axis gizmo/persistent label only if cheap.
+AC: selection unmistakable in all views; cycling visits every cabinet once per
+lap; focus ring present.
+
+## Task 23: Catalogue hygiene enforcement (SBK-037, scoped)
+
+Unique non-empty internal reference on cabinet VARIANTS (fix the SB-BASE-1DR
+duplicate via the repair machinery; report-only for non-cabinet products).
+Multi-variant templates deliberately carry no template-level default_code — do
+NOT add one to tmpl 44. Inventory panel: replace the misleading red QTY 0
+column with "Made to order" (or lead time if trivially available). Material
+filter exposed only if the field exists and has data. standard_price and
+Material POPULATION are parked as John's business data.
+AC: no duplicate variant refs among cabinets; panel shows no false stock
+signal; no new failures.
+
+## Task 24: Template wizard coherence (SBK-038)
+
+Number of Cabinets defaults to the computed Max on shape selection and is
+authoritative; helper text matches the actual result; Cabinet Size honoured in
+generated widths; appliance dimension inputs flow to the persisted appliance
+lines (Task 16). Inline shape picker with the existing SVG thumbnails replaces
+the full-screen search list if the widget swap is cheap; else park with note.
+AC: chosen number/size match the lines created; helper text matches result;
+appliance sizes reach lines.
+
+## Task 25: Invariant fixture suite (regression matrix)
+
+Fixture-based TransactionCase suite asserting, for every active template:
+geometry invariants (adjacency by footprint under the anchor convention, no
+same-wall/zone overlap, all lines in-bounds, occupied+remainder == wall
+length, junctions occupied or flagged); corner invariants (per-junction base+
+wall corner, hand matches junction, price == unified path, regenerate-twice
+byte-identical modulo ids/timestamps); reconciliation invariants (header ==
+sidebar == summary == len(line_ids); estimated_price == sum(lines); chatter
+counts == actual); catalogue invariants (engine-placeable ⊆ panel-visible;
+unique variant refs; placed width == Width attribute where present). Reuse
+tests shipped by earlier tasks; this task closes the gaps and wires one
+entrypoint.
+
+## Parked — John's decisions / explicit non-actions
+- Create & Confirm on record 102 (confirms a real sales order) — NOT executed;
+  awaiting John's answer to the audit's question.
+- Deleting test records 98-102 — NOT executed; debris migration only archives
+  the x=1e6 lines; 99/102 remain reproduction fixtures.
+- SBK-039 capability build-out (dimensioned plan PDF first, BOM/cut-list
+  panel, CSV/DXF export, finish selector) — follow-up briefs after this
+  tranche.
+- P3 topology (arbitrary wall polygon) — architectural decision for John
+  BEFORE more geometry code accretes; recommendation goes in the final report.
+- P3 concurrency/optimistic locking, telemetry instrumentation, canonical
+  metric-vs-inch decision — recommendations in final report.
+- SBK-019 responsive overhaul, SBK-020 canvas a11y, full undo stack,
+  confirm-on-regenerate — parked per earlier decisions.
+- standard_price / Material population — John's business data.
