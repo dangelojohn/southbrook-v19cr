@@ -390,11 +390,6 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 "remainder_in":    round(remainder, 2),
                 "filler_strategy": filler_strategy,
                 "snap_hint":       self._snap_hint(rw, module_w),
-                # Task 12 — machine-readable twin of the
-                # ROOM_TOO_LARGE_FOR_AUTOFILL warning above, so a test (or
-                # a future client affordance) can check for the cap
-                # without string-matching the human-readable message.
-                "capped":          capped,
             },
             "channel":  self._channel_meta(partner, pricelist),
             "warnings": warnings,
@@ -513,16 +508,54 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 "error": "Room width/depth/height must be numbers.",
                 "error_code": "ROOM_OUT_OF_BOUNDS",
             }
+        # Fix-round (coordinator review, corner-remediation 2026-07-30) —
+        # GRANDFATHER an unchanged legacy out-of-bounds dimension on an
+        # EXISTING design, instead of rejecting it forever. Without this,
+        # _saveDesign/_autoSave (kitchen_configurator.js) resend the
+        # client's ENTIRE state.room on every save — so reopening a
+        # legacy design whose room was persisted before this bounds
+        # check existed (e.g. the 99999in live-evidence room) made EVERY
+        # future save of that design fail, including a plain cabinet
+        # edit that never touches the room at all, because the unchanged
+        # legacy value is still out of range. Only a genuine ATTEMPT to
+        # move a dimension to a (different) out-of-range value is
+        # rejected; a resend of the EXACT value already on file for that
+        # dimension is let through. Best-effort: any failure resolving
+        # the existing record (not found, no read access, no design_id
+        # at all — i.e. a brand-new design) simply means no
+        # grandfathering applies, and the normal strict check runs.
+        _existing_room = None
+        if design_id:
+            try:
+                _existing = Design.browse(int(design_id or 0))
+                if _existing.exists():
+                    _existing_room = {
+                        "width_in":  _existing.room_width_in,
+                        "depth_in":  _existing.room_depth_in,
+                        "height_in": _existing.room_height_in,
+                    }
+            except Exception:
+                _existing_room = None
+
+        def _grandfathered(value, key):
+            if _existing_room is None:
+                return False
+            persisted = _existing_room.get(key)
+            return persisted is not None and abs(value - persisted) < 1e-6
+
         _room_problems = []
-        if not (ROOM_WIDTH_MIN_IN <= room_w_f <= ROOM_WIDTH_MAX_IN):
+        if not (ROOM_WIDTH_MIN_IN <= room_w_f <= ROOM_WIDTH_MAX_IN) \
+                and not _grandfathered(room_w_f, "width_in"):
             _room_problems.append(
                 'width %g" (must be %g"-%g")'
                 % (room_w_f, ROOM_WIDTH_MIN_IN, ROOM_WIDTH_MAX_IN))
-        if not (ROOM_DEPTH_MIN_IN <= room_d_f <= ROOM_DEPTH_MAX_IN):
+        if not (ROOM_DEPTH_MIN_IN <= room_d_f <= ROOM_DEPTH_MAX_IN) \
+                and not _grandfathered(room_d_f, "depth_in"):
             _room_problems.append(
                 'depth %g" (must be %g"-%g")'
                 % (room_d_f, ROOM_DEPTH_MIN_IN, ROOM_DEPTH_MAX_IN))
-        if not (ROOM_HEIGHT_MIN_IN <= room_h_f <= ROOM_HEIGHT_MAX_IN):
+        if not (ROOM_HEIGHT_MIN_IN <= room_h_f <= ROOM_HEIGHT_MAX_IN) \
+                and not _grandfathered(room_h_f, "height_in"):
             _room_problems.append(
                 'height %g" (must be %g"-%g")'
                 % (room_h_f, ROOM_HEIGHT_MIN_IN, ROOM_HEIGHT_MAX_IN))
@@ -548,11 +581,32 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         vals = {
             "name":           name or "Kitchen Design",
             "partner_id":     partner.id if partner else False,
-            "room_width_in":  room_w,
-            "room_depth_in":  room_d,
-            "room_height_in": room_h,
             "state":          "configured",
         }
+        if design_id and _existing_room is not None:
+            # Fix-round — only include a room-dimension key when it is
+            # an ACTUAL change from what is already persisted. This is
+            # what makes the grandfathering above safe end-to-end: the
+            # pre-check just let an UNCHANGED legacy out-of-bounds value
+            # through, but design.write() below would otherwise still
+            # hand that same value to the model's own @api.constrains
+            # (kitchen_design.py _check_room_bounds), which fires
+            # whenever a listed field is present in the vals dict
+            # REGARDLESS of whether the value actually differs from
+            # what is already stored — silently undoing the
+            # grandfathering and raising anyway. Skipping unchanged
+            # dims here closes that gap. A genuinely NEW value (already
+            # bounds-checked above) is always included as normal.
+            if abs(room_w - _existing_room["width_in"]) >= 1e-6:
+                vals["room_width_in"] = room_w
+            if abs(room_d - _existing_room["depth_in"]) >= 1e-6:
+                vals["room_depth_in"] = room_d
+            if abs(room_h - _existing_room["height_in"]) >= 1e-6:
+                vals["room_height_in"] = room_h
+        else:
+            vals["room_width_in"]  = room_w
+            vals["room_depth_in"]  = room_d
+            vals["room_height_in"] = room_h
 
         # D9 — Non-destructive save. Update existing lines by
         # layout_key, create only new ones, unlink only those that

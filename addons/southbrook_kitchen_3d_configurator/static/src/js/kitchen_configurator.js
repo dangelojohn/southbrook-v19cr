@@ -331,6 +331,12 @@ class SouthbrookKitchenConfigurator extends Component {
         });
         // Auto-save debounce timer (not reactive; managed imperatively).
         this._autoSaveTimer = null;
+        // Fix-round (coordinator review, corner-remediation 2026-07-30) —
+        // dedup flag for _autoSave's structured-rejection toast (see
+        // that method's own comment): true once an ongoing auto-save
+        // failure has already been surfaced, reset to false the moment
+        // any save (auto or manual) succeeds again.
+        this._autoSaveErrorShown = false;
 
         // Task #48 — Portal-user detection. v19's `@web/core/user`
         // singleton exposes `isInternalUser` (server-side maps from
@@ -2370,6 +2376,37 @@ class SouthbrookKitchenConfigurator extends Component {
         }
     }
 
+    // Fix-round (coordinator review, corner-remediation 2026-07-30) —
+    // /save (save_design) can reject with a normal (non-thrown) JSON
+    // body instead of an RPC exception, in THREE different pre-existing
+    // shapes: {error, detail} (invalid_wall), {error, error_code} (e.g.
+    // Task 12's ROOM_OUT_OF_BOUNDS), or {ok:false, reason} (not_found/
+    // forbidden on a stale/foreign design_id). Before this fix, NEITHER
+    // _saveDesign nor _autoSave inspected the response body at all —
+    // unlike every other RPC site in this file (_hydrateFromDesign's
+    // NOT_FOUND/ACCESS_DENIED check, _refreshLayout's error/error_code
+    // mirror, /rearrange's error handling in _rearrangeOnServer) — so a
+    // structured rejection was silently treated as success:
+    // _saveDesign showed a FALSE "Design saved" toast, and _autoSave's
+    // catch block never even ran (the RPC itself succeeded; only the
+    // JSON body says "no"). ONE place turns any of the three shapes
+    // into a human-readable message so both callers react identically.
+    // Returns null when `result` looks like a normal success payload.
+    _saveErrorMessage(result) {
+        if (!result) return null;
+        if (result.error) return result.detail || result.error;
+        if (result.ok === false) {
+            if (result.reason === "not_found") {
+                return "This design no longer exists. It may have been deleted.";
+            }
+            if (result.reason === "forbidden") {
+                return "You don't have write access to this design.";
+            }
+            return "Save failed.";
+        }
+        return null;
+    }
+
     async _saveDesign() {
         // PR2.5a (Gap 2) — same rationale as the _queueAutoSave() guard:
         // a failed hydration means state doesn't reflect the saved
@@ -2393,6 +2430,16 @@ class SouthbrookKitchenConfigurator extends Component {
                 design_id:  this.state.designId || false,
                 partner_id: this.state.partnerId || false,
             });
+            // Fix-round — a structured rejection (see _saveErrorMessage)
+            // must never fall through to the success path below.
+            const _saveErr = this._saveErrorMessage(result);
+            if (_saveErr) {
+                this._toast(_saveErr, { type: "danger", sticky: true });
+                return;
+            }
+            // A save that actually succeeded resolves any earlier
+            // auto-save failure condition too (see _autoSave's dedup).
+            this._autoSaveErrorShown = false;
             this.state.designId       = result.id;
             this.state.designName     = result.name;
             this.state.lastAutoSaveAt = Date.now();
@@ -2567,6 +2614,36 @@ class SouthbrookKitchenConfigurator extends Component {
                 design_id:  this.state.designId || false,
                 partner_id: this.state.partnerId || false,
             });
+            // Fix-round (coordinator review) — a structured rejection
+            // (see _saveErrorMessage) used to fall straight through to
+            // the success-path writes below with ZERO signal to the
+            // rep: the comment on this catch block said "manual save
+            // will surface errors", but a design that saves fine except
+            // for its room dims (e.g. a reopened legacy design whose
+            // room was persisted before the ROOM_OUT_OF_BOUNDS check
+            // existed) would have EVERY auto-save AND every manual save
+            // rejected the same way — there was no working save path
+            // left to "surface" anything. Auto-save failures are
+            // deduped (shown once per ongoing failure, not every 3s
+            // debounce) so a persistent condition doesn't spam toasts;
+            // the flag resets the moment ANY save (auto or manual)
+            // succeeds again, so a later NEW failure still surfaces.
+            const _autoErr = this._saveErrorMessage(result);
+            if (_autoErr) {
+                if (!this._autoSaveErrorShown) {
+                    this._autoSaveErrorShown = true;
+                    this._toast(
+                        "Auto-save failed: " + _autoErr
+                        + " Your latest change may not be saved.",
+                        { type: "danger", sticky: true }
+                    );
+                }
+                console.warn(
+                    "[SouthbrookKitchenConfigurator] auto-save rejected:",
+                    _autoErr);
+                return;
+            }
+            this._autoSaveErrorShown  = false;
             this.state.designId       = result.id;
             this.state.designName     = result.name;
             this.state.lastAutoSaveAt = Date.now();

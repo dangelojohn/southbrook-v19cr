@@ -23,6 +23,21 @@ own base/wall/filler templates must be the ONLY sale_ok candidates
 `_first_product` can find, so the test's module_w=24 assumption can't
 be silently invalidated by a pre-seeded catalog product on a full-
 catalog Harness B clone.
+
+Fix-round (coordinator review) — `TestSaveDesignGrandfathersLegacyRoom`
+below locks the CRITICAL finding: `save_design`'s pre-check above, on
+its own, made a legacy oversized design (e.g. the 99999in live-evidence
+room, persisted before this bounds check existed) PERMANENTLY
+un-savable — because `_saveDesign`/`_autoSave` (kitchen_configurator.js)
+resend the client's ENTIRE `state.room` on every save, so even a plain
+cabinet edit that never touches the room would get rejected forever.
+The fix: an incoming room dimension that is out of bounds BUT matches
+what is already persisted for that design is grandfathered through
+(not a genuine attempt to move it out of range); `vals` also omits any
+unchanged room-dimension key so the model's own `@api.constrains`
+(which fires whenever a listed field is present in the write, whether
+or not the value actually differs) can't silently undo the
+grandfathering.
 """
 from contextlib import contextmanager
 from unittest.mock import MagicMock
@@ -208,12 +223,16 @@ class TestLayoutAutofillCap(TransactionCase):
             "59 capped pairs * 2 (base+wall), no filler on a capped room")
         self.assertEqual(result["summary"]["base_count"], 59)
         self.assertEqual(result["summary"]["wall_count"], 59)
-        self.assertTrue(result["summary"].get("capped"),
-            "machine-readable capped flag must be set")
         self.assertEqual(result["summary"]["filler_count"], 0,
             "no filler synthesized once capped — the leftover run is "
             "1416in+ wide, not a small end-of-run gap")
 
+        # Fix-round (coordinator review, Minor) — `summary.capped` was
+        # dropped (dead on the client, zero references in kitchen_
+        # configurator.js). The cap is surfaced exclusively via
+        # `warnings[]`, matching the pre-existing WALL_CAB_EXCEEDS_
+        # CEILING convention (no separate machine-readable boolean twin
+        # anywhere else in this codebase for a warnings-list entry).
         codes = [w.get("code") for w in result.get("warnings", [])]
         self.assertIn("ROOM_TOO_LARGE_FOR_AUTOFILL", codes,
             "SBK-021/022 — capping must be NON-SILENT: an explicit "
@@ -226,7 +245,6 @@ class TestLayoutAutofillCap(TransactionCase):
         result = self._layout(room_width_in=64, room_depth_in=24,
                                room_height_in=96)
         self.assertEqual(result["summary"]["base_count"], 2)
-        self.assertFalse(result["summary"].get("capped"))
         codes = [w.get("code") for w in result.get("warnings", [])]
         self.assertNotIn("ROOM_TOO_LARGE_FOR_AUTOFILL", codes)
 
@@ -247,4 +265,162 @@ class TestLayoutAutofillCap(TransactionCase):
         result = self._layout(room_width_in=1416, room_depth_in=96,
                                room_height_in=96)
         self.assertEqual(result["summary"]["base_count"], 59)
-        self.assertFalse(result["summary"].get("capped"))
+        codes = [w.get("code") for w in result.get("warnings", [])]
+        self.assertNotIn("ROOM_TOO_LARGE_FOR_AUTOFILL", codes)
+
+
+@tagged("post_install", "-at_install", "southbrook",
+        "southbrook_kitchen_3d_configurator", "corner_remediation")
+class TestSaveDesignGrandfathersLegacyRoom(TransactionCase):
+    """Fix-round (coordinator review) CRITICAL finding — exercises the
+    REAL save_design controller against a design whose room was forced
+    out of bounds via direct SQL (the only way such a row can exist
+    today; mirrors exactly how the live-evidence 99999in room got
+    persisted before this bounds check shipped)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.tmpl_base = cls.env["product.template"].create({
+            "name": "T12-fix Base Cabinet", "type": "consu", "sale_ok": True,
+            "list_price": 500.0,
+        })
+        cls.tmpl_base.southbrook_is_cabinet = True
+        cls.tmpl_base.southbrook_cabinet_type = "base"
+        cls.product_base = cls.tmpl_base.product_variant_id
+        assert cls.product_base, "expected auto-created variant"
+
+    def _controller(self):
+        return ctrl_main.SouthbrookKitchenConfiguratorController()
+
+    def _make_legacy_oversized_design(self, width=99999.0):
+        """A design whose room_width_in is out of bounds, persisted the
+        only way that is possible today: direct SQL, bypassing the ORM
+        (and therefore the @api.constrains) entirely — exactly mirroring
+        a row saved before this bounds check existed."""
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T12-fix legacy oversized",
+            "room_width_in": 120.0, "room_depth_in": 96.0,
+            "room_height_in": 96.0,
+        })
+        self.env.cr.execute(
+            "UPDATE southbrook_kitchen_design SET room_width_in = %s "
+            "WHERE id = %s",
+            (width, design.id),
+        )
+        design.invalidate_recordset()
+        self.assertEqual(design.room_width_in, width, "sanity: SQL took")
+        return design
+
+    def test_unchanged_legacy_room_plus_a_cabinet_edit_persists_fine(self):
+        """The exact scenario: reopen a legacy oversized design, add a
+        cabinet, resend the SAME (unchanged, still out-of-range) room
+        dict the client always sends — must succeed, not be rejected
+        forever."""
+        design = self._make_legacy_oversized_design()
+        controller = self._controller()
+        with _stubbed_request(self.env):
+            result = controller.save_design(
+                name=design.name,
+                room={"width_in": 99999.0, "depth_in": 96.0, "height_in": 96.0},
+                items=[{
+                    "product_id": self.product_base.id,
+                    "layout_key": "t12fix-1",
+                    "cabinet_type": "base",
+                    "x_position_in": 0,
+                }],
+                partner_id=False,
+                design_id=design.id,
+            )
+        self.assertNotEqual(result.get("error_code"), "ROOM_OUT_OF_BOUNDS",
+            "an UNCHANGED legacy out-of-bounds room must be grandfathered")
+        self.assertIsNone(result.get("error"))
+        design.invalidate_recordset()
+        self.assertEqual(
+            design.room_width_in, 99999.0,
+            "grandfathering must not silently rewrite the legacy value")
+        lines = design.cabinet_line_ids.filtered(
+            lambda l: l.origin == "configurator")
+        self.assertEqual(len(lines), 1,
+            "the cabinet edit must actually persist — this is the whole point")
+
+    def test_repeated_saves_of_an_unchanged_legacy_room_keep_working(self):
+        """Not a one-shot fluke: a SECOND save against the same
+        unchanged legacy room must ALSO succeed (this is what "resend
+        the entire room on every save, forever" actually means)."""
+        design = self._make_legacy_oversized_design()
+        controller = self._controller()
+        for i in range(2):
+            with _stubbed_request(self.env):
+                result = controller.save_design(
+                    name=design.name,
+                    room={"width_in": 99999.0, "depth_in": 96.0, "height_in": 96.0},
+                    items=[{
+                        "product_id": self.product_base.id,
+                        "layout_key": "t12fix-repeat-%d" % i,
+                        "cabinet_type": "base",
+                        "x_position_in": i * 30,
+                    }],
+                    partner_id=False,
+                    design_id=design.id,
+                )
+            self.assertNotEqual(
+                result.get("error_code"), "ROOM_OUT_OF_BOUNDS",
+                "save #%d must not be rejected" % (i + 1))
+
+    def test_attempting_to_move_dims_to_a_different_out_of_range_value_is_rejected(self):
+        """Grandfathering only covers a RESEND of the exact persisted
+        value — an actual attempt to change to a (still bad) new value
+        is a genuine new violation and must be rejected."""
+        design = self._make_legacy_oversized_design(width=99999.0)
+        controller = self._controller()
+        with _stubbed_request(self.env):
+            result = controller.save_design(
+                name=design.name,
+                # A DIFFERENT out-of-range value, not a resend.
+                room={"width_in": 88888.0, "depth_in": 96.0, "height_in": 96.0},
+                items=[],
+                partner_id=False,
+                design_id=design.id,
+            )
+        self.assertEqual(result.get("error_code"), "ROOM_OUT_OF_BOUNDS")
+        design.invalidate_recordset()
+        self.assertEqual(design.room_width_in, 99999.0,
+            "a rejected resize attempt must leave the legacy value untouched")
+
+    def test_moving_a_legacy_dim_into_range_is_a_genuine_accepted_resize(self):
+        """The other direction: shrinking a legacy oversized room back
+        into bounds is a real, wanted change and must be accepted
+        (not blocked by some overzealous "legacy dims are frozen" rule)."""
+        design = self._make_legacy_oversized_design(width=99999.0)
+        controller = self._controller()
+        with _stubbed_request(self.env):
+            result = controller.save_design(
+                name=design.name,
+                room={"width_in": 120.0, "depth_in": 96.0, "height_in": 96.0},
+                items=[],
+                partner_id=False,
+                design_id=design.id,
+            )
+        self.assertNotEqual(result.get("error_code"), "ROOM_OUT_OF_BOUNDS")
+        design.invalidate_recordset()
+        self.assertEqual(design.room_width_in, 120.0,
+            "a genuine in-bounds resize must actually take effect")
+
+    def test_new_design_gets_no_grandfathering_at_all(self):
+        """No design_id -> nothing to grandfather against -> the strict
+        check from TestSaveDesignRoomBounds applies unconditionally.
+        (Regression guard: grandfathering must never leak into the
+        brand-new-design path.)"""
+        controller = self._controller()
+        with _stubbed_request(self.env):
+            result = controller.save_design(
+                name="T12-fix should stay rejected",
+                room={"width_in": 99999.0, "depth_in": 96.0, "height_in": 96.0},
+                items=[],
+                partner_id=False,
+                design_id=False,
+            )
+        self.assertEqual(result.get("error_code"), "ROOM_OUT_OF_BOUNDS")
+        self.assertFalse(self.env["southbrook.kitchen.design"].search(
+            [("name", "=", "T12-fix should stay rejected")]))
