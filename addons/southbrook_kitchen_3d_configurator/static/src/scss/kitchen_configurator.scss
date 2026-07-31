@@ -230,6 +230,131 @@ $sbk-amber:      #B45309;
 
 @keyframes sbk-spin { to { transform: rotate(360deg); } }
 
+// ─── Task 20 (SBK-034) — landing state ─────────────────────────────────────────
+// Shown instead of the loading spinner / workspace when the configurator
+// was opened with no design id — recent designs + "New Design", never
+// the 3D scene (kitchen_configurator.js's onWillStart / template).
+.o_sbk_landing {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.o_sbk_landing_card {
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.o_sbk_landing_heading {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.1px;
+    margin: 0;
+    color: $sbk-dark;
+}
+
+.o_sbk_landing_sub {
+    margin: 0 0 18px;
+    font-size: 13px;
+    color: $sbk-muted;
+}
+
+.o_sbk_landing_loading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: $sbk-muted;
+    padding: 10px 0;
+}
+
+.o_sbk_landing_empty {
+    font-size: 12px;
+    color: $sbk-muted;
+    padding: 10px 0 18px;
+}
+
+.o_sbk_landing_list {
+    list-style: none;
+    margin: 0 0 18px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+
+.o_sbk_landing_item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    padding: 10px 12px;
+    background: $sbk-white;
+    border: 1px solid $sbk-border;
+    border-radius: var(--sb-radius);
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    transition: var(--sb-transition);
+
+    &:hover { background: $sbk-bg; border-color: $sbk-muted; }
+
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
+}
+
+.o_sbk_landing_item_name {
+    font-size: 13px;
+    font-weight: 600;
+    color: $sbk-dark;
+}
+
+.o_sbk_landing_item_meta {
+    font-size: 11px;
+    color: $sbk-muted;
+    font-family: var(--sb-font-mono);
+}
+
+.o_sbk_landing_new {
+    align-self: flex-start;
+}
+
+// ─── Task 20 (SBK-034) — blocking error screen ─────────────────────────────────
+// A design id that doesn't resolve (missing / unreadable) — NEVER
+// silently falls through to the workspace with an empty/default room.
+.o_sbk_fatal_error {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 24px;
+    text-align: center;
+}
+
+.o_sbk_fatal_error_title {
+    font-size: 15px;
+    color: $sbk-dark;
+}
+
+.o_sbk_fatal_error_body {
+    margin: 0;
+    max-width: 380px;
+    font-size: 13px;
+    color: $sbk-muted;
+}
+
 // ─── Workspace layout ─────────────────────────────────────────────────────────
 .o_sbk_workspace {
     display: grid;

@@ -775,13 +775,37 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         type="jsonrpc", auth="user", methods=["POST"],
     )
     def load_design_lines(self, design_id):
+        # Task 20 (SBK-034) — deep-link source-of-truth. A design id
+        # that doesn't resolve now comes back with an explicit
+        # `error`/`error_code` (NOT_FOUND / ACCESS_DENIED — same code
+        # strings /rearrange already uses below) instead of the old
+        # bare `{"lines": []}`. The client used to read an empty
+        # `lines` list as "a real, freshly-created design with nothing
+        # saved yet" and silently ran the starter-layout generator over
+        # it — indistinguishable from "this id doesn't exist / isn't
+        # yours", which is exactly the audited "reload silently resets
+        # to a fresh design, abandoning the saved one" bug (SBK-034).
+        # A design that genuinely EXISTS and is READABLE, even with
+        # zero configurator-origin lines (e.g. a template preset saved
+        # with generate_layout=False), is UNCHANGED below — that empty-
+        # but-real case still returns the bare success shape; only the
+        # two short-circuits above it are new.
         design = request.env["southbrook.kitchen.design"].browse(int(design_id or 0))
         if not design.exists():
-            return {"lines": []}
+            return {
+                "lines": [],
+                "error": "This design no longer exists. It may have "
+                         "been deleted.",
+                "error_code": "NOT_FOUND",
+            }
         try:
             design.check_access("read")
         except Exception:
-            return {"lines": []}
+            return {
+                "lines": [],
+                "error": "You don't have access to this design.",
+                "error_code": "ACCESS_DENIED",
+            }
         out = self._serialize_design_lines(design)
         # PR2.5a (Gap 1) — additive: a direct-URL reload of the
         # configurator restores the client action's `design_id` (via the
@@ -791,9 +815,10 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # action_open_configurator). Echo them here, read-side only, so
         # _hydrateFromDesign() can backfill state.room / state.designName
         # when a URL restore skipped params entirely. The no-design /
-        # no-access branches above are unchanged (still bare
-        # {"lines": []}) — this key is only ever added when a design was
-        # actually found and readable.
+        # no-access branches above now short-circuit with an
+        # error/error_code (Task 20, SBK-034) before reaching here —
+        # this key is only ever added when a design was actually found
+        # and readable.
         return {
             "lines": out,
             "room": {
@@ -803,6 +828,41 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             },
             "design_name": design.display_name,
         }
+
+    # ─── Task 20 (SBK-034) — landing-state recent designs ───────────────────────
+    @http.route(
+        "/southbrook_kitchen/configurator/recent_designs",
+        type="jsonrpc", auth="user", methods=["POST"],
+    )
+    def recent_designs(self, limit=8):
+        """The current user's most-recently-touched designs, for the
+        configurator's landing screen (opened with no design id, e.g.
+        the bare menu entry) so it can offer "Continue <design>"
+        instead of the old silent-auto-generate-a-fresh-design
+        behaviour. Deliberately minimal — id + a few display fields,
+        no line data (the landing screen never touches
+        cabinet_line_ids). A plain non-sudo search: ir.rule already
+        does the right per-role scoping everywhere else in this
+        controller (security/kitchen_design_rules.xml — designer sees
+        own via create_uid, readonly/manager see all); no special-
+        casing needed here either.
+        """
+        try:
+            n = max(1, min(int(limit or 8), 25))
+        except (TypeError, ValueError):
+            n = 8
+        designs = request.env["southbrook.kitchen.design"].search(
+            [], order="write_date desc", limit=n,
+        )
+        return [{
+            "id":            d.id,
+            "name":          d.display_name,
+            "partner_name":  d.partner_id.name or "",
+            "room_width_in":  d.room_width_in,
+            "room_depth_in":  d.room_depth_in,
+            "room_height_in": d.room_height_in,
+            "write_date":    d.write_date.isoformat() if d.write_date else "",
+        } for d in designs]
 
     # T7 (kitchen templates) — engine-routed room resize. The naive
     # /layout generator above is a single-wall fill: calling it on a

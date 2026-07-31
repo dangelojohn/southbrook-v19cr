@@ -130,9 +130,27 @@ class SouthbrookKitchenConfigurator extends Component {
         );
         this._hasExplicitDesignName = !!params.design_name;
 
+        // Task 20 (SBK-034) — the id (or its absence) resolved above is
+        // the single source of truth for what the FIRST render shows.
+        // Computed once, here, so both `designId` and `screen` below
+        // agree with each other from the very first paint — no window
+        // where the component has decided "there's an id" but is still
+        // rendering the landing screen, or vice versa.
+        const initialDesignId = params.design_id || restoredDesignId || null;
+
         // ── Reactive state ────────────────────────────────────────────────────
         this.state = useState({
             loading:  true,
+            // Task 20 (SBK-034) — 'landing' (no id: recent designs +
+            // "New design", nothing generated/created yet), 'workspace'
+            // (an id was supplied — resolve it; see onWillStart/
+            // _hydrateFromDesign for the loading -> workspace-or-error
+            // transition), or 'error' (the id didn't resolve — set only
+            // by _failHydration, never by initial state). The template's
+            // top-level branch reads this FIRST, before `loading` — the
+            // landing screen has its own (non-blocking) fetch and must
+            // never fall through to the loading spinner OR the 3D scene.
+            screen: initialDesignId ? "workspace" : "landing",
             saving:   false,
             error:     "",
             errorCode: "",
@@ -163,7 +181,12 @@ class SouthbrookKitchenConfigurator extends Component {
             // PR2.5a (Gap 1) — falls back to the URL-restore-only
             // actionStack signal (see setup() comment above) when
             // params.design_id is absent (a direct-URL reload).
-            designId:  params.design_id || restoredDesignId || null,
+            designId:  initialDesignId,
+            // Task 20 (SBK-034) — landing-screen recent-designs list.
+            // Populated by _loadRecentDesigns(), fired from onWillStart
+            // ONLY on the no-id boot path; never touched otherwise.
+            recentDesigns:        [],
+            recentDesignsLoading: false,
             designName: params.design_name || "",
             // D1 — multi-view camera system. 'iso' default; switchable
             // among iso/top/front/left/right/persp. Hotkeys 1-6 + R reset.
@@ -271,24 +294,40 @@ class SouthbrookKitchenConfigurator extends Component {
 
         // ── Lifecycle ─────────────────────────────────────────────────────────
         onWillStart(async () => {
-            // 24e — loadThreeJS moved into <KitchenCanvas>.onMounted;
-            // parent no longer touches THREE. Product + defaults still
-            // load in parallel so first paint isn't gated.
+            // Task 20 (SBK-034) — the id in the boot params is the
+            // source of truth, decided BEFORE any product/layout fetch
+            // and BEFORE the 3D scene ever mounts (the template's
+            // 'workspace' branch — the only one that renders
+            // <KitchenCanvas> — is gated on state.screen, and this is
+            // the only place besides _startNewDesign/_continueDesign/
+            // _failHydration that writes it):
+            //   - no id -> a minimal landing state (recent designs +
+            //     "New design"). Nothing is generated, nothing is
+            //     created, until the rep explicitly picks one of those
+            //     two actions (_startNewDesign / _continueDesign) —
+            //     this is what closes the audited "entering from the
+            //     menu always silently starts a new design" defect.
+            //     _loadRecentDesigns() is intentionally NOT awaited —
+            //     it owns its own loading flag so the landing screen's
+            //     first paint isn't gated on it either.
+            //   - an id -> resolve it via _hydrateFromDesign(); success
+            //     enters the workspace hydrated from the saved design,
+            //     failure (missing/unreadable) is routed to state.screen
+            //     = 'error' by _failHydration — NEVER a silently
+            //     generated fresh design (the audited "reload abandons
+            //     the saved design" defect). Product/defaults load in
+            //     parallel with the hydrate attempt so first paint isn't
+            //     gated on them once the record resolves.
+            if (!this.state.designId) {
+                this.state.loading = false;
+                this._loadRecentDesigns();
+                return;
+            }
             await Promise.all([
                 this._loadProducts(),
                 this._loadUserDefaults(),
             ]);
-            // PR2.5 — a design_id means there's a canonical saved layout
-            // to reopen; hydrate from it instead of running the /layout
-            // generator (which would silently replace the saved
-            // cabinets with a freshly computed fill — the destructive-
-            // reopen bug). No design_id (brand-new/standalone session)
-            // keeps the original generate-on-open behavior.
-            if (this.state.designId) {
-                await this._hydrateFromDesign();
-            } else {
-                await this._refreshLayout();
-            }
+            await this._hydrateFromDesign();
             this.state.loading = false;
         });
 
@@ -615,12 +654,54 @@ class SouthbrookKitchenConfigurator extends Component {
         return { ...line, name: line.product_name, default_code: defaultCode };
     }
 
+    // Task 20 (SBK-034) — the single place every "the id in the URL/
+    // params doesn't resolve to a design this session can use" path
+    // funnels through, whether that's a thrown RPC (transient failure,
+    // see the catch block below — `code` defaults to the string this
+    // path has always used, "HYDRATION_FAILED", so existing behavior/
+    // tests are unchanged) or an explicit NOT_FOUND/ACCESS_DENIED
+    // response from load_design_lines (new). Routes state.screen to
+    // 'error' — a dedicated blocking screen, never the workspace/scene
+    // — and hard-gates every write path via `_hydrationFailed` exactly
+    // like the pre-existing RPC-failure path already did.
+    _failHydration(message, code = "HYDRATION_FAILED") {
+        this._hydrationFailed = true;
+        this.state.error = message;
+        this.state.errorCode = code;
+        this.state.errorCta = null;
+        this.state.screen = "error";
+    }
+
     async _hydrateFromDesign() {
         try {
             const resp = await rpc(
                 "/southbrook_kitchen/configurator/load_design_lines",
                 { design_id: this.state.designId },
             );
+            // Task 20 (SBK-034) — an explicit error_code means the id
+            // does not resolve to a design this user can read right
+            // now: NOT_FOUND (deleted / never existed) or
+            // ACCESS_DENIED (ir.rule/ACL says no — controllers/main.py
+            // load_design_lines). Must be checked BEFORE the "no
+            // lines" branch below: both shapes carry a bare `lines: []`
+            // array, and without this check "doesn't exist" and
+            // "exists but is empty" are indistinguishable — reading
+            // the former as the latter is exactly the silent-fresh-
+            // design bug this task closes (the generator would run
+            // over an id that was never a real, readable design).
+            if (resp && resp.error_code === "NOT_FOUND") {
+                this._failHydration(
+                    resp.error || "This design no longer exists.",
+                    "NOT_FOUND");
+                return;
+            }
+            if (resp && resp.error_code === "ACCESS_DENIED") {
+                this._failHydration(
+                    resp.error || "You don't have access to this design.",
+                    "ACCESS_DENIED");
+                return;
+            }
+            this.state.screen = "workspace";
             // PR2.5a (Gap 1) — backfill room dims / design name from the
             // server's additive echo (controllers/main.py
             // load_design_lines) when `params` didn't already supply
@@ -706,11 +787,9 @@ class SouthbrookKitchenConfigurator extends Component {
                 + "silently overwrite the saved design on the next "
                 + "auto-save):", e
             );
-            this._hydrationFailed = true;
-            this.state.error = "Couldn't load the saved design — reload "
-                + "the page. Saving is disabled to protect your design.";
-            this.state.errorCode = "HYDRATION_FAILED";
-            this.state.errorCta = null;
+            this._failHydration(
+                "Couldn't load the saved design — reload the page. "
+                + "Saving is disabled to protect your design.");
         }
     }
 
@@ -780,6 +859,84 @@ class SouthbrookKitchenConfigurator extends Component {
             } catch (e) {
             this.state.error = "Layout error: " + (e.message || e);
         }
+    }
+
+    // ─── Task 20 (SBK-034) — landing-state entry points ─────────────────────────
+    // Fetches the current user's recent designs for the landing screen's
+    // "Continue" list. Fired once from onWillStart on the no-id boot
+    // path only (never re-fired automatically); _backToLanding() below
+    // re-fires it when the rep bounces back from an error screen. Owns
+    // its own loading flag so the landing screen's first paint is never
+    // gated on this RPC.
+    async _loadRecentDesigns() {
+        this.state.recentDesignsLoading = true;
+        try {
+            const resp = await rpc(
+                "/southbrook_kitchen/configurator/recent_designs", {});
+            this.state.recentDesigns = Array.isArray(resp) ? resp : [];
+        } catch (e) {
+            // Non-fatal — the "New Design" button still works with an
+            // empty/failed recent-designs list.
+            console.warn(
+                "[SouthbrookKitchenConfigurator] recent_designs fetch failed:", e);
+            this.state.recentDesigns = [];
+        } finally {
+            this.state.recentDesignsLoading = false;
+        }
+    }
+
+    // The landing screen's "New Design" button. This — a genuine,
+    // explicit user click — is the ONLY place a brand-new session's
+    // product catalog + starter layout are ever fetched/generated on
+    // the no-id path; onWillStart itself never calls this. Nothing here
+    // creates a database record either — /layout (via _refreshLayout)
+    // is a pure in-memory generator, exactly as it always was; the
+    // first real write only happens on an explicit Save (see
+    // _saveDesign/_autoSave), unchanged by this task.
+    async _startNewDesign() {
+        this.state.screen = "workspace";
+        this.state.loading = true;
+        this.state.error = "";
+        this.state.errorCode = "";
+        await Promise.all([
+            this._loadProducts(),
+            this._loadUserDefaults(),
+        ]);
+        await this._refreshLayout();
+        this.state.loading = false;
+    }
+
+    // The landing screen's "Continue <design>" action — reopens one of
+    // the rep's recent designs in place, through the exact same
+    // _hydrateFromDesign() path a deep link takes (including its
+    // NOT_FOUND/ACCESS_DENIED handling, in case the list is stale by
+    // the time it's clicked).
+    async _continueDesign(designId) {
+        if (!designId) return;
+        this.state.designId = designId;
+        this.state.screen = "workspace";
+        this.state.loading = true;
+        this.state.error = "";
+        this.state.errorCode = "";
+        await Promise.all([
+            this._loadProducts(),
+            this._loadUserDefaults(),
+        ]);
+        await this._hydrateFromDesign();
+        this.state.loading = false;
+    }
+
+    // Bounces the error screen (bad/unreadable design id) back to the
+    // landing list. Clears the bad id so it can never leak into a
+    // later save, and refreshes the recent-designs list in case the
+    // stale entry that led here needs to disappear from it too.
+    _backToLanding() {
+        this.state.screen = "landing";
+        this.state.designId = null;
+        this.state.error = "";
+        this.state.errorCode = "";
+        this._hydrationFailed = false;
+        this._loadRecentDesigns();
     }
 
     // ─── Templates (T3): top-frame entry to the four-dropdown picker ────────────
@@ -2329,6 +2486,63 @@ class SouthbrookKitchenConfigurator extends Component {
 SouthbrookKitchenConfigurator.template = xml`
 <div class="o_sbk_root">
 
+  <!-- Task 20 (SBK-034) — minimal landing state. Shown whenever the
+       configurator was opened with no design id (the bare menu entry,
+       or a direct "new" URL) — instead of the old behavior of
+       silently generating (and, on first edit, persisting) a fresh
+       design. Deliberately bare: nothing else in state (products,
+       room, channel, ...) is fetched yet at this point, so none of
+       the workspace's topbar controls would mean anything here. Ends
+       the moment the rep picks Continue (_continueDesign) or
+       New Design (_startNewDesign) — see those methods and the
+       onWillStart comment above for the full boot-decision contract. -->
+  <t t-if="state.screen === 'landing'">
+    <header class="o_sbk_topbar">
+      <div class="o_sbk_brand_block">
+        <div class="o_sbk_logo">
+          <div class="o_sbk_logo_inner"/>
+        </div>
+        <div>
+          <div class="o_sbk_brand_label">SOUTHBROOK KITCHEN</div>
+          <h1 class="o_sbk_title">3D Room Configurator</h1>
+        </div>
+      </div>
+    </header>
+    <div class="o_sbk_landing">
+      <div class="o_sbk_landing_card">
+        <h2 class="o_sbk_landing_heading">Open a kitchen design</h2>
+        <p class="o_sbk_landing_sub">Continue a recent design, or start a new one.</p>
+
+        <div t-if="state.recentDesignsLoading" class="o_sbk_landing_loading">
+          <div class="o_sbk_spinner"/>
+          <span>Loading recent designs…</span>
+        </div>
+        <div t-elif="!state.recentDesigns.length" class="o_sbk_landing_empty">
+          No recent designs yet.
+        </div>
+        <ul t-else="" class="o_sbk_landing_list">
+          <li t-foreach="state.recentDesigns" t-as="d" t-key="d.id">
+            <button type="button" class="o_sbk_landing_item"
+                    t-on-click="() => this._continueDesign(d.id)">
+              <span class="o_sbk_landing_item_name" t-esc="d.name"/>
+              <span class="o_sbk_landing_item_meta">
+                <t t-if="d.partner_name" t-esc="d.partner_name"/>
+                <t t-if="d.partner_name"> · </t>
+                <t t-esc="d.room_width_in"/>″ × <t t-esc="d.room_depth_in"/>″
+              </span>
+            </button>
+          </li>
+        </ul>
+
+        <button type="button" class="o_sbk_btn o_sbk_btn_primary o_sbk_landing_new"
+                t-on-click="_startNewDesign">
+          + New Design
+        </button>
+      </div>
+    </div>
+  </t>
+  <t t-else="">
+
   <!-- Top bar -->
   <header class="o_sbk_topbar">
     <div class="o_sbk_brand_block">
@@ -2477,6 +2691,21 @@ SouthbrookKitchenConfigurator.template = xml`
   <div t-if="state.loading" class="o_sbk_loading">
     <div class="o_sbk_spinner"/>
     <span>Loading cabinet inventory…</span>
+  </div>
+
+  <!-- Task 20 (SBK-034) — explicit blocking error screen: the design
+       id from the URL/params (or a "Continue" click) didn't resolve —
+       missing or unreadable (_failHydration, from either an explicit
+       NOT_FOUND/ACCESS_DENIED response or a thrown RPC). Never falls
+       through to the workspace/scene below with an empty/default room
+       — that's exactly the silent-fresh-design bug this task closes. -->
+  <div t-elif="state.screen === 'error'" class="o_sbk_fatal_error">
+    <strong class="o_sbk_fatal_error_title">Couldn't open this design</strong>
+    <p class="o_sbk_fatal_error_body" t-esc="state.error"/>
+    <button type="button" class="o_sbk_btn o_sbk_btn_outline"
+            t-on-click="_backToLanding">
+      ← Back to designs
+    </button>
   </div>
 
   <!-- Main workspace -->
@@ -3011,6 +3240,7 @@ SouthbrookKitchenConfigurator.template = xml`
 
     </aside>
   </div>
+  </t>
 </div>`;
 
 SouthbrookKitchenConfigurator.props = {
