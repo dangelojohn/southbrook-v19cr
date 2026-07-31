@@ -20,6 +20,15 @@ _logger = logging.getLogger(__name__)
 _MM_PER_IN = 25.4
 
 
+class _BomAutoseedDryRun(Exception):
+    """Internal control-flow sentinel for `_bom_autoseed_would_resolve`
+    (Task 2, corner-remediation 2026-07-30) — raised unconditionally to
+    force that method's `cr.savepoint()` block to roll back after a DRY
+    RUN of the real `_ensure_kitchen_bom`, regardless of whether the
+    seeder succeeded or raised. Never escapes that method; not a
+    user-facing error."""
+
+
 def _line_ref(*items):
     """Message hygiene (Task 1, corner-remediation 2026-07-30) — appends
     ' (line #<id>)' once per involved `southbrook.kitchen.design.line`
@@ -1097,39 +1106,74 @@ class SouthbrookKitchenDesign(models.Model):
         """True if `_ensure_kitchen_bom` (the quotation flow's autoseed,
         called from `action_create_quotation` before its own MISSING_BOM
         gate) would leave `product` with a BOM satisfying the same
-        existence check the validator runs — computed READ-ONLY, without
-        calling `_ensure_kitchen_bom` or creating anything (validating
-        must never seed a BOM as a side effect).
+        existence check the validator runs.
 
-        `_ensure_kitchen_bom` unconditionally succeeds at creating a
-        fresh template-level (`product_id` unset) 'normal' BOM — the
-        dims/family/door-count it derives all fall back to sane
-        defaults and nothing in that path raises — UNLESS its own fast
-        path finds an EXISTING 'normal'-type BOM on the template first
-        and returns THAT one instead of creating the template-level
-        stub. That fast path (`product_tmpl.bom_ids.filtered(lambda b:
-        b.type == "normal")`) matches on `type` only, not on which
-        variant the BOM is scoped to. So the one real "genuinely outside
-        the auto-seed logic" case is: the template already carries a
-        'normal' BOM pinned to a SIBLING variant (`product_id` set, and
-        not this one) — autoseed's fast path hands back that sibling's
-        BOM without ever creating the template-level BOM THIS variant
-        needs, so MISSING_BOM survives the quote flow's autoseed call
-        unchanged and would still block quoting too.
+        Review fix (Task 2, corner-remediation 2026-07-30, Finding 1) —
+        this used to be a HAND-DERIVED mirror of `_ensure_kitchen_bom`'s
+        fast-path logic that assumed the seeder never raises. It does:
+        both real call sites (`action_create_quotation`,
+        kitchen_design.py ~2221/~2305) wrap `_ensure_kitchen_bom` in
+        `try/except UserError`, and the comment at kitchen_design.py
+        ~2366-2369 names the D12 MISSING_BOM blocking gate as the
+        SAFETY NET for exactly that failure mode. A predicate blind to
+        the seeder raising would WARN on a design whose quote then ships
+        with a permanently BOM-less line — silently defeating that
+        safety net.
+
+        Fixed by actually DRY-RUNNING the real `_ensure_kitchen_bom`
+        inside a savepoint that is ALWAYS rolled back (success or
+        failure) — Odoo's `_FlushingSavepoint.rollback()` clears the
+        cursor's ORM cache on rollback (`sql_db.py`), so no stale
+        in-memory state survives either. This can never drift from
+        `_ensure_kitchen_bom`'s real behaviour (including future changes
+        to it) and reuses its exact access level (Finding 2 — no
+        hand-rolled `sudo()` search standing in for the real fast path's
+        `product_tmpl.bom_ids` read at the caller's access level).
+        Still fully read-only from the caller's perspective: nothing
+        persists past this method returning.
         """
         tmpl = product.product_tmpl_id
         if not tmpl:
             return False
-        existing_normal = self.env["mrp.bom"].sudo().with_context(
-            active_test=False
-        ).search([
-            ("product_tmpl_id", "=", tmpl.id),
-            ("type", "=", "normal"),
-        ], limit=1)
-        if (existing_normal and existing_normal.product_id
-                and existing_normal.product_id != product):
-            return False
-        return True
+
+        resolved = False
+        try:
+            with self.env.cr.savepoint():
+                try:
+                    self._ensure_kitchen_bom(tmpl)
+                except UserError:
+                    # Exactly the failure action_create_quotation's own
+                    # try/except guards against — the seeder genuinely
+                    # can't handle this product. Fail CLOSED: `resolved`
+                    # stays False, so this bucket stays MISSING_BOM/
+                    # blocking, never BOM_WILL_AUTOSEED/warning.
+                    pass
+                except Exception:
+                    # Defence-in-depth for any non-UserError the seeder
+                    # might raise (now or after a future change to it) —
+                    # never fail open on an unexpected signal.
+                    _logger.warning(
+                        "_bom_autoseed_would_resolve: dry-run autoseed "
+                        "raised an unexpected error for %s — treating "
+                        "as NOT auto-seedable (fail-closed)",
+                        tmpl.display_name, exc_info=True,
+                    )
+                else:
+                    resolved = bool(self.env["mrp.bom"].sudo().search_count([
+                        "|",
+                        ("product_id", "=", product.id),
+                        "&",
+                        ("product_tmpl_id", "=", tmpl.id),
+                        ("product_id", "=", False),
+                    ], limit=1))
+                # Unconditionally discard — this is a DRY RUN. Validating
+                # must never persist a BOM (or the Manufacture-route
+                # write, or anything else `_ensure_kitchen_bom` does) as
+                # a side effect, regardless of which branch above ran.
+                raise _BomAutoseedDryRun()
+        except _BomAutoseedDryRun:
+            pass
+        return resolved
 
     def _check_production_ready(self):
         self.ensure_one()
