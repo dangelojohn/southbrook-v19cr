@@ -170,3 +170,107 @@ class TestPricelistResolution(SouthbrookTestCase):
             self.fail(
                 f"NF13 regression: onchange with null partner crashed: {exc}"
             )
+
+    # --- Task 31 regression: write-path (non-onchange) resolution -----
+    #
+    # Task 29's probe found that a plain ORM `order.write({"partner_id":
+    # ...})` — any backend script, server action, or RPC call that
+    # doesn't go through the web client's onchange dispatch — blanked
+    # pricelist_id to False instead of resolving it, because stock's
+    # `_compute_pricelist_id` is a real compute (fires on any partner_id
+    # write) while the Southbrook resolver above only runs via
+    # @api.onchange. Task 31 fixes this by overriding
+    # `_compute_pricelist_id` itself. These tests exercise the WRITE
+    # path directly (no Form involved) — the onchange tests above only
+    # ever proved the Form/UI path worked.
+
+    def test_12_plain_write_partner_switch_resolves_retail_pricelist(self):
+        """Task 31 — plain write() must resolve the retail channel
+        pricelist, not blank pricelist_id or leave the stale dealer
+        pricelist behind."""
+        origin = self._make_dealer("T31 Origin Dealer")
+        order = self.Order.create({"partner_id": origin.id})
+        self.assertEqual(order.pricelist_id, self._ref("pricelist_dealer"))
+
+        retail = self._make_retail("T31 Retail Walk-in")
+        order.write({"partner_id": retail.id})
+        order.invalidate_recordset()
+
+        self.assertEqual(
+            order.pricelist_id,
+            self._ref("pricelist_retail"),
+            "Task 31 — plain write() must resolve the retail channel "
+            "pricelist on the WRITE path, matching the onchange path",
+        )
+
+    def test_13_plain_write_partner_switch_resolves_discounted_channel(self):
+        """Task 31 — same write-path check with a discounted channel
+        (Tier-3 tradesperson, -35%) so the fix isn't proven retail-only."""
+        origin = self._make_retail("T31 Origin Retail")
+        order = self.Order.create({"partner_id": origin.id})
+        self.assertEqual(order.pricelist_id, self._ref("pricelist_retail"))
+
+        trades = self._make_tradesperson("T31 Tier3 Tradesperson", tier="3")
+        order.write({"partner_id": trades.id})
+        order.invalidate_recordset()
+
+        self.assertTrue(
+            order.pricelist_id,
+            "Task 31 — must never blank pricelist_id when a resolvable "
+            "channel pricelist exists",
+        )
+        self.assertEqual(
+            order.pricelist_id,
+            self._ref("pricelist_tradesperson_tier_3"),
+            "Task 31 — plain write() must resolve the Tier-3 (-35%) "
+            "sub-pricelist for a tradesperson-channel partner",
+        )
+
+    def test_14_plain_write_no_channel_partner_keeps_stock_behavior(self):
+        """Task 31 — a partner with NO Southbrook channel must resolve
+        exactly like stock's own `_compute_pricelist_id`
+        (partner.property_product_pricelist) on a plain write(); the
+        channel override must not fire for a channel-less partner, and
+        must not invent a value stock wouldn't have produced."""
+        origin = self._make_retail("T31 Origin Retail No-Channel Test")
+        order = self.Order.create({"partner_id": origin.id})
+
+        # channel defaults to "retail" on create (res_partner.py) — every
+        # ordinary new partner already carries A Southbrook channel, so
+        # a genuinely channel-less partner (imported/legacy customer,
+        # pre-dating the channel field) only exists via an explicit
+        # False write, bypassing the default.
+        plain = self.Partner.create(
+            {"name": "T31 No-Channel Partner", "channel": False})
+        self.assertFalse(plain.channel, "sanity — no channel set")
+
+        order.write({"partner_id": plain.id})
+        order.invalidate_recordset()
+        plain.invalidate_recordset()
+
+        self.assertEqual(
+            order.pricelist_id,
+            plain.property_product_pricelist,
+            "Task 31 — a channel-less partner must resolve exactly like "
+            "stock's own _compute_pricelist_id (partner.property_"
+            "product_pricelist); the Southbrook override only acts when "
+            "partner.channel is set",
+        )
+
+    def test_15_form_path_pricelist_resolution_unchanged_post_fix(self):
+        """Task 31 — the pre-existing Form/onchange path (see test_10
+        above, NF13) must still resolve correctly now that
+        `_compute_pricelist_id` is also overridden: the compute and the
+        onchange converge on the same channel-resolved value, so the UI
+        path does not regress."""
+        from odoo.tests.common import Form
+        partner = self._make_tradesperson("T31 Form-Path Tier3", tier="3")
+        with Form(self.Order) as f:
+            f.partner_id = partner
+        saved = f.save()
+        self.assertEqual(
+            saved.pricelist_id,
+            self._ref("pricelist_tradesperson_tier_3"),
+            "Task 31 — Form-driven partner switch still resolves the "
+            "channel pricelist correctly after the write-path fix",
+        )

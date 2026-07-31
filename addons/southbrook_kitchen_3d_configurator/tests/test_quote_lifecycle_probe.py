@@ -459,13 +459,12 @@ class TestSurface3CustomerSwitchRepricing(_QuoteLifecycleFixtureMixin,
             "discount' is not automatic for corner-mirrored lines",
         )
 
-    def test_plain_orm_write_partner_switch_blanks_pricelist_DEFECT(self):
-        """DEFECT (Task 29 probe finding). A plain ORM
-        `order.write({"partner_id": ...})` — i.e. any backend script,
-        server action, or RPC call that sets partner_id WITHOUT going
-        through the web client's onchange dispatch — does not just
-        "skip the channel resolution and keep the old pricelist"; it
-        actively BLANKS pricelist_id to False.
+    def test_plain_orm_write_partner_switch_resolves_pricelist(self):
+        """FIXED (Task 31, was DEFECT per Task 29's probe finding). A
+        plain ORM `order.write({"partner_id": ...})` — i.e. any backend
+        script, server action, or RPC call that sets partner_id WITHOUT
+        going through the web client's onchange dispatch — used to
+        actively BLANK pricelist_id to False instead of resolving it.
 
         Root cause (verified against the sami-odoo:dev image's vendored
         Odoo source, /usr/lib/python3/dist-packages/odoo/addons/sale/
@@ -477,14 +476,19 @@ class TestSurface3CustomerSwitchRepricing(_QuoteLifecycleFixtureMixin,
         onchange RPC. Stock's compute sets
         `pricelist_id = partner.property_product_pricelist`, which is
         empty for a partner with no configured pricelist — so the
-        write silently leaves the order with NO pricelist at all.
+        write used to silently leave the order with NO pricelist at
+        all.
 
-        This is written as a FAILING assertion (not skipTest) per the
-        task brief's "every defect gets a failing-or-skipTest-with-
-        evidence entry" — the assertion below encodes the CORRECT
+        Task 31 fix: southbrook_estimating/models/sale_order.py now
+        overrides `_compute_pricelist_id` itself (not just the
+        onchange) — it runs stock's compute first, then overwrites
+        with the channel-resolved pricelist for any partner that
+        carries a Southbrook channel, so channel resolution is
+        authoritative on the WRITE path too. The assertion below is
+        UNCHANGED from Task 29's probe — it always encoded the correct
         expected behavior (pricelist_id stays resolved across a
-        partner switch, whatever the mechanism) and currently fails
-        against the shipped code.
+        partner switch, whatever the mechanism); it now passes against
+        the fixed code instead of documenting a gap.
         """
         trades = self.env["res.partner"].create({
             "name": "T29 S3 Tradesperson Plain-write",

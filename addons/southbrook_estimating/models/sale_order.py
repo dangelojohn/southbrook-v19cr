@@ -197,6 +197,56 @@ class SaleOrder(models.Model):
                 order.pricelist_id = resolved.id
 
     # ------------------------------------------------------------------
+    # Task 31 (corner remediation 2026-07-30) — write-path repricing fix.
+    #
+    # DEFECT (Task 29 probe): stock sale.order._compute_pricelist_id is a
+    # real @api.depends('partner_id', 'company_id') compute — it fires on
+    # ANY write to partner_id, not just Form/onchange dispatch. It sets
+    # pricelist_id = partner.property_product_pricelist, which is empty
+    # for any Southbrook channel partner (they're priced via the channel
+    # resolver's pricelist records, not the stock per-partner pricelist
+    # field). _onchange_partner_id_southbrook_pricelist above is declared
+    # @api.onchange ONLY, so it never runs on a plain ORM
+    # `order.write({"partner_id": ...})` — any backend script, server
+    # action, or RPC call that isn't the web client's onchange dispatch.
+    # Net effect: pricelist_id silently BLANKS on any non-UI partner
+    # switch, breaking the locked "switch customer on the header -> whole
+    # order re-prices" contract (CLAUDE.md section 2.2 / section 9).
+    #
+    # Fix: override the compute itself so channel resolution is
+    # authoritative on the WRITE path too, not just onchange. Run stock's
+    # compute first (super()) so behaviour for a partner with NO channel
+    # is untouched (still partner.property_product_pricelist, still
+    # blanks to False when that's empty — exactly stock semantics). Then,
+    # only for a partner that DOES carry a Southbrook channel, overwrite
+    # with the channel-resolved pricelist — _resolve_channel_pricelist
+    # always returns a record (falls back to retail), so this branch
+    # never blanks pricelist_id when a resolvable pricelist exists. No
+    # re-declared @api.depends needed: Odoo's field.get_depends() unions
+    # dependencies from every MRO-resolved implementation of the same
+    # compute method name (odoo/orm/fields.py resolve_mro +
+    # get_depends), so stock's ('partner_id', 'company_id') already
+    # applies to this override — but it's declared explicitly below to
+    # keep the trigger set self-documenting, matching this file's other
+    # computes.
+    #
+    # This does not touch line price_unit logic (design-time snapshot
+    # architecture, T5-adjudicated) or the order.state != 'draft' guard
+    # stock's own compute already applies — both preserved unchanged.
+    @api.depends("partner_id", "company_id")
+    def _compute_pricelist_id(self):
+        super()._compute_pricelist_id()
+        for order in self:
+            if order.state != "draft":
+                continue
+            partner = order.partner_id
+            if not partner or not partner.channel:
+                continue
+            resolved = order._resolve_channel_pricelist(partner)
+            if resolved:
+                order.pricelist_id = resolved.id
+
+    # ------------------------------------------------------------------
     # C1 fix (2026-07-06): the "Configure Product" header button.
     #
     # The stock OCA flow (product_configurator_sale/models/sale.py) opens
