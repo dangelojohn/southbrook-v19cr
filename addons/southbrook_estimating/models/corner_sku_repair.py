@@ -130,6 +130,12 @@ def repair_corner_sku(env):
         if lh_variants and not rh_variants:
             combo = (lh_variants[0].product_template_attribute_value_ids
                      - lh) | rh
+            # Review finding 1 (2026-07-31): the width relink above may
+            # have SKIPPED promoting the seeded row (collision guard) —
+            # never propagate a stale width into the twin. Build it on
+            # the resolved target width outright.
+            if p33 and p36 and p33 in combo:
+                combo = (combo - p33) | p36
             dup = _variant_with_value_set(
                 Product, tmpl,
                 combo.mapped("product_attribute_value_id").ids)
@@ -285,12 +291,16 @@ def _is_corner_family_code(code):
 
 def _variant_with_value_set(Product, tmpl, pav_ids, exclude=None):
     """Existing variant on `tmpl` (INCLUDING archived ones) whose
-    underlying product.attribute.value set equals `pav_ids` — the same
-    identity both duplicate gates enforce (OCA's
-    _check_duplicate_product compares product_attribute_value_id sets,
-    and core's (product_tmpl_id, combination_indices) unique index keys
-    on the sorted PTAV combination): PTAV row ids are NOT the identity,
-    the value combination is."""
+    underlying product.attribute.value set equals `pav_ids` — the
+    identity the duplicate gates key on (OCA's _check_duplicate_product
+    compares product_attribute_value_id sets; core's
+    (product_tmpl_id, combination_indices) unique index keys on the
+    PTAV combination): PTAV row ids are NOT the identity, the value
+    combination is. Both of those gates are active-only (the core index
+    is partial, WHERE active IS TRUE, and search_variant is a plain
+    active search) — including ARCHIVED rows here is a deliberate
+    safety margin beyond them, so a later unarchive can never surface
+    a duplicate this repair created."""
     exclude_ids = set(exclude.ids) if exclude else set()
     target = set(pav_ids)
     for cand in Product.with_context(active_test=False).search(
@@ -322,10 +332,22 @@ def _repair_eligible(variants, tmpl, family_code):
     which the OCA duplicate constraint correctly refused, killing
     every subsequent cold upgrade at configurator_ux's build_catalog
     self-heal. The stale-width repair's one legitimate target has
-    only ever been the family's own mis-seeded row."""
-    if len(tmpl.product_variant_ids) == 1:
-        return variants
+    only ever been the family's own mis-seeded row.
+
+    The sole-variant prong only applies when NO family-coded row
+    exists anywhere on the template, archived included — a lone
+    ACTIVE wizard variant left behind after a human archived the
+    coded rows (e.g. discontinuing the SKU) is still user data, not
+    the bare seed (review finding 2, 2026-07-31)."""
     ok_codes = {family_code, family_code + "-R"}
+    if len(tmpl.product_variant_ids) == 1:
+        coded_anywhere = tmpl.env["product.product"].with_context(
+            active_test=False).search_count([
+                ("product_tmpl_id", "=", tmpl.id),
+                ("default_code", "in", sorted(ok_codes)),
+            ])
+        if not coded_anywhere:
+            return variants
     return variants.filtered(
         lambda v: (v.default_code or "") in ok_codes)
 
@@ -592,6 +614,13 @@ def repair_corner_family_skus(env):
         if lh_variants and not rh_variants:
             combo = (lh_variants[0].product_template_attribute_value_ids
                      - lh) | rh
+            # Review finding 1 (2026-07-31): the width relink above may
+            # have SKIPPED promoting the seeded row (collision guard) —
+            # never propagate a stale width into the twin. Build it on
+            # the resolved target width outright (target_ptav is
+            # guaranteed non-null here by the family-loop gate above).
+            if stale_ptav and stale_ptav in combo:
+                combo = (combo - stale_ptav) | target_ptav
             dup = _variant_with_value_set(
                 Product, tmpl,
                 combo.mapped("product_attribute_value_id").ids)

@@ -108,19 +108,18 @@ class TestCornerFamilyRepair(TransactionCase):
                 "the RH twin must carry a resolvable default_code")
 
     def _family_variants(self, tmpl, code):
-        """The variants the repair is allowed to MODIFY — the family's
-        own seeded rows (family code or its -R twin) or the sole
-        variant. Wizard-created dynamic config variants (code-less rows
-        on a multi-variant template) are live user data the repair must
-        leave alone (prod fact 2026-07-31: user-configured 33in
-        blind/diag variants; the old unscoped relink rewrote one into
-        an exact duplicate of the seeded row and blocked the deploy),
-        so the width-promotion assertions only bind the seeded rows."""
-        if len(tmpl.product_variant_ids) == 1:
-            return tmpl.product_variant_ids
-        ok = {code, code + "-R"}
-        return tmpl.product_variant_ids.filtered(
-            lambda v: (v.default_code or "") in ok)
+        """The variants the repair is allowed to MODIFY. Delegates to
+        the PRODUCTION scoping helper (_repair_eligible) rather than
+        re-implementing its rule, so this test can never silently
+        drift from the behavior it pins: wizard-created dynamic config
+        variants (code-less rows on a multi-variant template) are live
+        user data the repair must leave alone (prod fact 2026-07-31:
+        user-configured 33in blind/diag variants; the old unscoped
+        relink rewrote one into an exact duplicate of the seeded row
+        and blocked the deploy), so the width-promotion assertions
+        only bind the seeded rows."""
+        return corner_sku_repair._repair_eligible(
+            tmpl.product_variant_ids, tmpl, code)
 
     def test_blind_width_promoted_to_45(self):
         """Item 1 — SB-CORNER-BLIND's Width relinks 33->45 (a real,
@@ -521,3 +520,52 @@ class TestWizardVariantsSurviveRepair(TransactionCase):
             len(twins), 1,
             "no second RH twin may be minted while an archived variant "
             "already carries the combination (got %s)" % twins.ids)
+
+    def test_rh_twin_built_on_target_width_when_relink_was_skipped(self):
+        """Review finding 1 (2026-07-31): a collision-guard-skipped
+        width relink must not leak the seeded row's STALE width into a
+        freshly-minted RH twin. Shape: seeded DIAG row back on 33in
+        (its relink target occupied by a wizard variant at 36in/LH),
+        no RH twin — the twin the repair then mints must carry 36in,
+        never 33in."""
+        p33, p36 = self._require_diag()
+        lh = self._ptav(self.diag_tmpl, "Hinge Side", "LH")
+        rh = self._ptav(self.diag_tmpl, "Hinge Side", "RH")
+        if not (lh and rh):
+            self.skipTest("DIAG LH/RH PTAVs not present here.")
+        seed_combo = self.diag_seed.product_template_attribute_value_ids
+        if p36 not in seed_combo or lh not in seed_combo:
+            self.skipTest("seeded DIAG variant is not 36in/LH here.")
+        twin = self.Product.with_context(active_test=False).search(
+            [("product_tmpl_id", "=", self.diag_tmpl.id),
+             ("default_code", "=", "SB-CORNER-DIAG-R")])
+        if twin:
+            try:
+                twin.unlink()
+            except Exception:
+                self.skipTest("cannot unlink the existing RH twin here.")
+
+        # Revert the seed to the known-bad 33in FIRST (creating the
+        # wizard variant at the seed's live 36in combo before this
+        # would itself trip the duplicate constraint)…
+        self.diag_seed.write({"product_template_attribute_value_ids": [
+            (3, p36.id), (4, p33.id)]})
+        # …then let a wizard variant occupy the seed's target combo.
+        self.Product.create({
+            "product_tmpl_id": self.diag_tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, seed_combo.ids)],
+        })
+
+        repair_corner_family_skus(self.env)
+
+        new_twin = self.Product.with_context(active_test=False).search(
+            [("product_tmpl_id", "=", self.diag_tmpl.id),
+             ("default_code", "=", "SB-CORNER-DIAG-R")])
+        self.assertEqual(len(new_twin), 1, "the RH twin must be minted")
+        self.assertIn(
+            p36, new_twin.product_template_attribute_value_ids,
+            "the minted RH twin must carry the TARGET 36in width even "
+            "though the seeded LH row's own relink was skipped")
+        self.assertNotIn(
+            p33, new_twin.product_template_attribute_value_ids,
+            "the minted RH twin must never inherit the stale 33in width")
