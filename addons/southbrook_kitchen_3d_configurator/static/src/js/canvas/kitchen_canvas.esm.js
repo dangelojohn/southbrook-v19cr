@@ -244,8 +244,32 @@ export class KitchenCanvas extends Component {
                 mount.removeEventListener("mousemove",  this._onMouseOver);
                 mount.removeEventListener("wheel",      this._onWheel);
             }
-            destroyScene(this.T, mount);
+            this._teardownScene(mount);
         });
+    }
+
+    // Task 22 review fix (SBK-036, 2026-07-30) — extracted from
+    // onWillUnmount's body so it's independently callable, same as
+    // `_placeCabinetGroup`/`_sbSceneSnapshot` above (this environment
+    // has no WebGL, so a full owl.mount()+unmount() of this component
+    // isn't possible in the node test harness — THREE.WebGLRenderer's
+    // constructor throws without a real GL context; see scene_init.esm.js.
+    // Tests instead call this method directly against a fake `this`,
+    // exactly like every other `KitchenCanvas.prototype.*.call(fake, ...)`
+    // test in this suite).
+    //
+    // Unmounting while a cabinet was selected used to leak the tint
+    // clone's material, every outline LineSegments' geometry+material,
+    // and the Box3Helper's geometry+material: `destroyScene` only
+    // disposes the renderer/orbit, never traverses/disposes the scene
+    // graph (a pre-existing characteristic of roomObjs/cabObjs too —
+    // out of this task's scope to fix generally), so nothing else
+    // would have caught these Task-22-introduced objects either.
+    // `clearSelectionVisuals` mirrors the same call at the top of every
+    // `_buildScene` rebuild.
+    _teardownScene(mount) {
+        clearSelectionVisuals(this.T.selectionVisual);
+        destroyScene(this.T, mount);
     }
 
     _buildScene(props) {

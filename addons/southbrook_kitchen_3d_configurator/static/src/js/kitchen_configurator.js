@@ -1863,19 +1863,44 @@ class SouthbrookKitchenConfigurator extends Component {
     // would select something nothing else in the UI treats as
     // selectable.
     //
-    // Order is fully deterministic — wall (canonical WALLS order),
-    // then run_seq (position along that wall), then layout_key as a
-    // final tiebreak — so two items that legitimately share a wall
-    // and run_seq (or are missing one) still sort the same way every
+    // Order is fully deterministic — wall (canonical WALLS order), then
+    // POSITION along that wall's run axis, then layout_key as a final
+    // tiebreak — so two items that legitimately share a wall and
+    // position (or are missing one) still sort the same way every
     // time, regardless of the incoming items array's own order (which
     // can shuffle across a reload/re-fetch). This also fixes an
     // off-by-one on the very first ArrowLeft press with nothing
     // selected: it used to land on the second-to-last item instead of
     // the last one (idx defaulted to -1 for both directions, so
     // -1 + -1 wrapped one short of the end).
+    //
+    // Within-wall key is POSITION (x_position_in for back/front walls,
+    // z_position_in for left/right — same per-wall axis convention
+    // `_updateDragGhost`'s `alongOf` uses above), not `run_seq`.
+    // Review fix (Task 22, 2026-07-30): an earlier version of this
+    // sorted on `run_seq`, but BOTH corner-insertion paths in the
+    // engine give EVERY corner line `run_seq = -1` unconditionally
+    // (kitchen_layout_engine.py's corner-node builder hardcodes it;
+    // kitchen_design.py's standalone/derived-line path defaults to the
+    // same -1 via `node.get("run_seq", -1)`, which just reads back the
+    // engine's own hardcoded value in the normal case — universal, not
+    // the narrow "front-right standalone corner" case that call site's
+    // own comment describes). `a.run_seq ?? 0` never normalized -1, so
+    // every corner sorted before every real run_seq on its wall, and
+    // two corners sharing a wall always tied and fell through to the
+    // alphabetical layout_key tiebreak instead of their actual
+    // position. Position is populated and geometrically meaningful for
+    // every cabinet_type, including corners, with no sentinel to
+    // normalize.
     _cycleSelection(dir) {
         const items = this.state.items || [];
         const wallRank = { [WALLS.BACK]: 0, [WALLS.LEFT]: 1, [WALLS.RIGHT]: 2, [WALLS.FRONT]: 3 };
+        const alongRunIn = (it) => {
+            const wall = it.wall || WALLS.BACK;
+            return (wall === WALLS.LEFT || wall === WALLS.RIGHT)
+                ? (it.z_position_in || 0)
+                : (it.x_position_in || 0);
+        };
         const selectable = items
             .filter(it => it.cabinet_type !== "filler")
             .slice()
@@ -1883,9 +1908,8 @@ class SouthbrookKitchenConfigurator extends Component {
                 const wa = wallRank[a.wall] ?? 99;
                 const wb = wallRank[b.wall] ?? 99;
                 if (wa !== wb) return wa - wb;
-                const ra = a.run_seq ?? 0;
-                const rb = b.run_seq ?? 0;
-                if (ra !== rb) return ra - rb;
+                const pa = alongRunIn(a), pb = alongRunIn(b);
+                if (pa !== pb) return pa - pb;
                 const ka = a.layout_key || "";
                 const kb = b.layout_key || "";
                 return ka < kb ? -1 : ka > kb ? 1 : 0;

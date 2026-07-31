@@ -14,6 +14,22 @@
  * SECOND-TO-LAST item, not the last one (idx defaulted to -1 for
  * both directions, so `-1 + -1` wrapped one slot short).
  *
+ * Review fix (2026-07-30): the first pass of this sorted within-wall
+ * on `run_seq`, but BOTH engine corner-insertion paths give EVERY
+ * corner design line `run_seq = -1` UNCONDITIONALLY —
+ * kitchen_layout_engine.py's corner-node builder hardcodes it, and
+ * kitchen_design.py's standalone/derived-line path defaults to that
+ * same -1 (`node.get("run_seq", -1)` just reads back the engine's own
+ * hardcoded value in the normal case; this is universal, not the
+ * narrow "front-right standalone corner" case that call site's own
+ * comment describes). `_cycleSelection` now sorts within a wall by
+ * POSITION along that wall's run axis instead (x_position_in for
+ * back/front, z_position_in for left/right — real, populated data for
+ * every cabinet_type including corners, with no sentinel to
+ * normalize). Every fixture below uses the REAL corner run_seq value
+ * (-1) precisely so a regression back to run_seq-based sorting would
+ * fail these tests instead of silently passing on unrealistic data.
+ *
  * Mounts the REAL, unmodified kitchen_configurator.js end-to-end via
  * the harness's canonical mount helper (only <KitchenCanvas> — the
  * Three.js/WebGL boundary — is mocked; _cycleSelection itself is pure
@@ -23,24 +39,27 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mountConfigurator } from "../harness/mount_configurator.mjs";
 
-// wall then run_seq then layout_key — the documented deterministic
-// order. Deliberately listed here in a DIFFERENT order than the
-// expected cycle order, and re-shuffled between tests, so a passing
-// test proves the sort is doing the work, not incoming array order.
+// wall then position-along-run then layout_key — the documented
+// deterministic order. Deliberately listed here in a DIFFERENT order
+// than the expected cycle order, and re-shuffled between tests, so a
+// passing test proves the sort is doing the work, not incoming array
+// order. The corner (c1) carries run_seq: -1 — the REAL value every
+// corner design line gets from both engine insertion paths — to pin
+// against a regression to run_seq-based sorting.
 function sixMixedCabinets() {
     return [
-        { layout_key: "a1", cabinet_type: "appliance", wall: "front", run_seq: 0 },
-        { layout_key: "f1", cabinet_type: "filler",    wall: "back",  run_seq: 2 },
-        { layout_key: "c1", cabinet_type: "corner",    wall: "right", run_seq: 0 },
-        { layout_key: "b2", cabinet_type: "base",      wall: "back",  run_seq: 1 },
-        { layout_key: "t1", cabinet_type: "tall",      wall: "left",  run_seq: 1 },
-        { layout_key: "b1", cabinet_type: "base",      wall: "back",  run_seq: 0 },
-        { layout_key: "w1", cabinet_type: "wall",      wall: "left",  run_seq: 0 },
+        { layout_key: "a1", cabinet_type: "appliance", wall: "front", x_position_in: 0 },
+        { layout_key: "f1", cabinet_type: "filler",    wall: "back",  x_position_in: 48 },
+        { layout_key: "c1", cabinet_type: "corner",    wall: "right", run_seq: -1, z_position_in: 10 },
+        { layout_key: "b2", cabinet_type: "base",      wall: "back",  x_position_in: 24 },
+        { layout_key: "t1", cabinet_type: "tall",      wall: "left",  z_position_in: 24 },
+        { layout_key: "b1", cabinet_type: "base",      wall: "back",  x_position_in: 0 },
+        { layout_key: "w1", cabinet_type: "wall",      wall: "left",  z_position_in: 0 },
     ];
 }
 const EXPECTED_ORDER = ["b1", "b2", "w1", "t1", "c1", "a1"]; // f1 (filler) excluded
 
-test("forward cycling (dir=+1) visits every non-filler cabinet exactly once, in wall/run_seq/layout_key order, then wraps", async () => {
+test("forward cycling (dir=+1) visits every non-filler cabinet exactly once, in wall/position/layout_key order, then wraps", async () => {
     const h = await mountConfigurator({});
     h.component.state.items = sixMixedCabinets();
     h.component.state.selected = null;
@@ -105,7 +124,7 @@ test("cycling from a selection that no longer exists in state.items (e.g. just d
     h.destroy();
 });
 
-test("order is deterministic regardless of the incoming items array order (wall then run_seq then layout_key tiebreak)", async () => {
+test("order is deterministic regardless of the incoming items array order (wall then position then layout_key tiebreak)", async () => {
     const shuffledA = sixMixedCabinets();
     const shuffledB = [...sixMixedCabinets()].reverse();
 
@@ -133,26 +152,54 @@ test("order is deterministic regardless of the incoming items array order (wall 
     assert.deepEqual(seenB, EXPECTED_ORDER);
 });
 
-test("two items tied on wall AND run_seq sort by layout_key ascending as the final deterministic tiebreak", async () => {
+test("two items tied on wall AND position sort by layout_key ascending as the final deterministic tiebreak", async () => {
     const h = await mountConfigurator({});
     h.component.state.items = [
-        { layout_key: "zzz", cabinet_type: "base", wall: "back", run_seq: 0 },
-        { layout_key: "aaa", cabinet_type: "base", wall: "back", run_seq: 0 },
+        { layout_key: "zzz", cabinet_type: "base", wall: "back", x_position_in: 0 },
+        { layout_key: "aaa", cabinet_type: "base", wall: "back", x_position_in: 0 },
     ];
     h.component.state.selected = null;
     h.component._cycleSelection(1);
     assert.equal(h.component.state.selected.layout_key, "aaa",
-        "the lexicographically-first layout_key must come first when wall+run_seq tie");
+        "the lexicographically-first layout_key must come first when wall+position tie");
     h.component._cycleSelection(1);
     assert.equal(h.component.state.selected.layout_key, "zzz");
     h.destroy();
 });
 
-test("an item missing run_seq/wall entirely does not throw and sorts after items on known walls", async () => {
+// Review fix (Finding 2) — the case the pre-fix run_seq-based sort got
+// wrong: two REAL corner design lines sharing a wall. Both carry the
+// universal run_seq=-1 sentinel (so a regression back to sorting on
+// run_seq would see them tied and fall through to the alphabetical
+// layout_key tiebreak); their z_position_in values are deliberately
+// set so the CORRECT (position-based) order is the OPPOSITE of what
+// alphabetical layout_key ordering would produce, so this fails loudly
+// under a run_seq-based regression instead of passing by coincidence.
+test("two corners sharing a wall (both run_seq=-1, the universal engine sentinel) sort by their actual position, not alphabetically", async () => {
     const h = await mountConfigurator({});
     h.component.state.items = [
-        { layout_key: "unplaced", cabinet_type: "base" }, // no wall, no run_seq
-        { layout_key: "b1", cabinet_type: "base", wall: "back", run_seq: 0 },
+        // Alphabetically first layout_key, but the FARTHER corner (z=30).
+        { layout_key: "aaa-corner", cabinet_type: "corner", wall: "right", run_seq: -1, z_position_in: 30 },
+        // Alphabetically last layout_key, but the NEARER corner (z=6).
+        { layout_key: "zzz-corner", cabinet_type: "corner", wall: "right", run_seq: -1, z_position_in: 6 },
+    ];
+    h.component.state.selected = null;
+    h.component._cycleSelection(1);
+    assert.equal(h.component.state.selected.layout_key, "zzz-corner",
+        "the corner nearer the start of the run (z=6) must come first, despite its layout_key sorting last alphabetically");
+    h.component._cycleSelection(1);
+    assert.equal(h.component.state.selected.layout_key, "aaa-corner");
+    // Full wrap.
+    h.component._cycleSelection(1);
+    assert.equal(h.component.state.selected.layout_key, "zzz-corner");
+    h.destroy();
+});
+
+test("an item missing wall/position entirely does not throw and sorts after items on known walls", async () => {
+    const h = await mountConfigurator({});
+    h.component.state.items = [
+        { layout_key: "unplaced", cabinet_type: "base" }, // no wall, no position
+        { layout_key: "b1", cabinet_type: "base", wall: "back", x_position_in: 0 },
     ];
     h.component.state.selected = null;
     assert.doesNotThrow(() => h.component._cycleSelection(1));
@@ -166,7 +213,7 @@ test("an item missing run_seq/wall entirely does not throw and sorts after items
 test("no selectable cabinets: _cycleSelection is a no-op (never throws, selection stays null)", async () => {
     const h = await mountConfigurator({});
     h.component.state.items = [
-        { layout_key: "f1", cabinet_type: "filler", wall: "back", run_seq: 0 },
+        { layout_key: "f1", cabinet_type: "filler", wall: "back", x_position_in: 0 },
     ];
     h.component.state.selected = null;
     assert.doesNotThrow(() => h.component._cycleSelection(1));

@@ -99,6 +99,10 @@
             # Rec D · Sprint 2d shared canvas modules. All MUST load
             # before kitchen_configurator.js so ES imports resolve.
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/constants.esm.js",
+            # Task 22 review fix (SBK-036, 2026-07-30) — shared mixHex,
+            # used by selection.esm.js and corner_cabinet.esm.js (both
+            # listed below this line).
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/color_utils.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/three_loader.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/pointer_helpers.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/view_specs.esm.js",

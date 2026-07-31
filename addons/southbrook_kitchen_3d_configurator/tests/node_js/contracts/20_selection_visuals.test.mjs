@@ -149,6 +149,61 @@ test("selection composes with — and visibly wins over — a corner cabinet's t
         "the restored material's color must be exactly the pre-selection teal-mixed value");
 });
 
+test("Task 22 review fix: EVERY cab-flagged mesh of a clipped-corner group (body + door face + handle) tints together, not just the body", async () => {
+    const { KitchenCanvas, buildCornerCabinet, cornerBlindNearX0,
+            applySelectionVisuals, clearSelectionVisuals, createSelectionState, P, THREE } = await loadReal();
+    const fake = fakeCanvas(THREE, createSelectionState);
+
+    const item = {
+        layout_key: "corner-1", cabinet_type: "corner", wall: "left",
+        default_code: "SB-CORNER-R", // diagonal clipped-corner style (buildClippedCorner)
+        width_in: 36, height_in: 34.5, depth_in: 24,
+        x_position_in: 0, y_position_in: 0, z_position_in: 0, rotation_deg: 0,
+        pinned: false,
+    };
+    const room = { width_in: 120, depth_in: 96 };
+    KitchenCanvas.prototype._placeCabinetGroup.call(
+        fake, item, buildCornerCabinet, { __blindNearX0: cornerBlindNearX0(item, room) });
+
+    const group = fake.T.cabObjs[0];
+    const cabMeshes = cabMeshesOf(group);
+    // body + the diagonal door face + its handle — the prominent
+    // "lazy susan" surface this cabinet style exists for. Before the
+    // review fix, only `body` carried ud:{cab:true}; the door face
+    // (faceStripGeometry) and handle did not, so the most visible
+    // surface silently stayed untinted/unoutlined on selection.
+    assert.equal(cabMeshes.length, 3,
+        "expected exactly 3 cab-flagged meshes: body, door face, handle");
+    const originals = cabMeshes.map(m => m.material);
+
+    applySelectionVisuals(fake.T, item, P);
+    cabMeshes.forEach((m, i) => {
+        assert.notEqual(m.material, originals[i],
+            `cab-flagged mesh #${i} (of ${cabMeshes.length}) must be tinted on select`);
+    });
+
+    // Toe-kick + countertop are deliberately NOT cab-flagged (matches
+    // every other builder in this file — they're structural/material
+    // surfaces, not door/carcass identity) — confirm they stay
+    // completely untouched, not swept up by some broader traversal.
+    const nonCabMeshes = [];
+    group.traverse((obj) => {
+        if (obj.isMesh && !(obj.userData && obj.userData.cab)) nonCabMeshes.push(obj);
+    });
+    assert.ok(nonCabMeshes.length >= 2, "expect at least toe-kick + countertop as non-cab meshes");
+    const nonCabOriginals = nonCabMeshes.map(m => m.material);
+    nonCabMeshes.forEach((m, i) => {
+        assert.equal(m.material, nonCabOriginals[i],
+            "a non-cab-flagged mesh's material must never be touched by selection");
+    });
+
+    clearSelectionVisuals(fake.T.selectionVisual);
+    cabMeshes.forEach((m, i) => {
+        assert.equal(m.material, originals[i],
+            `cab-flagged mesh #${i} must restore its exact original material on deselect`);
+    });
+});
+
 test("F8 identity rule still holds for a SELECTED item: userData.item stays the real state item through select + deselect", async () => {
     const { KitchenCanvas, buildBaseCabinet, applySelectionVisuals, clearSelectionVisuals,
             createSelectionState, P, THREE } = await loadReal();
@@ -256,4 +311,57 @@ test("a bounding-box helper is added to the scene for the selected cabinet and r
 
     clearSelectionVisuals(fake.T.selectionVisual);
     assert.equal(fake.T.selectionVisual.bboxHelper, null);
+});
+
+// Review fix (Finding 3) — onWillUnmount previously never cleared the
+// selection tint/outline/bbox before destroyScene, so unmounting while
+// a cabinet was selected leaked the tint clone's material, every
+// outline LineSegments' geometry+material, and the Box3Helper's
+// geometry+material (destroyScene only disposes the renderer/orbit,
+// never traverses the scene graph). Fixed by extracting a
+// `_teardownScene(mount)` method that onWillUnmount now calls, mirroring
+// the same `clearSelectionVisuals` call `_buildScene` already made.
+//
+// This environment has no WebGL (THREE.WebGLRenderer's constructor
+// throws without a real GL context — see scene_init.esm.js), so a
+// literal owl.mount()+unmount() of KitchenCanvas isn't possible here;
+// every other real-KitchenCanvas test in this suite works around that
+// by calling a prototype method directly against a fake `this`
+// (`_placeCabinetGroup`, `_sbSceneSnapshot`) instead of going through
+// the full component lifecycle — this test does the same against the
+// newly-extracted `_teardownScene`, the exact function onWillUnmount
+// now calls.
+test("Task 22 review fix: unmounting while a cabinet is selected clears the tint/outline/bbox instead of leaking them", async () => {
+    const { KitchenCanvas, buildBaseCabinet, applySelectionVisuals,
+            createSelectionState, P, THREE } = await loadReal();
+    const fake = fakeCanvas(THREE, createSelectionState);
+
+    const item = {
+        layout_key: "back-1", cabinet_type: "base", wall: "back",
+        width_in: 24, height_in: 34.5, depth_in: 24,
+        x_position_in: 0, y_position_in: 0, z_position_in: 0, rotation_deg: 0,
+    };
+    KitchenCanvas.prototype._placeCabinetGroup.call(fake, item, buildBaseCabinet);
+    const mesh = cabMeshesOf(fake.T.cabObjs[0])[0];
+    const original = mesh.material;
+
+    applySelectionVisuals(fake.T, item, P);
+    assert.notEqual(mesh.material, original, "precondition: the cabinet is selected (tinted) going into unmount");
+    assert.ok(fake.T.selectionVisual.outlines.length > 0, "precondition: at least one outline is live");
+    assert.ok(fake.T.selectionVisual.bboxHelper, "precondition: the bbox helper is live");
+
+    // Exactly what onWillUnmount calls — no renderer/orbit on this fake
+    // T, which destroyScene already guards against (`if (T.orbit)` /
+    // `if (T.renderer)`), so this exercises clearSelectionVisuals
+    // end-to-end without needing a real WebGL renderer to tear down.
+    KitchenCanvas.prototype._teardownScene.call(fake, null);
+
+    assert.equal(mesh.material, original,
+        "unmount must restore the tinted mesh's original material, not leave the clone attached");
+    assert.equal(fake.T.selectionVisual.tinted.size, 0, "no tinted-mesh entries may survive unmount");
+    assert.equal(fake.T.selectionVisual.outlines.length, 0, "no outline LineSegments may survive unmount");
+    assert.equal(fake.T.selectionVisual.bboxHelper, null, "the bbox helper must be cleared on unmount");
+    assert.ok(!fake.T.scene.children.includes(fake.T.selectionVisual.bboxHelper) &&
+        fake.T.scene.children.every(c => c.type !== "Box3Helper"),
+        "no Box3Helper may remain attached to the scene after unmount");
 });

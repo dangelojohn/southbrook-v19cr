@@ -65,21 +65,15 @@
 
 import { IN, CTR } from "@southbrook_kitchen_3d_configurator/js/canvas/constants.esm";
 import { buildOtherCabinet } from "@southbrook_kitchen_3d_configurator/js/canvas/other_cabinets.esm";
+// Task 22 review fix (SBK-036, 2026-07-30) — mixHex used to be
+// duplicated here and in selection.esm.js; now a shared helper.
+import { mixHex } from "@southbrook_kitchen_3d_configurator/js/canvas/color_utils.esm";
 
 const TOEKICK_H = 3.5 * IN;
 
 // Muted teal corner-unit accent — subtle on purpose (brief: "subtle
 // material tint"), blended into the normal cabinet palette below.
 const CORNER_TINT = 0x2E6F63;
-
-function mixHex(baseHex, tintHex, amount) {
-    const br = (baseHex >> 16) & 0xff, bg = (baseHex >> 8) & 0xff, bb = baseHex & 0xff;
-    const tr = (tintHex >> 16) & 0xff, tg = (tintHex >> 8) & 0xff, tb = tintHex & 0xff;
-    const r = Math.round(br + (tr - br) * amount);
-    const g = Math.round(bg + (tg - bg) * amount);
-    const b = Math.round(bb + (tb - bb) * amount);
-    return (r << 16) | (g << 8) | b;
-}
 
 /**
  * Style key from a product default_code, or null when it doesn't match
@@ -232,12 +226,28 @@ function buildClippedCorner(THREE, mk, palette, item, style) {
     // Door face — a thin panel following the same diagonal/arc chord as
     // the carcass cut, pushed slightly proud so it reads as an inset
     // door rather than being coplanar with (and z-fighting) the body.
+    //
+    // Task 22 review fix (SBK-036, 2026-07-30) — this is the single
+    // most prominent visible surface on a clipped-corner cabinet (the
+    // whole diagonal/arc "lazy susan" face this style exists for), but
+    // it was missing the `ud: { cab: true, ... }` flag every other
+    // cabinet builder's door/body meshes carry — selection.esm.js's
+    // `applySelectionVisuals` only tints/outlines cab-flagged meshes,
+    // so selecting a diag/pie corner cabinet changed the (mostly
+    // hidden, clipped-away) box body while its actual door face stayed
+    // untinted. Flagged here (and on the handle just below, since it
+    // sits proud of this same face and reads as part of the same
+    // surface) so both participate like base_cabinet.esm.js /
+    // wall_cabinet.esm.js's body+door do. Toe-kick and countertop stay
+    // unflagged, matching every other builder in this file — they're
+    // structural/material surfaces, not door/carcass identity.
     const doorH = bh * 0.60;
     objects.push(mk(
         faceStripGeometry(THREE, shape.doorChord, shape.doorNormal, 0.006,
                            y0 + bh * 0.18, doorH),
         darkTint, [0, 0, 0], null,
-        { rough: 0.6, metal: 0.05, side: "double" },
+        { rough: 0.6, metal: 0.05, side: "double",
+          ud: { cab: true, cabType: "corner", item } },
     ));
     // Handle on the door face — brushed metal, aligned roughly along
     // the cut chord.
@@ -246,7 +256,7 @@ function buildClippedCorner(THREE, mk, palette, item, style) {
     objects.push(mk(
         new THREE.BoxGeometry(Math.min(w, d) * 0.30, 0.025, 0.040), palette.handle,
         [mx + nx * 0.03, y0 + bh * 0.55, mz + nz * 0.03], [0, -Math.PI / 4, 0],
-        { rough: 0.35, metal: 0.85 },
+        { rough: 0.35, metal: 0.85, ud: { cab: true, cabType: "corner", item } },
     ));
 
     if (!isWall) {

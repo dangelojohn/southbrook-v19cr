@@ -52,17 +52,12 @@
  * removed from the scene.
  */
 
+// Task 22 review fix (SBK-036, 2026-07-30) — mixHex used to be
+// duplicated here and in corner_cabinet.esm.js; now a shared helper.
+import { mixHex } from "@southbrook_kitchen_3d_configurator/js/canvas/color_utils.esm";
+
 const OUTLINE_LINE_OPACITY = 0.9;
 const TINT_AMOUNT = 0.55;
-
-function mixHex(baseHex, tintHex, amount) {
-    const br = (baseHex >> 16) & 0xff, bg = (baseHex >> 8) & 0xff, bb = baseHex & 0xff;
-    const tr = (tintHex >> 16) & 0xff, tg = (tintHex >> 8) & 0xff, tb = tintHex & 0xff;
-    const r = Math.round(br + (tr - br) * amount);
-    const g = Math.round(bg + (tg - bg) * amount);
-    const b = Math.round(bb + (tb - bb) * amount);
-    return (r << 16) | (g << 8) | b;
-}
 
 /**
  * Every cab-flagged mesh belonging to `item` across all groups in
