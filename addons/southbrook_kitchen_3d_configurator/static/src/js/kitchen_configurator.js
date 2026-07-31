@@ -512,8 +512,26 @@ class SouthbrookKitchenConfigurator extends Component {
     // toasts) read `state.selected.name` directly rather than falling
     // back to `product_name`. Shared by _hydrateFromDesign and
     // _applyRelaidResult so both land items in the exact same shape.
+    // Task 8 (corner-remediation) — the 3D renderer's corner-cabinet
+    // builder (canvas/corner_cabinet.esm.js) picks its style (blind /
+    // pie-cut / diagonal) off each design line's product default_code
+    // prefix. Server line-dicts from /load_design_lines and /rearrange
+    // (controllers/main.py _serialize_design_lines) only carry
+    // product_id, not default_code/sku — backfill it here from the
+    // already-loaded product catalog (state.products, keyed by
+    // product_id) so the renderer can tell corner variants apart
+    // without any server-side change. Non-destructive: an explicit
+    // default_code already on the line (e.g. a test fixture) always
+    // wins; falls back to null (renderer degrades to the plain box)
+    // when the catalog hasn't loaded or the product isn't in it.
     _lineToItem(line) {
-        return { ...line, name: line.product_name };
+        let defaultCode = line.default_code || null;
+        if (!defaultCode) {
+            const product = (this.state.products || [])
+                .find(p => p.product_id === line.product_id);
+            defaultCode = (product && product.sku) || null;
+        }
+        return { ...line, name: line.product_name, default_code: defaultCode };
     }
 
     async _hydrateFromDesign() {

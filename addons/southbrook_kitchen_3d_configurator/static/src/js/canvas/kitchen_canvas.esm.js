@@ -47,6 +47,9 @@ import { buildWallCabinet }  from "@southbrook_kitchen_3d_configurator/js/canvas
 import {
     buildOtherCabinet, buildFillerPanel, buildEndCapPanel,
 } from "@southbrook_kitchen_3d_configurator/js/canvas/other_cabinets.esm";
+import {
+    buildCornerCabinet, withCornerBlindHint,
+} from "@southbrook_kitchen_3d_configurator/js/canvas/corner_cabinet.esm";
 import { ndcFromEvent }      from "@southbrook_kitchen_3d_configurator/js/canvas/pointer_helpers.esm";
 import { computeViewSpecs }  from "@southbrook_kitchen_3d_configurator/js/canvas/view_specs.esm";
 import { computeOrthoFrustum } from "@southbrook_kitchen_3d_configurator/js/canvas/ortho_frustum.esm";
@@ -279,7 +282,7 @@ export class KitchenCanvas extends Component {
         this.T.wallMeshes = walls || {};
 
         const items = props.items || [];
-        const knownTypes = new Set(["base", "wall", "filler", "panel"]);
+        const knownTypes = new Set(["base", "wall", "filler", "panel", "corner"]);
         // PR3.1 — every cabinet type routes through the single central
         // group-transform path (_placeCabinetGroup); the old per-type
         // rotation-gated dual dispatch (legacy absolute path vs. group
@@ -289,6 +292,15 @@ export class KitchenCanvas extends Component {
             this._placeCabinetGroup(it, buildBaseCabinet));
         items.filter(it => it.cabinet_type === "wall").forEach(it =>
             this._placeCabinetGroup(it, buildWallCabinet));
+        // Task 8 (corner-remediation) — corner lines get real corner
+        // massing (diagonal/pie-cut/blind) instead of falling into the
+        // generic buildOtherCabinet box below. withCornerBlindHint is a
+        // pure geometry helper (position + room dims only, no placement
+        // change) that tells the blind-corner style which end of the
+        // cell sits nearest an actual room corner; every other style
+        // ignores it.
+        items.filter(it => it.cabinet_type === "corner").forEach(it =>
+            this._placeCabinetGroup(withCornerBlindHint(it, room), buildCornerCabinet));
         items.filter(it => !knownTypes.has(it.cabinet_type)).forEach(it =>
             this._placeCabinetGroup(it, buildOtherCabinet));
         items.filter(it => it.cabinet_type === "filler").forEach(it =>

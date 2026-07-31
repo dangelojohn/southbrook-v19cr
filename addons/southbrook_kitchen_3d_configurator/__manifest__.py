@@ -115,6 +115,12 @@
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/base_cabinet.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/wall_cabinet.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/other_cabinets.esm.js",
+            # Task 8 (corner-remediation, 2026-07-30) — corner-cabinet
+            # massing (diagonal/pie-cut/blind), used by kitchen_canvas
+            # .esm.js. Imports buildOtherCabinet from other_cabinets.esm.js
+            # above (degrade-to-box path), so it's listed after it and,
+            # like every other canvas module, before kitchen_canvas.esm.js.
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/corner_cabinet.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/scene_init.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/scene_dispose.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/camera_controller.esm.js",
