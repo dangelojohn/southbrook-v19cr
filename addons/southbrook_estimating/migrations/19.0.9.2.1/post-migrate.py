@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-"""Prod-audit follow-up (2026-07-31) — re-run the corner/cabinet-variant
-repair chain again, this time carrying the new zero-variant duplicate-
-template sweep (`archive_zero_variant_duplicate_templates` in
-`models/corner_sku_repair.py`).
+"""Prod-audit follow-up (2026-07-31) — run the new zero-variant
+duplicate-template sweep (`archive_zero_variant_duplicate_templates` in
+`models/corner_sku_repair.py`) on prod. Archive-only; see SCOPE below
+for why this deliberately does NOT re-run the wider repair chain.
 
 Same deploy-blocking-gap mechanism as `migrations/19.0.9.2.0/
 post-migrate.py` (T4b): `repair_corner_sku()` is only ever invoked from
@@ -33,17 +33,17 @@ are real, multi-variant, xml_id-bearing templates with genuine sale/
 design/BOM history and are never touched by this sweep (see the new
 function's own docstring for the exact predicate).
 
-`repair_corner_sku()` itself needed NO further changes for this fix
-beyond the one extra call site added inside it — every step in the
-chain is already independently idempotent and skip-if-missing, so
-simply calling the SAME entry point again here (mirroring 19.0.9.2.0/
-post-migrate.py's own structure exactly: falsy-version guard, single
-call, single log line wrapping the returned summary) is correct and
-safe regardless of how much of the chain already ran via an earlier
-migration on any given database. The manifest `version` key is
-deliberately NOT bumped in this commit (binding constraint) — a later
-controller-owned version bump to 19.0.9.2.1 is what makes this folder
-eligible to run at all; it must match this directory name exactly.
+SCOPE (corrected after the first prod attempt failed): this migration
+calls ONLY `archive_zero_variant_duplicate_templates`, not the full
+`repair_corner_sku()` chain. The chain's variant-CREATING step already
+ran under 19.0.9.2.0; re-running it against catalog data a concurrent
+session had since changed raised "Configurable Products cannot have
+duplicates (identical attribute values)" and the deploy gate correctly
+refused the restart. The sweep is purely subtractive — it archives
+inert rows and creates nothing — so it cannot trip that constraint.
+
+The manifest `version` is 19.0.9.2.1 and must keep matching this
+directory name exactly, or Odoo will never run this folder.
 """
 import logging
 
@@ -61,16 +61,36 @@ def migrate(cr, version):
     # that case.
     if not version:
         return
+    # DEPLOY-GATE FIX (2026-07-31, second attempt). This originally called
+    # `repair_corner_sku()` — the WHOLE chain — and the prod cold upgrade
+    # died on:
+    #     ValidationError: Configurable Products cannot have duplicates
+    #                      (identical attribute values)
+    # The gate refused the restart, so prod was never switched over.
+    #
+    # Root cause: the chain's first step, `repair_corner_family_skus()`,
+    # CREATES variants (the "-R" hand twins). It already ran on prod under
+    # 19.0.9.2.0. Between that run and this one, a concurrent session
+    # shipped corner-swap work of its own, so re-running a variant-CREATING
+    # repair against changed catalog data can mint a combination that
+    # already exists — which is precisely what the constraint caught.
+    # (Verified beforehand that prod currently holds NO duplicate
+    # attribute-value combinations on any config_ok template, so the
+    # duplicate is created BY the upgrade, not pre-existing.)
+    #
+    # This folder exists for ONE new capability: the zero-variant
+    # duplicate-template sweep. So call only that. It is purely
+    # subtractive — it archives inert, unreferenced, zero-variant
+    # templates and creates nothing — so it cannot violate the variant
+    # constraint at all. The rest of the chain already ran and is not
+    # this migration's job to redo.
     from odoo.addons.southbrook_estimating.models.corner_sku_repair import (
-        repair_corner_sku,
+        archive_zero_variant_duplicate_templates,
     )
     env = api.Environment(cr, SUPERUSER_ID, {})
     _logger.info(
-        "[19.0.9.2.1] prod-audit re-run of the corner/cabinet-variant "
-        "repair chain, now including archive_zero_variant_duplicate_"
-        "templates (repair_corner_sku -> repair_corner_family_skus -> "
-        "archive_catalog_family_duplicate_templates -> "
-        "archive_zero_variant_duplicate_templates -> "
-        "repair_cabinet_variant_refs): %s",
-        repair_corner_sku(env),
+        "[19.0.9.2.1] zero-variant duplicate-template sweep "
+        "(archive-only; the variant-creating repairs already ran under "
+        "19.0.9.2.0 and are deliberately NOT re-run here): %s",
+        archive_zero_variant_duplicate_templates(env),
     )
