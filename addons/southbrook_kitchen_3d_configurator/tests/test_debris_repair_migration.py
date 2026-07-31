@@ -10,8 +10,12 @@ x_position_in=1,000,000).
 Covers: selective archival (only the sentinel class, in-bounds lines
 untouched), the x/z OR condition, the exact-threshold boundary
 (abs() >= 9999), multi-design grouping, an already-archived debris row
-staying archived (never reactivated), and idempotency (a second run is a
-no-op).
+staying archived (never reactivated), idempotency (a second run is a
+no-op), and (fix round 1, code review) the parent design's STORED
+computed aggregates (total_cabinets, estimated_price) actually excluding
+the archived debris post-migration — the raw-SQL UPDATE the migration
+uses bypasses the ORM's @api.depends trigger graph entirely, so this is
+a real regression test for that gap, not a formality.
 """
 import importlib.util
 import os
@@ -189,6 +193,81 @@ class TestDebrisRepairMigration(TransactionCase):
             negative_over.active,
             "abs(-9999.5) >= 9999 — negative sentinels must be archived "
             "too")
+
+    def test_parent_design_totals_recompute_after_archival(self):
+        """Fix round 1 (code review) — the raw-SQL archival bypasses the
+        ORM's @api.depends trigger graph entirely (total_cabinets/
+        base_count/estimated_price/etc. depend on cabinet_line_ids.
+        quantity/.price_unit/.cabinet_type, NOT on .active). Seed a design
+        with 2 real + 2 debris lines: before migrate(), the stored totals
+        are debris-inflated (matches the exact prod symptom this task
+        exists to close); after migrate(), they must reflect ONLY the 2
+        real lines. A second migrate() run must leave the now-correct
+        totals unchanged (idempotent)."""
+        design = self._make_design("Task9 totals-recompute design")
+        real_1 = self._make_design_line(
+            design, "t9-totals-real-1", 12.0, 0.0)
+        real_1.price_unit = 500.0
+        real_2 = self._make_design_line(
+            design, "t9-totals-real-2", 36.0, 0.0)
+        real_2.price_unit = 500.0
+        debris_1 = self._make_design_line(
+            design, "t9-totals-debris-1", 1_000_000.0, 0.0)
+        debris_1.price_unit = 999.0
+        debris_2 = self._make_design_line(
+            design, "t9-totals-debris-2", 0.0, 1_000_000.0)
+        debris_2.price_unit = 999.0
+
+        self.env.flush_all()
+        design.invalidate_recordset()
+
+        # RED-before-GREEN: all 4 lines are active and cabinet_type="base",
+        # so the pre-migration stored totals are inflated by the debris —
+        # this is the exact bug (design 99 keeping its debris-inflated
+        # count/price) the fix closes.
+        self.assertEqual(
+            design.total_cabinets, 4,
+            "pre-migration: total_cabinets must count all 4 active lines "
+            "(inflated by debris — the red state)")
+        self.assertEqual(
+            design.base_count, 4,
+            "pre-migration: base_count must count all 4 active lines")
+        self.assertAlmostEqual(
+            design.estimated_price, 1000.0 + 999.0 + 999.0, places=2,
+            msg="pre-migration: estimated_price must include the debris "
+                "lines' price (the red state)")
+
+        self.migration.migrate(self.env.cr, "19.0.5.34.0")
+
+        design.invalidate_recordset()
+        self.assertEqual(
+            design.total_cabinets, 2,
+            "post-migration: total_cabinets must exclude the 2 archived "
+            "debris lines")
+        self.assertEqual(
+            design.base_count, 2,
+            "post-migration: base_count must exclude the 2 archived "
+            "debris lines")
+        self.assertAlmostEqual(
+            design.estimated_price, 1000.0, places=2,
+            msg="post-migration: estimated_price must reflect ONLY the "
+                "2 real lines ($500 each), not the debris-inflated total")
+
+        # Idempotency: a second run must not further change the now-
+        # correct totals.
+        self.migration.migrate(self.env.cr, "19.0.5.34.0")
+        design.invalidate_recordset()
+        self.assertEqual(design.total_cabinets, 2)
+        self.assertEqual(design.base_count, 2)
+        self.assertAlmostEqual(design.estimated_price, 1000.0, places=2)
+
+        # And the underlying line-level archival is exactly as expected.
+        for line in (debris_1, debris_2):
+            line.invalidate_recordset()
+            self.assertFalse(line.active)
+        for line in (real_1, real_2):
+            line.invalidate_recordset()
+            self.assertTrue(line.active)
 
     def test_already_archived_debris_stays_archived_not_reactivated(self):
         """A debris row that was manually archived before this migration

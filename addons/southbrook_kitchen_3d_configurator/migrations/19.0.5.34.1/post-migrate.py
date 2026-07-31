@@ -39,8 +39,24 @@ about why it got there. A line already active=False is left active=False
 
 Fires on 5.34.0 -> 5.34.1 upgrade. Idempotent — the WHERE clause only ever
 matches active=True debris; re-running finds nothing left to archive.
+
+Fix round 1 (code review) — stale stored aggregates: the archival above is
+raw SQL against the cursor, which bypasses the ORM's dependency-trigger
+graph entirely. southbrook.kitchen.design's total_cabinets/base_count/
+wall_count/filler_count/estimated_price/remainder_in are STORED computed
+fields (`_compute_totals`, @api.depends on cabinet_line_ids.quantity/
+.price_unit/.cabinet_type — NOT on .active, so even an ORM `write({"active":
+False})` on the lines would not retrigger this compute via the standard
+dependency graph). Left alone, a design like 99 would keep its
+debris-inflated count/price forever post-migration — the exact symptom
+this task exists to close. Fix: after the archival UPDATE, explicitly
+recompute `_compute_totals()` for every design touched (collected from the
+same GROUP BY used for logging) and flush, forcing a fresh read of
+cabinet_line_ids (now correctly excluding the newly-archived debris).
 """
 import logging
+
+from odoo import SUPERUSER_ID, api
 
 _logger = logging.getLogger(__name__)
 
@@ -58,7 +74,9 @@ def migrate(cr, version):
             "5.34.1 post-migrate: southbrook_kitchen_design_line table "
             "not found — skipping debris design-line archival.")
         return
-    _archive_debris_lines(cr)
+    design_ids = _archive_debris_lines(cr)
+    if design_ids:
+        _recompute_design_totals(cr, design_ids)
 
 
 def _table_exists(cr, table):
@@ -92,7 +110,7 @@ def _archive_debris_lines(cr):
             "archive.",
             _DEBRIS_THRESHOLD_IN,
         )
-        return
+        return []
 
     total = sum(count for _design_id, count in rows)
     _logger.info(
@@ -118,4 +136,41 @@ def _archive_debris_lines(cr):
     _logger.info(
         "5.34.1 post-migrate: archived %d debris design line(s).",
         cr.rowcount,
+    )
+    return [design_id for design_id, _count in rows if design_id]
+
+
+def _recompute_design_totals(cr, design_ids):
+    """Force a fresh `_compute_totals()` for every design that had debris
+    archived, since the SQL UPDATE above bypasses the ORM's @api.depends
+    trigger graph (which doesn't cover `.active` for this compute anyway
+    — see the module docstring). Idempotent: recomputing from the
+    now-current cabinet_line_ids is a no-op on a second run, since the
+    debris is already excluded (active=False) by then.
+    """
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    designs = env["southbrook.kitchen.design"].browse(design_ids).exists()
+    if not designs:
+        return
+    # The cursor-level UPDATE above never touched the ORM cache. A
+    # record-scoped `designs.invalidate_recordset()` is NOT enough here:
+    # the design's `cabinet_line_ids` (a plain One2many, not stored) gets
+    # its id-list cached on first access and — verified empirically while
+    # testing this fix — that cached id-list survives invalidating just
+    # the design records; the debris line ids stayed in it even after
+    # invalidate_recordset(), because the archived rows themselves (their
+    # `.active` value) were written outside the ORM and were never part
+    # of what got invalidated. `env.invalidate_all()` clears the whole
+    # transaction-wide cache instead, which is the reliable way to force
+    # every subsequent read (including cabinet_line_ids's underlying
+    # search) back to the database. This runs at most once per migration
+    # (a handful of designs), so the blunt invalidation cost is a non-issue.
+    env.invalidate_all()
+    designs._compute_totals()
+    env.flush_all()
+    _logger.info(
+        "5.34.1 post-migrate: recomputed stored totals (total_cabinets, "
+        "base_count, wall_count, filler_count, estimated_price, "
+        "remainder_in) for %d design(s) after debris archival: %s",
+        len(designs), designs.ids,
     )
