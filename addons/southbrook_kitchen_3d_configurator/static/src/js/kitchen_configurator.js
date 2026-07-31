@@ -1206,7 +1206,18 @@ class SouthbrookKitchenConfigurator extends Component {
             // select-then-add path still converge on the SAME persisted
             // record whenever they agree on a wall — locked by
             // tests/node_js/contracts/09_drag_to_wall_convergence.test.mjs.
-            wall:          this.state.activeWall || wallOverride || WALLS.BACK,
+            //
+            // SBK-030 review fix (Finding 1) — `opts.wall`, when set,
+            // PINS the wall instead of re-deriving it from live state.
+            // Only the "Add anyway" retry (below) ever sets it, to the
+            // exact wall the refusal evaluated. Without this, a rep who
+            // refuses on the back wall, clicks a different Active Wall
+            // (the toast is sticky — plenty of time to), then clicks
+            // "Add anyway" on the stale toast would silently reroute
+            // the add to the NEW active wall — dodging the very
+            // condition the refusal was measuring and mislabeling the
+            // resulting "Added anyway" confirmation.
+            wall: opts.wall || this.state.activeWall || wallOverride || WALLS.BACK,
         };
 
         // SBK-030 — refuse-by-default over-length add. T7 already
@@ -1235,8 +1246,11 @@ class SouthbrookKitchenConfigurator extends Component {
                     sticky: true,
                     actions: [{
                         label: "Add anyway",
+                        // Finding 1 — pin the EVALUATED wall (newItem.wall,
+                        // captured now, not re-read live at click time).
                         onClick: () => this._addCabinetFromProduct(
-                            product, targetX, wallOverride, { force: true }),
+                            product, targetX, wallOverride,
+                            { force: true, wall: newItem.wall }),
                     }],
                 }
             );
@@ -1246,6 +1260,30 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.items = [...(this.state.items || []), newItem];
         this.state.selected = newItem;
         this._recomputeLayoutFromItems();
+
+        // SBK-030 review fix (Finding 2) — pre-fix, the old post-add check
+        // ran unconditionally on EVERY add (back wall or not) and warned,
+        // non-blocking, whenever the back run already exceeded the room —
+        // even for a side/front-wall add that had no effect on that sum
+        // (e.g. a design hydrated already over capacity, or a width edit
+        // via _updateSelectedWidth that doesn't itself gate). The refuse-
+        // gate above fully owns the BACK-wall case now (refuse, or the
+        // force "Added anyway" toast right below), but a non-back add
+        // can't reach that gate at all and had lost the informational
+        // signal entirely. Restored here, scoped to exactly the case the
+        // gate doesn't cover: non-back adds, informational only, never
+        // refusing (this add always succeeds regardless).
+        if (newItem.wall !== WALLS.BACK) {
+            const existingBackRun = this._currentRunWidthIn();
+            if (existingBackRun > this.state.room.width_in) {
+                this._toast(
+                    `Note: the back-wall run still needs ` +
+                    `${Math.ceil(existingBackRun)}″ in a ` +
+                    `${this.state.room.width_in}″ room.`,
+                    { type: "warning" }
+                );
+            }
+        }
         // D14 — Drop UX feedback: tell the rep WHERE it landed when
         // they used drop-positioning (vs the bare "Added X" toast).
         //

@@ -23,6 +23,27 @@
  * is invoked — and repeated refused attempts of the SAME product
  * dedupe into one counted toast instead of stacking, exactly the
  * audit's six-B24 scenario.
+ *
+ * Review-fix amendments (same task, post-review):
+ *   Finding 1 (Important) — the "Add anyway" retry used to re-derive
+ *     `wall` live from `state.activeWall` at click time instead of
+ *     using the wall the refusal actually evaluated; a rep who
+ *     switched walls before clicking the (sticky) refusal toast got a
+ *     silent reroute. Covered by the dedicated wall-pinning test below.
+ *   Finding 2 (Minor) — the pre-fix code warned, non-blocking, on
+ *     EVERY add (including non-back-wall) when the back run was
+ *     already over capacity; the back-wall-only refuse-gate dropped
+ *     that signal for non-back adds entirely. Restored as a scoped,
+ *     never-refusing informational toast; covered below.
+ *   Finding 3 (Minor) — the mount harness never called
+ *     `onWillUnmount`, so every mounted component's toast-auto-dismiss
+ *     `setInterval` leaked for the life of the test-file process
+ *     (`.unref()` stopped it from hanging `node --test`, but didn't
+ *     stop it existing). `mount_configurator.mjs` now returns a
+ *     `destroy()` helper (`component.__owl__.app.destroy()`); every
+ *     mounting test in this file calls it. A suite-wide retrofit across
+ *     all ~19 existing contract files was judged out of scope for this
+ *     task (see the fix report) and is not done here.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -199,6 +220,7 @@ test("SBK-030: an over-length add is refused by default — nothing is pushed in
     assert.equal(refusal.sticky, true, "the decision toast must not auto-dismiss out from under the rep");
     assert.ok(Array.isArray(refusal.actions) && refusal.actions.length === 1);
     assert.equal(refusal.actions[0].label, "Add anyway");
+    h.destroy();   // Finding 3 — mirror onWillUnmount so the toast interval doesn't leak.
 });
 
 test("SBK-030: repeated refused attempts of the SAME cabinet dedupe into ONE toast with a count (the audit's six-B24 stack)", async () => {
@@ -225,6 +247,7 @@ test("SBK-030: repeated refused attempts of the SAME cabinet dedupe into ONE toa
     assert.equal(h.component.state.toastView.overflowCount, 0);
     const added = c._toastStore.toasts.find((t) => /^Added /.test(t.message));
     assert.equal(added.count, 4, "the four successful adds also dedupe into one entry");
+    h.destroy();
 });
 
 test("SBK-030: clicking 'Add anyway' on the refusal toast performs the add and dismisses the prompt", async () => {
@@ -251,6 +274,70 @@ test("SBK-030: clicking 'Add anyway' on the refusal toast performs the add and d
     const confirmation = c._toastStore.toasts.find((t) => /anyway —/i.test(t.message));
     assert.ok(confirmation, "an honest confirmation replaces the silent old 'Added X' toast");
     assert.equal(confirmation.sticky, false, "the confirmation itself is non-blocking");
+    h.destroy();
+});
+
+test("SBK-030 review Finding 1: 'Add anyway' targets the ORIGINALLY-refused wall, never a wall picked afterward", async () => {
+    const h = await mountEmptyRoom();
+    const c = h.component;
+    // Fill the back wall exactly (4x24in = 96in room), then refuse a 5th —
+    // this refusal is evaluated against wall="back" (no activeWall set,
+    // no wallOverride, so it resolves to WALLS.BACK).
+    for (let i = 0; i < 4; i++) {
+        c._addCabinetFromProduct(B24);
+        clearTimeout(c._autoSaveTimer);
+    }
+    c._addCabinetFromProduct(B24);
+    clearTimeout(c._autoSaveTimer);
+    assert.equal(c.state.items.length, 4);
+
+    const refusal = c._toastStore.toasts.find((t) => /won't fit/i.test(t.message));
+    assert.ok(refusal, "refusal toast present");
+
+    // The refusal toast is sticky — plenty of time for the rep to change
+    // their mind about which wall is active before ever clicking the
+    // stale toast's action.
+    c.state.activeWall = "left";
+
+    c._runToastAction(refusal, refusal.actions[0]);   // "Add anyway", clicked AFTER switching walls
+    clearTimeout(c._autoSaveTimer);
+
+    assert.equal(c.state.items.length, 5, "the opt-in add still happens");
+    const added = c.state.items[c.state.items.length - 1];
+    assert.equal(added.wall, "back",
+        "must land on the wall the refusal EVALUATED (back) — a silent reroute to the " +
+        "wall picked afterward (left) would dodge the refusal's own condition entirely");
+    h.destroy();
+});
+
+test("SBK-030 review Finding 2: a non-back-wall add is never refused, but still surfaces an informational (non-blocking) note when the back run is already over capacity", async () => {
+    const h = await mountEmptyRoom();
+    const c = h.component;
+    // Push the back run over capacity via the explicit opt-in path
+    // (5 x 24in = 120in in a 96in room), independent of what gets added next.
+    for (let i = 0; i < 4; i++) {
+        c._addCabinetFromProduct(B24);
+        clearTimeout(c._autoSaveTimer);
+    }
+    c._addCabinetFromProduct(B24);
+    clearTimeout(c._autoSaveTimer);
+    const refusal = c._toastStore.toasts.find((t) => /won't fit/i.test(t.message));
+    c._runToastAction(refusal, refusal.actions[0]);   // force-add -> back run now 120 > 96
+    clearTimeout(c._autoSaveTimer);
+    assert.equal(c.state.items.length, 5);
+
+    // A cabinet added to a DIFFERENT wall must still succeed (never
+    // refused — the gate is back-wall-only) but should surface the
+    // informational note the pre-fix unconditional check used to show
+    // for every add once the back run was already over.
+    c.state.activeWall = "left";
+    c._addCabinetFromProduct(B24);
+    clearTimeout(c._autoSaveTimer);
+    assert.equal(c.state.items.length, 6, "a non-back add is never refused by this gate");
+    const note = c._toastStore.toasts.find((t) => /back-wall run still needs/i.test(t.message));
+    assert.ok(note, "the informational note is restored for non-back adds");
+    assert.equal(note.sticky, false, "the note is non-blocking, unlike the refusal toast");
+    h.destroy();
 });
 
 test("SBK-030: a fitting add is never refused (room untouched, no refusal toast)", async () => {
@@ -261,6 +348,7 @@ test("SBK-030: a fitting add is never refused (room untouched, no refusal toast)
     assert.equal(c.state.items.length, 1);
     const refusal = c._toastStore.toasts.find((t) => /won't fit/i.test(t.message));
     assert.equal(refusal, undefined);
+    h.destroy();
 });
 
 test("SBK-030: dismissAll() clears the whole visible stack in one call", async () => {
@@ -273,4 +361,5 @@ test("SBK-030: dismissAll() clears the whole visible stack in one call", async (
     c._dismissAllToasts();
     assert.equal(c.state.toastView.visible.length, 0);
     assert.equal(c._toastStore.toasts.length, 0);
+    h.destroy();
 });

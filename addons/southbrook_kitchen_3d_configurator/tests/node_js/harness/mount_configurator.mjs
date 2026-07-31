@@ -101,5 +101,24 @@ export async function mountConfigurator({
         rpcCalls: (route) => __calls(route),
         canvasProps: () => canvasMockCalls.lastProps,
         canvasMountCount: () => canvasMockCalls.mountCount,
+        // SBK-030 review fix (Finding 3) — no test in this suite called
+        // this previously, so onWillUnmount never ran for a mounted
+        // configurator: any component-owned resource armed in onMounted
+        // (e.g. kitchen_configurator.js's toast auto-dismiss interval)
+        // leaked for the life of the test-file process. `.unref()` on
+        // that interval keeps the leak from hanging `node --test`, but
+        // doesn't stop it existing. `owl.mount()`'s only handle back is
+        // the component instance; `component.__owl__.app` is Owl's own
+        // internal reference to the App that mounted it (confirmed
+        // against the vendored 2.8.2 build — `App.destroy()` recursively
+        // calls `_destroy()`, which fires onWillUnmount, down the whole
+        // tree). Optional — existing tests are unaffected by not calling
+        // it — but new/updated tests should prefer
+        // `t.after(() => h.destroy())` over manual `clearTimeout` picking
+        // apart individual timers.
+        destroy: () => {
+            const app = component && component.__owl__ && component.__owl__.app;
+            if (app) app.destroy();
+        },
     };
 }
