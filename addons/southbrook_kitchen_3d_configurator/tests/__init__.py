@@ -185,3 +185,39 @@ from . import test_room_bounds_save_and_autofill_cap
 # and that run-axis (X) placement is unaffected.
 from . import test_wall_cab_top_selector
 from . import test_wall_cab_top_controller
+
+# Fix (design-naming, 2026-07-31) — save_design's resize-path
+# regeneration of a stale auto-generated name (prod fact: design 103
+# named "Walk-in - 12x30 - 2026-07-30" with ACTUAL dims 54x54), plus
+# the one-time backfill migration
+# (migrations/19.0.5.35.1/post-migrate.py) for rows that went stale
+# before that write-path fix existed. Covers: auto-named resize
+# regenerates, manually-renamed design is never clobbered (including
+# a simultaneous rename+resize), first-save behaviour unchanged, and
+# the migration's selective/idempotent backfill.
+from . import test_design_naming
+
+# Remainder-occupancy fix (2026-07-31) — `remainder_in` (models/
+# kitchen_design.py's `_compute_totals`) is now derived from REAL
+# per-wall cabinet occupancy once a design has a placed base-elevation
+# run (verified live: production design 107, an L-shape whose back-wall
+# run leaves a real 6" gap that a room-wide modulo hid entirely because
+# 120 is evenly divisible by the 24" module), with a corner-bridging fix
+# for multi-corner designs (production design 108, a U-shape, where both
+# corners carry a single presentational `wall` tag but physically span
+# two walls' runs) and an n==0 guard added to the legacy (no-placed-
+# lines) modulo fallback so it matches controllers/main.py's /layout
+# route (production design 104: an undersized room previously reported
+# its own full width back as "leftover"). Independent of, and does not
+# alter, test_filler_remainder_gate.py's controller-side /layout gate.
+from . import test_remainder_occupancy
+
+# 2026-07-31 — `_resolve_slot()`'s last-resort fallback rung (cabinet_type
+# + template nominal width) took `.product_variant_id` — Odoo's arbitrary
+# "first" variant of the matched template — blind to that variant's own
+# width. V5-partc.md live evidence: production designs 107/108 both
+# persisted a 24in cabinet for a 30in-nominal slot (SB-BASE-2DR's 24in
+# variant). Fix scores every variant of the (unchanged) chosen template
+# by its real placed width (`placed_width_in`, the SBK-024 helper) and
+# picks the closest/exact match; pin precedence is untouched.
+from . import test_slot_variant_width

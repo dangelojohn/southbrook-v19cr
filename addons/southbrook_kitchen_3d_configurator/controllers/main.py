@@ -1,5 +1,6 @@
 import logging
 import math
+import re
 
 from odoo import http
 from odoo.http import request
@@ -97,6 +98,89 @@ def _is_sentinel_position(value):
         return abs(float(value)) >= _DEBRIS_THRESHOLD_IN
     except (TypeError, ValueError):
         return False
+
+
+# Fix (design-naming, prod fact 2026-07-31) — a kitchen design's `name`
+# is a plain Char, auto-set ONCE at first save by
+# SouthbrookKitchenConfiguratorController._auto_name (`if not
+# design_id` in save_design below). Every later write — including a
+# plain room resize — just re-persists whatever `name` the caller
+# sent, which for a never-renamed design is the client's cached copy
+# of the now-stale auto name. Verified live: design 103 was named
+# "Walk-in - 12x30 - 2026-07-30" while its ACTUAL room dims were
+# 54x54 — 4 of the last 11 designs (98/100/101/103) showed the same
+# drift.
+#
+# AUTO_NAME_FMT / auto_name_str() / AUTO_NAME_RE / is_auto_generated_
+# name() below are the ONE definition of what an auto name looks like
+# and how it's built. `_auto_name()` (the controller method) and the
+# resize-regeneration check in save_design both call these; so does
+# the one-time backfill migration
+# (migrations/19.0.5.35.1/post-migrate.py, imported directly from this
+# module). There is no second, hand-copied pattern anywhere to drift
+# out of sync.
+AUTO_NAME_FMT = "%s - %dx%d - %s"
+
+# One (name, regex-fragment) pair per %s/%d placeholder in
+# AUTO_NAME_FMT, IN ORDER: partner display name, room width, room
+# depth, ISO date.
+_AUTO_NAME_PLACEHOLDERS = (
+    ("partner", r".+"),
+    ("width",   r"\d+"),
+    ("depth",   r"\d+"),
+    ("date",    r"\d{4}-\d{2}-\d{2}"),
+)
+
+
+def _regex_from_printf_fmt(fmt, named_placeholders):
+    """Turn a `%s`/`%d`-only printf-style format string into a fully
+    anchored regex with one NAMED capture group per placeholder, in
+    order. Every literal character in `fmt` (the ` - ` separators, the
+    `x` between width/depth) is pulled straight out of `fmt` itself
+    and regex-escaped — so if AUTO_NAME_FMT's literal text ever
+    changes, this regex changes with it automatically. There is
+    nothing here to hand-maintain in step with the generator.
+    """
+    pieces, last, i = [], 0, 0
+    for m in re.finditer(r"%[sd]", fmt):
+        pieces.append(re.escape(fmt[last:m.start()]))
+        name, pattern = named_placeholders[i]
+        pieces.append("(?P<%s>%s)" % (name, pattern))
+        i += 1
+        last = m.end()
+    pieces.append(re.escape(fmt[last:]))
+    return "^" + "".join(pieces) + "$"
+
+
+AUTO_NAME_RE = re.compile(
+    _regex_from_printf_fmt(AUTO_NAME_FMT, _AUTO_NAME_PLACEHOLDERS))
+
+
+def auto_name_str(partner_name, room_w, room_d, date_str):
+    """Build the exact string `_auto_name()` persists at first save:
+    "<partner-or-Walk-in> - <width>x<depth> - <YYYY-MM-DD>". Pulled
+    into a free function so both the controller method AND the
+    backfill migration format a design's auto name through the
+    IDENTICAL code path — never two independently-typed copies of the
+    same '%s - %dx%d - %s' string.
+    """
+    return AUTO_NAME_FMT % (
+        partner_name or "Walk-in", int(room_w or 0), int(room_d or 0),
+        date_str,
+    )
+
+
+def is_auto_generated_name(name):
+    """True when `name` still has the exact shape `_auto_name()` /
+    `auto_name_str()` produce — i.e. nothing has hand-edited it since
+    it was set (or last regenerated). A name that fails this check —
+    including any manual rename, even one that happens to reuse the
+    ` - ` separators in some other way — is NEVER touched by the
+    resize-regeneration logic in save_design or by the backfill
+    migration. Once a design's name fails this check, it permanently
+    opts out of auto-regeneration from that point on.
+    """
+    return bool(name) and AUTO_NAME_RE.match(name) is not None
 
 
 class SouthbrookKitchenConfiguratorController(http.Controller):
@@ -566,6 +650,13 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                         "width_in":  _existing.room_width_in,
                         "depth_in":  _existing.room_depth_in,
                         "height_in": _existing.room_height_in,
+                        # Fix (design-naming) — the CURRENTLY persisted
+                        # name, read alongside the dims above, purely
+                        # so save_design's resize-regeneration check
+                        # further below can tell "still the auto name"
+                        # from "a human already renamed this" without
+                        # a second browse.
+                        "name":      _existing.name,
                     }
             except Exception:
                 _existing_room = None
@@ -636,6 +727,34 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 vals["room_depth_in"] = room_d
             if abs(room_h - _existing_room["height_in"]) >= 1e-6:
                 vals["room_height_in"] = room_h
+
+            # Fix (design-naming) — regenerate the auto name when a
+            # resize actually lands in `vals` above, so the design
+            # tree/landing page never again shows a name that
+            # contradicts the record's real dimensions (prod fact:
+            # design 103 — see AUTO_NAME_FMT's docstring above).
+            #
+            # Regenerate ONLY when ALL of:
+            #   (a) a room dimension is ACTUALLY changing this save
+            #       ("room_width_in"/"room_depth_in" just landed in
+            #       `vals` above — height alone never renames, the
+            #       auto name doesn't encode height);
+            #   (b) the caller's incoming name is IDENTICAL to what is
+            #       currently persisted (vals["name"] ==
+            #       _existing_room["name"]) — i.e. THIS request did
+            #       not also try to change the name field. If it did,
+            #       that is a deliberate, simultaneous human edit and
+            #       must win outright even though a resize is also
+            #       happening in the same call;
+            #   (c) that (identical) name still matches the exact
+            #       shape is_auto_generated_name() defines. Once a
+            #       design's name fails (c) — i.e. it was ever
+            #       hand-renamed — it permanently opts out of
+            #       regeneration, even across future resizes.
+            if ("room_width_in" in vals or "room_depth_in" in vals) \
+                    and vals["name"] == _existing_room.get("name") \
+                    and is_auto_generated_name(_existing_room.get("name")):
+                vals["name"] = self._auto_name(partner, room_w, room_d)
         else:
             vals["room_width_in"]  = room_w
             vals["room_depth_in"]  = room_d
@@ -1631,7 +1750,13 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         }
 
     def _auto_name(self, partner, room_w, room_d):
+        """First-save (and resize-regeneration) name generator. Output
+        format/behaviour is UNCHANGED from before this fix — this just
+        delegates the actual string-building to auto_name_str() (the
+        module-level, migration-shared single source of truth) instead
+        of formatting the literal inline.
+        """
         from odoo import fields as _fields
         today = _fields.Date.context_today(request.env.user).strftime("%Y-%m-%d")
         pname = (partner and partner.display_name) or "Walk-in"
-        return "%s - %dx%d - %s" % (pname, int(room_w or 0), int(room_d or 0), today)
+        return auto_name_str(pname, room_w, room_d, today)

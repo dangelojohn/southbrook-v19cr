@@ -123,7 +123,10 @@ class TestPlacementRule(TransactionCase):
         # Task 3 (corner-remediation) — inch-exact mm: 914.4 = 36in.
         self.assertEqual(rule.payload["leg_x_mm"], 914.4)
         self.assertEqual(rule.payload["leg_z_mm"], 914.4)
-        self.assertEqual(rule.payload["height_mm"], 876.0)
+        # Task 4 (height-drift) — 876.3 = 25.4 * 34.5 exactly. The prior
+        # 876.0 was a round-metric approximation (34.488") that persisted
+        # corners at 34.49" while every other base cabinet read 34.50".
+        self.assertEqual(rule.payload["height_mm"], 876.3)
         self.assertEqual(rule.payload["min_leg_x_mm"], 1143.0)
         self.assertEqual(rule.payload["min_leg_z_mm"], 1143.0)
 

@@ -56,6 +56,28 @@ class TestTemplatePicker(TransactionCase):
         picker._onchange_parametrics()
         self.assertLessEqual(picker.cabinet_count, picker.count_max)
 
+    def test_count_seeds_to_max_when_unset(self):
+        """2026-07-31 — the field only clamped DOWNWARD, so it stayed 0
+        in the UI while the helper text beside it read "N cabinet(s) ...
+        (max N)". 0 was never wrong for the generator (it means "template
+        default"), but the form showed a number that wasn't the one used.
+        """
+        picker = self.env["kitchen.design.template.picker"].create({
+            "template_id": self.tpl.id, "module_width_in": "24"})
+        self.assertEqual(picker.cabinet_count, 0)
+        picker._onchange_parametrics()
+        self.assertGreater(picker.count_max, 0)
+        self.assertEqual(picker.cabinet_count, picker.count_max)
+
+    def test_count_seeding_never_overrides_a_real_choice(self):
+        picker = self.env["kitchen.design.template.picker"].create({
+            "template_id": self.tpl.id, "module_width_in": "24"})
+        picker._onchange_parametrics()
+        chosen = max(1, picker.count_max - 1)
+        picker.cabinet_count = chosen
+        picker._onchange_parametrics()
+        self.assertEqual(picker.cabinet_count, chosen)
+
     def test_empty_preset_creates_plain_draft(self):
         # legacy-compat: 'empty' = plain draft design, no template consulted
         picker = self.env["kitchen.design.template.picker"].create(
@@ -90,3 +112,18 @@ class TestTemplatePicker(TransactionCase):
         svg = self.tpl._generate_thumbnail_svg()
         self.assertTrue(svg.startswith("<svg"))
         self.assertIn("<rect", svg)
+
+    def test_thumbnail_svg_root_carries_intrinsic_size(self):
+        """2026-07-31 — the PREVIEW panel showed a heading and no body.
+
+        The markup was always generated (and the field is sanitize=False,
+        so nothing stripped it); the root just had no width/height, so
+        the inline <svg> had no intrinsic size and collapsed to zero
+        height in the form container. Pin both dimensions AND the
+        viewBox — the viewBox alone is what regressed.
+        """
+        svg = self.tpl._generate_thumbnail_svg()
+        root = svg.split(">", 1)[0]
+        self.assertIn("width=", root)
+        self.assertIn("height=", root)
+        self.assertIn("viewBox=", root)

@@ -56,7 +56,13 @@ _SEED_RULES = [
             # drift math this caused on persisted design lines.
             "leg_x_mm": 914.4,
             "leg_z_mm": 914.4,
-            "height_mm": 876.0,
+            # Task 4 (2026-07-31, height-drift) — 876.3mm = 25.4 * 34.5
+            # exactly. The prior 876.0 was a round-metric approximation
+            # (34.488", rounds to 34.49" instead of 34.50" like every
+            # other base cabinet); see
+            # .superpowers/sdd/corner-verify/V1-geometry.md for the
+            # drift math this caused on persisted design lines.
+            "height_mm": 876.3,
             "min_leg_x_mm": 1143.0,
             "min_leg_z_mm": 1143.0,
             # M4 — bifold door swing / tray access in front of the cell
@@ -77,7 +83,9 @@ _SEED_RULES = [
             # Task 3 — 609.6mm = 24in exactly (25.4 * 24).
             "leg_x_mm": 609.6,
             "leg_z_mm": 1143.0,
-            "height_mm": 876.0,
+            # Task 4 — 876.3mm = 25.4 * 34.5 exactly (see the susan
+            # rule above for the drift this replaces).
+            "height_mm": 876.3,
             # M3 — the 3in blind-corner filler on the X-wall run
             # (docs 02/06 `filler-blind-corner-min`): min_leg_x must
             # cover leg + filler.
@@ -122,6 +130,13 @@ _SEED_PAYLOADS_LEGACY = {
         {"leg_x_mm": 914.0, "leg_z_mm": 914.0, "height_mm": 876.0,
          "min_leg_x_mm": 1143.0, "min_leg_z_mm": 1143.0,
          "clearance_front_mm": 500.0},
+        # Task 4 (2026-07-31, height-drift) — post-Task-3 production
+        # state: inch-exact 914.4mm legs already landed, but height_mm
+        # still carried the round-metric 876.0 (34.488", rounds to
+        # 34.49"). Recognise it so live rows self-heal to 876.3.
+        {"leg_x_mm": 914.4, "leg_z_mm": 914.4, "height_mm": 876.0,
+         "min_leg_x_mm": 1143.0, "min_leg_z_mm": 1143.0,
+         "clearance_front_mm": 500.0},
     ],
     ("blind-corner-basic", "base"): [
         {"leg_x_mm": 610.0, "leg_z_mm": 1143.0, "height_mm": 876.0,
@@ -131,6 +146,12 @@ _SEED_PAYLOADS_LEGACY = {
         {"leg_x_mm": 610.0, "leg_z_mm": 1143.0, "height_mm": 876.0,
          "filler_x_mm": 76.2, "min_leg_x_mm": 686.2,
          "min_leg_z_mm": 1372.0, "host_leg": "z",
+         "clearance_front_mm": 450.0},
+        # Task 4 — post-Task-3 production state: inch-exact 609.6/685.8/
+        # 1371.6mm legs already landed, height_mm still 876.0.
+        {"leg_x_mm": 609.6, "leg_z_mm": 1143.0, "height_mm": 876.0,
+         "filler_x_mm": 76.2, "min_leg_x_mm": 685.8,
+         "min_leg_z_mm": 1371.6, "host_leg": "z",
          "clearance_front_mm": 450.0},
     ],
     ("pie-cut-wall-corner", "wall"): [

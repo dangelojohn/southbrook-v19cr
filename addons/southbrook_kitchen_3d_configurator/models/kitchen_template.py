@@ -227,10 +227,37 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             ("southbrook_cabinet_type", "=", slot.cabinet_type),
         ]).filtered("product_variant_ids")
         # Task 11 (SBK-024) note — same template-search-filter rationale
-        # as the archetype rung above; not a placement write.
+        # as the archetype rung above; not a placement write. This picks
+        # WHICH TEMPLATE to resolve to (unchanged, still `exact[:1]`'s
+        # stable/"first" tie-break) — the alphabetical tie-break among
+        # several width-matching templates (e.g. SB-BASE-2DR / SB-VANITY
+        # / SB30 all at 30in) is a separate DATA decision the owner must
+        # make, out of scope here.
         exact = tmpls.filtered(
             lambda t: abs((t.southbrook_width_in or 0.0) - width_in) < 0.51)
-        return exact[:1].product_variant_id if exact else Product
+        if not exact:
+            return Product
+        # V5-partc.md live evidence (2026-07-30, production designs 107/
+        # 108) — `.product_variant_id` here used to hand back Odoo's
+        # arbitrary "first" materialized variant of the matched template,
+        # blind to THAT variant's own width: a 30in-nominal slot could
+        # land on SB-BASE-2DR's 24in variant even though the template
+        # matched on its 30in nominal. Score every variant of the
+        # (unchanged) chosen template by its REAL placed width — the same
+        # `placed_width_in` helper `_slot_fixed_width` / `action_
+        # instantiate` already use for this identical SBK-024 class of
+        # bug, imported at module top — and take the closest match: an
+        # exact hit (delta 0) always wins outright, and a genuine tie
+        # keeps the variants' own stable ordering so the pick never
+        # flaps between runs.
+        variants = exact[:1].product_variant_ids
+        best = variants[0]
+        best_delta = abs(placed_width_in(best) - width_in)
+        for variant in variants[1:]:
+            delta = abs(placed_width_in(variant) - width_in)
+            if delta < best_delta:
+                best, best_delta = variant, delta
+        return best
 
     # -- parametric fill math (spec §Parametric fill math) --------------
     def _slot_fixed_width(self, s, module_w, appliance_widths):
@@ -552,8 +579,16 @@ class SouthbrookKitchenTemplateThumbnail(models.Model):
         W = self.default_room_width_in or 120.0
         D = self.default_room_depth_in or 96.0
         s = 200.0 / max(W, D)
+        # 2026-07-31 — the PREVIEW panel rendered as a heading with no
+        # content. Server-side generation was proven fine (a 780-1030
+        # byte SVG with 9-12 rects for every template) and the field is
+        # sanitize=False, so nothing was stripping it: the root carried
+        # ONLY a viewBox. An inline <svg> with no intrinsic width/height
+        # has no natural size in the form's container and collapses to
+        # zero height. Explicit dimensions + a viewBox still scale.
         out = ['<svg xmlns="http://www.w3.org/2000/svg" '
-               'viewBox="0 0 %.0f %.0f">' % (W * s, D * s),
+               'width="%.0f" height="%.0f" '
+               'viewBox="0 0 %.0f %.0f">' % (W * s, D * s, W * s, D * s),
                '<rect width="%.0f" height="%.0f" fill="#F4EFE7" '
                'stroke="#5E5346"/>' % (W * s, D * s)]
         cursors = {"back": 0.0, "front": 0.0, "left": 0.0, "right": 0.0}
