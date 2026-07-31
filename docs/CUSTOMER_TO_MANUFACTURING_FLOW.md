@@ -207,8 +207,18 @@ exports the Signature Series register as CSS custom properties:
   --sb-walnut: #4a3c2e;  --sb-walnut-l:#6b5b48;
   --sb-linen:  #f5efe6;  --sb-paper:   #f5f4ee;
   --sb-ink:    #1a1815;  --sb-rule:    #d8d2c4;
-  // Semantic
-  --sb-ok:     #2f8a4f;  --sb-warn:    #c8881e;  --sb-alert: #b54b3b;
+  // Semantic — SUPERSEDED 2026-07-31. These three values never matched
+  // what shipped, and the doc drifted from its own implementation before
+  // anyone noticed. The canonical source is now
+  // addons/southbrook_ui/static/src/scss/_sb_tokens.scss, which defines
+  // six semantics (ok / warn / late / blocked / info / neutral), each with
+  // -fg/-bg/-border in both light and dark, every pair WCAG-verified.
+  // --sb-ok / --sb-warn / --sb-alert still resolve as aliases; do not add
+  // new uses, and do not copy hex values out of this block.
+  //   was: --sb-ok: #2f8a4f;  --sb-warn: #c8881e;  --sb-alert: #b54b3b;
+  //   use: var(--sb-status-ok-fg), var(--sb-status-warn-fg),
+  //        var(--sb-status-blocked-fg)   ("late" is now distinct from
+  //        "blocked" — on a factory floor those demand different actions)
   --sb-hl:     #f3d98c;  // selection amber
   // Typography
   --sb-font-display: 'Roboto Flex', 'Inter', system-ui, sans-serif;
