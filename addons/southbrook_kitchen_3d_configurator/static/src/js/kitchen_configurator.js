@@ -1841,7 +1841,12 @@ class SouthbrookKitchenConfigurator extends Component {
     // cabinet_type (and any corner line the server doesn't know about
     // yet) is UNCHANGED — still the pure client merge + debounced
     // /save.
-    async _swapSelectedProduct(rawProductId) {
+    // `selectEl` (the real <select> DOM node, passed from the template's
+    // `ev.target`) is OPTIONAL — every non-DOM caller (tests, any future
+    // programmatic swap) can omit it — but is required to fix review
+    // Finding 2: see the corner refusal paths in
+    // _swapCornerProductOnServer for why it's needed.
+    async _swapSelectedProduct(rawProductId, selectEl) {
         const pid = parseInt(rawProductId, 10);
         if (!Number.isFinite(pid)) return;
         const product = (this.state.products || []).find(p => p.product_id === pid);
@@ -1863,7 +1868,7 @@ class SouthbrookKitchenConfigurator extends Component {
         // to the same client-only merge every other cabinet_type
         // always uses.
         if (oldItem.cabinet_type === "corner" && this.state.designId) {
-            return this._swapCornerProductOnServer(idx, oldItem, product);
+            return this._swapCornerProductOnServer(idx, oldItem, product, selectEl);
         }
 
         // Preserve position + layout_key + current width (user may have
@@ -1909,10 +1914,26 @@ class SouthbrookKitchenConfigurator extends Component {
     // group has read access to this model —
     // security/ir.model.access.csv), then action_swap_product is
     // called on that id.
-    async _swapCornerProductOnServer(idx, oldItem, product) {
-        let lineId = null;
+    async _swapCornerProductOnServer(idx, oldItem, product, selectEl) {
+        // Review Finding 3 — a pending debounced autosave armed by an
+        // earlier, UNRELATED edit (e.g. a width tweak on a different
+        // cabinet) can otherwise fire mid-swap: it posts the CURRENT
+        // (pre-swap) state.items to /save, whose keyed line.write()
+        // would silently revert the server's just-applied swap the
+        // instant that timer lands. Flush it FIRST — cancel the timer
+        // and run the save now, synchronously ahead of the swap RPCs —
+        // so no stale write can ever land after the swap starts.
+        // Nothing pending is lost; it's just sent now instead of in
+        // ~3s, same payload either way.
+        if (this._autoSaveTimer) {
+            clearTimeout(this._autoSaveTimer);
+            this._autoSaveTimer = null;
+            await this._autoSave();
+        }
+
+        let rows;
         try {
-            const rows = await rpc("/web/dataset/call_kw", {
+            rows = await rpc("/web/dataset/call_kw", {
                 model:  "southbrook.kitchen.design.line",
                 method: "search_read",
                 args: [
@@ -1922,15 +1943,33 @@ class SouthbrookKitchenConfigurator extends Component {
                 ],
                 kwargs: { limit: 1 },
             });
-            lineId = rows && rows[0] && rows[0].id;
-        } catch (_) {
-            lineId = null;
+        } catch (e) {
+            // Review Finding 1 — a THROWN exception here (network
+            // blip, timeout, 500, ACL error) is NOT the same thing as
+            // "this line legitimately has no server row yet". The
+            // bare catch this used to be treated BOTH cases
+            // identically and fell back to the ungoverned client-only
+            // merge — a transient failure would silently reopen the
+            // exact corner-governance gap this task closes. Fail
+            // CLOSED instead, exactly like the action_swap_product hop
+            // below: toast the failure, abort, leave state untouched.
+            const msg = e && (e.message || String(e))
+                || "Couldn't verify this cabinet with the server — swap refused.";
+            this._toast(msg, { type: "danger", sticky: true });
+            // Review Finding 2 — see the identical revert below for
+            // the full rationale; this fail-closed path leaves
+            // state.selected unchanged too, so the same DOM correction
+            // applies here.
+            if (selectEl) selectEl.value = String(oldItem.product_id);
+            return;
         }
+        const lineId = rows && rows[0] && rows[0].id;
         if (!lineId) {
-            // Genuinely not persisted yet (e.g. a save is still
-            // in-flight when the rep swaps again) — no server-side
-            // line exists to govern the swap; fall back to the same
-            // client-only merge every unsaved line uses.
+            // A clean, successful lookup that found NO row — this is
+            // the genuine "not persisted yet" case (e.g. a save is
+            // still in-flight when the rep swaps again): no
+            // server-side line exists to govern the swap, so fall back
+            // to the same client-only merge every unsaved line uses.
             this._applyClientSwap(idx, oldItem, product);
             return;
         }
@@ -1951,6 +1990,16 @@ class SouthbrookKitchenConfigurator extends Component {
             // state completely unchanged.
             const msg = e && (e.message || String(e)) || "Swap refused.";
             this._toast(msg, { type: "danger", sticky: true });
+            // Review Finding 2 — the native <select> already flipped
+            // to the refused option visually (a browser applies a
+            // <select> value change before firing 'change', ahead of
+            // this handler ever running); state.selected.product_id
+            // stays exactly as it was, so OWL's vdom diff sees nothing
+            // to patch on that attribute and leaves the wrong option
+            // showing selected. Force the control back to the truth
+            // explicitly — least-invasive fix that doesn't require a
+            // render-nonce/key bump anywhere else in the template.
+            if (selectEl) selectEl.value = String(oldItem.product_id);
             return;
         }
         // Success — the server is authoritative for this line's
@@ -3783,7 +3832,7 @@ SouthbrookKitchenConfigurator.template = xml`
             <span>Product</span>
             <select class="o_sbk_edit_select"
                     t-att-value="state.selected.product_id"
-                    t-on-change="(ev) => this._swapSelectedProduct(ev.target.value)">
+                    t-on-change="(ev) => this._swapSelectedProduct(ev.target.value, ev.target)">
               <option t-foreach="_sameTypeProducts(state.selected.cabinet_type)"
                       t-as="p" t-key="p.product_id"
                       t-att-value="p.product_id"

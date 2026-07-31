@@ -42,10 +42,36 @@
  * an unsaved design (no state.designId) and a search_read resolve-miss
  * (line genuinely not round-tripped to the server yet) both fall back
  * to the client-only merge rather than silently doing nothing.
+ *
+ * Review-fix round (coordinator review, source-verified) — three
+ * Important findings against the first pass, each locked by a new test
+ * below:
+ *   Finding 1 — the search_read resolve hop's bare `catch { lineId =
+ *     null }` treated ANY exception (network/timeout/500/ACL) the same
+ *     as "no row" and silently fell back to the ungoverned client
+ *     merge — a transient failure reopened the exact gap this task
+ *     closes. Fixed: a THROWN exception now fails CLOSED (toast, abort,
+ *     state unchanged), same as the action_swap_product hop; only a
+ *     clean, successful lookup that finds no row falls back.
+ *   Finding 2 — a refused swap left the visible <select> showing the
+ *     REFUSED product: the browser flips a <select>'s value before
+ *     firing 'change', and since state.selected.product_id never
+ *     changes on refusal, OWL's vdom diff has nothing to patch and
+ *     never corrects it. Fixed: the template now passes `ev.target`
+ *     through to `_swapSelectedProduct`/`_swapCornerProductOnServer`,
+ *     which explicitly resets `selectEl.value` back to the original
+ *     product on every refusal path.
+ *   Finding 3 — a pending `_autoSaveTimer` armed by an earlier,
+ *     unrelated edit could fire mid-swap and post PRE-swap
+ *     state.items to /save, whose keyed line.write() would silently
+ *     revert the server's just-applied swap. Fixed: corner-swap entry
+ *     now cancels and FLUSHES (awaits `_autoSave()`) any armed timer
+ *     before either swap RPC starts.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mountConfigurator } from "../harness/mount_configurator.mjs";
+import { tick } from "../harness/tick.mjs";
 
 const DESIGN_ID = 501;
 const SERVER_LINE_ID = 4242;
@@ -54,6 +80,19 @@ const NEW_CORNER_PRODUCT = {
     product_id: 777, name: "Lazy Susan Corner", cabinet_type: "corner",
     sku: "SB-CORNER-SUSAN", width_in: 36, height_in: 34.5, depth_in: 24,
     price: 500, available_qty: 5, material: "white_melamine",
+};
+
+// Matches cornerItem()'s own product_id — included in state.products so
+// the Selected Cabinet drawer's <select> has a real <option> for the
+// ORIGINAL product too (a real corner catalog always does: every corner
+// archetype shares southbrook_cabinet_type='corner' and is listed by
+// _sameTypeProducts). Needed for the Finding 2 DOM test — without this,
+// the dropdown would only ever have ONE option (the swap target) and
+// couldn't demonstrate a "revert to the original" at all.
+const ORIGINAL_CORNER_PRODUCT = {
+    product_id: 111, name: "Blind Corner", cabinet_type: "corner",
+    sku: "SB-CORNER-BLIND", width_in: 30, height_in: 34.5, depth_in: 24,
+    price: 450, available_qty: 5, material: "white_melamine",
 };
 
 function cornerItem(overrides = {}) {
@@ -87,14 +126,15 @@ function freshCornerLine(overrides = {}) {
     };
 }
 
-async function mountWithCornerLine({ callKw, loadLines, designId = DESIGN_ID } = {}) {
+async function mountWithCornerLine({ callKw, loadLines, save, designId = DESIGN_ID } = {}) {
     const h = await mountConfigurator({
         rpcRoutes: {
             "/southbrook_kitchen/configurator/products": () => ({
-                channel: null, products: [NEW_CORNER_PRODUCT],
+                channel: null, products: [ORIGINAL_CORNER_PRODUCT, NEW_CORNER_PRODUCT],
             }),
             ...(callKw ? { "/web/dataset/call_kw": callKw } : {}),
             ...(loadLines ? { "/southbrook_kitchen/configurator/load_design_lines": loadLines } : {}),
+            ...(save ? { "/southbrook_kitchen/configurator/save": save } : {}),
         },
     });
     h.component.state.designId = designId;
@@ -278,6 +318,153 @@ test("corner swap: a search_read resolve-miss (line not round-tripped yet) falls
     assert.equal(h.component.state.items[0].product_id, NEW_CORNER_PRODUCT.product_id,
         "falls back to the legacy merge so the swap still visibly happens");
     clearAutoSave(h);
+    h.destroy();
+});
+
+// ─── Review Finding 1 — thrown exception vs. empty result on the resolve hop ──
+
+test("Finding 1: a search_read THROW fails CLOSED — refused, state unchanged, action_swap_product never reached", async () => {
+    const h = await mountWithCornerLine({
+        callKw: (params) => {
+            if (params.method === "search_read") {
+                throw new Error("RPC_ERROR: timeout contacting server");
+            }
+            throw new Error(
+                "action_swap_product must never be called after a search_read exception "
+                + "(got method: " + params.method + ")");
+        },
+    });
+    const before = JSON.parse(JSON.stringify(h.component.state.items[0]));
+
+    await h.component._swapSelectedProduct(String(NEW_CORNER_PRODUCT.product_id));
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(h.component.state.items[0])), before,
+        "a thrown resolve-hop exception must leave state.items untouched — fail CLOSED, not silent fallback");
+    assert.equal(h.component.state.selected.product_id, before.product_id);
+
+    const toast = h.component._toastStore.toasts.find(t => t.type === "danger");
+    assert.ok(toast, "a failure toast must be shown for a thrown resolve-hop exception");
+    assert.match(toast.message, /couldn't verify|refused|error/i);
+    assert.equal(toast.sticky, true);
+    h.destroy();
+});
+
+test("Finding 1 regression: a CLEAN empty search_read result (no exception) still falls back to the client-only merge", async () => {
+    // Distinct from the throw case above — an empty array is a
+    // successful lookup that legitimately found no row (line not
+    // round-tripped to the server yet), which must still swap locally
+    // rather than refusing. Pins the EMPTY-RESULT branch stays the
+    // documented "not persisted yet" fallback, not fail-closed too.
+    const h = await mountWithCornerLine({
+        callKw: (params) => {
+            if (params.method === "search_read") return [];
+            throw new Error("action_swap_product must never be called without a resolved line id");
+        },
+    });
+
+    await h.component._swapSelectedProduct(String(NEW_CORNER_PRODUCT.product_id));
+
+    assert.equal(h.component.state.items[0].product_id, NEW_CORNER_PRODUCT.product_id,
+        "a clean empty result (not an exception) must still fall back to the legacy merge");
+    const dangerToast = h.component._toastStore.toasts.find(t => t.type === "danger");
+    assert.equal(dangerToast, undefined, "a clean empty result is not a failure — no refusal toast");
+    clearAutoSave(h);
+    h.destroy();
+});
+
+// ─── Review Finding 2 — the visible <select> must revert on refusal ───────
+
+test("Finding 2: a refused corner swap reverts the visible <select> back to the original product", async () => {
+    const REFUSAL_MSG = "Wrong hand for this junction — the corner mechanism will not clear. Swap refused.";
+    const h = await mountWithCornerLine({
+        callKw: (params) => {
+            if (params.method === "search_read") return [{ id: SERVER_LINE_ID }];
+            if (params.method === "action_swap_product") throw new Error(REFUSAL_MSG);
+            throw new Error("unexpected call_kw method: " + params.method);
+        },
+    });
+    await tick();   // render the Selected Cabinet drawer for the mounted corner item
+
+    // Scoped to the Selected Cabinet drawer specifically — the
+    // Filler-strategy / Wall-cab-top-alignment controls elsewhere in
+    // the template share the same ".o_sbk_edit_select" class and would
+    // otherwise be matched first by document order.
+    const select = h.root.querySelector(".o_sbk_detail .o_sbk_edit_select");
+    assert.ok(select, "the product swap <select> must be in the rendered DOM");
+    const originalId = String(cornerItem().product_id);
+    assert.equal(select.value, originalId, "sanity: starts on the original product");
+
+    // Simulate exactly what a real browser does the instant the rep
+    // picks a new option: the <select>'s own .value flips BEFORE
+    // 'change' fires, independent of OWL or the handler — that's the
+    // whole bug. The template wires
+    // `(ev) => this._swapSelectedProduct(ev.target.value, ev.target)`,
+    // so calling with the same (value, element) pair reproduces it.
+    select.value = String(NEW_CORNER_PRODUCT.product_id);
+    assert.equal(select.value, String(NEW_CORNER_PRODUCT.product_id),
+        "sanity: the native DOM element itself has already flipped, pre-handler");
+
+    await h.component._swapSelectedProduct(String(NEW_CORNER_PRODUCT.product_id), select);
+
+    assert.equal(select.value, originalId,
+        "a refused swap must revert the visible <select> to the ORIGINAL product, not leave the refused one showing");
+    assert.equal(h.component.state.items[0].product_id, cornerItem().product_id,
+        "state stays unchanged too (belt-and-suspenders re-check alongside the DOM assertion)");
+    h.destroy();
+});
+
+// ─── Review Finding 3 — flush an armed autosave before the swap RPCs ──────
+
+test("Finding 3: an armed autosave timer is flushed BEFORE the swap RPCs, and no post-swap save carries the stale product", async () => {
+    const order = [];
+    let saveCallCount = 0;
+    let saveItemsAtFlush = null;
+
+    const h = await mountWithCornerLine({
+        save: (params) => {
+            saveCallCount += 1;
+            order.push("save");
+            saveItemsAtFlush = JSON.parse(JSON.stringify(params.items));
+            return { id: DESIGN_ID, name: "Corner Kitchen" };
+        },
+        callKw: (params) => {
+            order.push(params.method);
+            if (params.method === "search_read") return [{ id: SERVER_LINE_ID }];
+            if (params.method === "action_swap_product") {
+                return { corners: 0, removed: 0, inserted: 0, swapped: true };
+            }
+            throw new Error("unexpected call_kw method: " + params.method);
+        },
+        loadLines: () => ({ lines: [freshCornerLine()] }),
+    });
+
+    // Arm a pending debounced autosave the way a real earlier, UNRELATED
+    // edit would (e.g. a width tweak on some other cabinet just before
+    // this swap) — _queueAutoSave requires _userActed, the same T7 gate
+    // every genuine edit opens.
+    h.component._markUserAction();
+    h.component._queueAutoSave();
+    assert.ok(h.component._autoSaveTimer, "sanity: a debounced autosave is armed before the swap starts");
+
+    await h.component._swapSelectedProduct(String(NEW_CORNER_PRODUCT.product_id));
+
+    assert.deepEqual(order, ["save", "search_read", "action_swap_product"],
+        "the pending autosave must flush strictly BEFORE either swap RPC, not after");
+    assert.equal(saveCallCount, 1,
+        "the swap's own success path must never queue/trigger a SECOND save — it's already durably " +
+        "persisted server-side, so no post-swap save can carry a stale (pre-swap) product");
+    assert.equal(h.component._autoSaveTimer, null,
+        "the original timer must be cancelled outright, not left armed to double-fire later");
+
+    const flushedItem = saveItemsAtFlush.find(it => it.layout_key === "corner-1");
+    assert.ok(flushedItem, "the flushed save must carry this design's line");
+    assert.equal(flushedItem.product_id, cornerItem().product_id,
+        "the flush legitimately saves the PRE-swap product — the swap hadn't run yet; this IS the " +
+        "unrelated pending edit being honoured, not a bug");
+
+    // And the swap itself still completed correctly afterward.
+    assert.equal(h.component.state.items[0].product_id, NEW_CORNER_PRODUCT.product_id);
     h.destroy();
 });
 
