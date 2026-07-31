@@ -171,11 +171,64 @@ class CommandCenterController(http.Controller):
             report = env["southbrook.mes_mps.bottleneck_report"].search(
                 [], order="create_date desc", limit=1)
             if report:
-                lines = report.bottleneck_line_ids if "bottleneck_line_ids" in report._fields else report.browse()
+                # P1 fix (2026-07-31, scratchpad/retest/p1-planner.md):
+                # this used to read `report.bottleneck_line_ids`, a field
+                # that has never existed on
+                # southbrook.mes_mps.bottleneck_report (the real field is
+                # `line_ids`) — the "in report._fields" guard always
+                # evaluated False, so `lines` was always an empty
+                # recordset and the Bottleneck panel silently showed
+                # nothing regardless of real data. Kept the same
+                # defensive existence-check style used elsewhere in this
+                # file (e.g. "company_id" in Rec._fields below), just
+                # pointed at the field that's actually there.
+                lines = report.line_ids if "line_ids" in report._fields else report.browse()
+                action_labels = {
+                    "add_shift": _("add a shift"),
+                    "outsource": _("consider outsourcing"),
+                    "split_order": _("split the order across stations"),
+                    "no_action": _("no action needed"),
+                }
+                # Severity mirrors the report's own load thresholds
+                # (action_compute: >=110 add_shift, >=90 outsource,
+                # >=75 split_order, else no_action) onto the shared
+                # status scale so the panel can outrank a normal row
+                # the same way the Issues panel already does.
+                severity_by_action = {
+                    "add_shift": "blocked",
+                    "outsource": "blocked",
+                    "split_order": "late",
+                    "no_action": "ok",
+                }
+                bl_lines = []
+                for ln in lines[:5]:
+                    wc = ln.workcenter_id
+                    if not wc:
+                        continue
+                    action_label = action_labels.get(
+                        ln.recommended_action, action_labels["no_action"])
+                    load_pct = round(ln.load_pct or 0.0)
+                    bl_lines.append({
+                        "id": ln.id,
+                        # The navigable target — a real mrp.workcenter id,
+                        # not just a display string, so the panel can
+                        # open the actual record (Task 2: make the
+                        # bottleneck panel actionable).
+                        "workcenter_id": wc.id,
+                        "name": wc.display_name,
+                        "load_pct": load_pct,
+                        "queue_depth": wc.southbrook_pm_inflight_count,
+                        "severity": severity_by_action.get(
+                            ln.recommended_action, "ok"),
+                        "why": _("%(pct)s%% loaded, %(queue)s in queue — %(action)s") % {
+                            "pct": load_pct,
+                            "queue": wc.southbrook_pm_inflight_count,
+                            "action": action_label,
+                        },
+                    })
                 out["bottleneck"] = {
                     "report_id": report.id,
-                    "lines": [{"id": ln.id, "name": ln.display_name}
-                              for ln in lines[:5]],
+                    "lines": bl_lines,
                 }
         except Exception:  # noqa: BLE001
             _logger.exception("command_center: bottleneck failed")

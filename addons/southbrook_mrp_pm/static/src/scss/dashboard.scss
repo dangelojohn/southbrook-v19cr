@@ -118,24 +118,56 @@ $sb_rule: #d8cfbf;
 }
 
 // Colour-code per metric so the PM eye locks onto the meaningful
-// ones immediately.
+// ones immediately. $sb_sky/$sb_walnut above are brand chrome
+// (Signature Series palette) and stay hardcoded per the design
+// system's own rule — only STATUS semantics route through the
+// --sb-status-* tokens (southbrook_ui dependency, see manifest).
 .o_sb_pm_dash_inflight .o_sb_pm_dash_value {
   color: $sb_sky;
 }
 .o_sb_pm_dash_done .o_sb_pm_dash_value {
-  color: rgb(46, 125, 50);  // green
-}
-.o_sb_pm_dash_late .o_sb_pm_dash_value {
-  color: rgb(198, 40, 40);  // red
+  color: var(--sb-status-ok-fg);
 }
 .o_sb_pm_dash_alerts .o_sb_pm_dash_value {
-  color: rgb(230, 81, 0);   // orange
+  color: var(--sb-status-warn-fg);
 }
 
-// Suppress the redness for late=0; only highlight when there IS a
-// problem. The kanban renderer doesn't pass conditional class
-// support without an OWL component, so we leave the colour
-// permanent and let 0 read as 'green-ish nothing'.
+// ---------------------------------------------------------------
+// P1 fix (2026-07-31, see scratchpad/retest/p1-planner.md) — ROOT
+// CAUSE: the "Late" tile's `o_sb_pm_dash_late` class used to be
+// written STATICALLY in the QWeb card template
+// (views/pm_dashboard.xml), so this rule applied unconditionally —
+// the tile rendered red at 0 late jobs exactly the same as at 15.
+// The old comment here claimed "the kanban renderer doesn't pass
+// conditional class support without an OWL component" and left the
+// colour permanent on that premise. That premise was false: this
+// same addon's mrp_production_kanban.xml already binds a class to a
+// record value via t-attf-class + record.<field>.raw_value with no
+// OWL component required. The fix moves the ok/late branching into a
+// real computed field (mrp.workcenter.southbrook_pm_late_state, see
+// models/mrp_workcenter.py) so the template just interpolates the
+// field and the class — and therefore this colour — only appears
+// when there IS a problem.
+//
+// A permanently-red indicator is worse than no indicator at all: it
+// trains the PM to tune out the one tile that should never be
+// ignored. Do not revert this to an unconditional rule.
+.o_sb_pm_dash_late {
+  // Exception state gets the full tint treatment (bg + fg) so it
+  // visibly outranks the calm "ok" state next to it, per the
+  // planner-persona rule in southbrook-design-system: exceptions
+  // outrank normals visually.
+  background: var(--sb-status-late-bg);
+
+  .o_sb_pm_dash_value {
+    color: var(--sb-status-late-fg);
+  }
+}
+.o_sb_pm_dash_ok .o_sb_pm_dash_value {
+  // Calm state: colour the number only, no background wash — it
+  // must not compete visually with a genuine exception tile.
+  color: var(--sb-status-ok-fg);
+}
 
 .o_sb_pm_dash_card_f {
   margin-top: 10px;

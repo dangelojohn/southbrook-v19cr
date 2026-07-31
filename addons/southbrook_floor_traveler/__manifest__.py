@@ -33,13 +33,20 @@ External dependencies:
     "author": "Southbrook Cabinetry / OdooIQ",
     "license": "LGPL-3",
     "category": "Manufacturing",
-    "version": "19.0.2.0.0",
+    "version": "19.0.2.1.0",
     "depends": [
         "mrp",
         "sale",
         "southbrook_kitchen_mrp",
         "southbrook_premium_orchestration",
         "southbrook_mrp_pm",
+        # UX-P1 (2026-07-31, ux-shopfloor.md #2) — the scan-result
+        # confirmation page (views/scan_result_template.xml) colours
+        # its status card ONLY via southbrook_ui's --sb-status-*
+        # tokens (see the southbrook-design-system skill: never
+        # hardcode a status colour). southbrook_ui depends on nothing
+        # but `web` and ships assets only — safe to add here.
+        "southbrook_ui",
     ],
     # qrcode is a soft dependency. The QR computation gracefully falls
     # back to an empty image when the lib is missing (the traveler PDF
@@ -52,7 +59,26 @@ External dependencies:
         # P0 hard rule #2 explicitly bars widening existing permissions.
         "reports/floor_traveler_report.xml",
         "reports/floor_traveler_report_action.xml",
+        # UX-P1 — human-facing scan confirmation page (see controllers/
+        # scan_endpoint.py's new GET route).
+        "views/scan_result_template.xml",
+        "data/floor_traveler_config_parameters.xml",
     ],
+    # UX-P1 (2026-07-31, ux-shopfloor.md #2) — lean, dedicated bundle
+    # for the scan-result page only, mirroring southbrook_qr_kit's
+    # `web.assets_qr_floor` pattern: NOT web.assets_backend/frontend,
+    # so a shop-floor tablet scanning a traveler doesn't pay the full
+    # backend/Bootstrap bundle cost for a page that is one status
+    # card. Pulls southbrook_ui's token file directly from ITS static
+    # path — no edit to southbrook_ui itself, just a reference to a
+    # file that addon already ships, gated by the `depends` above so
+    # it's guaranteed present at install/upgrade time.
+    "assets": {
+        "web.assets_floor_traveler_scan": [
+            "southbrook_ui/static/src/scss/_sb_tokens.scss",
+            "southbrook_floor_traveler/static/src/scss/scan_result.scss",
+        ],
+    },
     "installable": True,
     "application": False,
     "auto_install": False,

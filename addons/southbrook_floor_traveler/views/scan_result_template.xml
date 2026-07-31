@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: LGPL-3.0-only -->
+<!--
+  UX-P1 (2026-07-31, ux-shopfloor.md #2, the audit's WORST finding) —
+  full-page, high-contrast confirmation screen for a floor-traveler
+  scan. Rendered by controllers/scan_endpoint.py's GET handler
+  (type="http"); one render per outcome — success or one of the five
+  documented failure cases (forbidden / invalid_payload / not_found /
+  wrong_step / expired) plus the informational already_done case.
+
+  Uses ONLY the `web.assets_floor_traveler_scan` bundle (this addon's
+  own scan_result.scss plus southbrook_ui's status colour tokens, see
+  southbrook_ui/static/src/scss/_sb_tokens.scss, wired in
+  __manifest__.py) — deliberately NOT web.assets_backend/frontend,
+  mirroring southbrook_qr_kit's lean `web.assets_qr_floor` bundle for
+  the same reason: a tablet on the shop floor should not pay the full
+  backend/Bootstrap bundle cost for a page whose entire job is "one
+  big status card, legible from a metre away".
+-->
+<odoo>
+    <template id="scan_result" name="Floor Traveler Scan Result">
+        <html>
+            <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport"
+                      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+                <title><t t-esc="title"/> — Floor Traveler</title>
+                <t t-call-assets="web.assets_floor_traveler_scan" t-css="true"/>
+            </head>
+            <body class="sb-scan-body">
+                <main t-attf-class="sb-scan-card sb-scan-token-#{token}">
+                    <div class="sb-scan-badge"><t t-esc="badge"/></div>
+                    <h1 class="sb-scan-title"><t t-esc="title"/></h1>
+                    <div t-if="detail_rows" class="sb-scan-details">
+                        <div t-foreach="detail_rows" t-as="row"
+                             class="sb-scan-row">
+                            <span class="sb-scan-row-label"
+                                  t-esc="row['label']"/>
+                            <span class="sb-scan-row-value"
+                                  t-esc="row['value']"/>
+                        </div>
+                    </div>
+                    <p t-if="next_text" class="sb-scan-next"
+                       t-esc="next_text"/>
+                    <p t-if="next_step_line"
+                       class="sb-scan-next sb-scan-next-ok"
+                       t-esc="next_step_line"/>
+                </main>
+            </body>
+        </html>
+    </template>
+</odoo>

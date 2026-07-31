@@ -21,12 +21,28 @@ $sb-mo-shadow-hover: 0 4px 12px rgba(15, 15, 15, 0.14);
 // State -> bar colour. Mirrors Odoo's selection colour conventions
 // so dragging between columns is intuitive (cooler = earlier in
 // pipeline, warmer = closer to done).
+//
+// draft/confirmed/progress/to_close are deliberately NOT routed
+// through --sb-status-* tokens: these four are pipeline-STAGE
+// colours (where a card sits in a workflow), not status/exception
+// semantics. See scratchpad/retest/p1-planner.md for the full
+// rationale — the 2026-07-31 audit's exact complaint was that this
+// bar's amber and Central Command's severity amber read as the same
+// signal to a scheduler when they mean opposite things (a normal
+// in-flight stage vs. a real problem). Keeping the pipeline palette
+// visually distinct from the status tokens is the fix, not merging
+// ordinary in-flight work into a token that means "needs attention".
+
 $sb-mo-c-draft:     #b2b8be;   // muted gray — not started
 $sb-mo-c-confirmed: #4682b4;   // steel-blue — committed
-$sb-mo-c-progress:  #f0a500;   // amber — in flight
+$sb-mo-c-progress:  #f0a500;   // amber — in-flight pipeline stage
 $sb-mo-c-to_close:  #6f42c1;   // purple — staged
-$sb-mo-c-done:      #28a745;   // green — closed clean
-$sb-mo-c-cancel:    #a83a2b;   // brick — cancelled
+
+// done/cancel ARE terminal status semantics (success / no-longer-
+// active) and route through the shared tokens like every other
+// exception surface in this addon.
+$sb-mo-c-done:      var(--sb-status-ok-fg);          // closed clean
+$sb-mo-c-cancel:    var(--sb-status-neutral-border); // cancelled, not urgent
 
 .o_sb_mo_kanban {
 

@@ -224,10 +224,24 @@
                     renderBadge("");
                     // Auto-prompt on first load if no operator bound
                     // and we're on a floor surface.
+                    //
+                    // UX-P1 (2026-07-31, ux-shopfloor.md #1) — the
+                    // standalone Bin-Scan / Load-Unit tablets are
+                    // served at /southbrook/floor/bin-scan and
+                    // /southbrook/floor/load-unit (see
+                    // southbrook_qr_kit/controllers/qr_scan.py), which
+                    // matched NONE of the three prefixes below. Even
+                    // once this asset was bundled, the auto-prompt for
+                    // the exact screens this feature exists for never
+                    // fired — an operator had to notice and tap the
+                    // small badge manually. Added the floor-shell
+                    // prefix so the primary surface gets the same
+                    // auto-prompt as /odoo, /web and /sb/.
                     const isFloor =
                         path.startsWith("/odoo") ||
                         path.startsWith("/web") ||
-                        path.startsWith("/sb/");
+                        path.startsWith("/sb/") ||
+                        path.startsWith("/southbrook/floor/");
                     if (isFloor && !cached) {
                         showModal(false);
                     }

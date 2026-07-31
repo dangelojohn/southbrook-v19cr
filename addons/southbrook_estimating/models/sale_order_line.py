@@ -311,6 +311,46 @@ class SaleOrderLine(models.Model):
             "door_count": door_count or 1,
         }
 
+    # ------------------------------------------------------------------
+    # Phase 1 sales-rep UX fix (2026-07-31) — per-line rule-violation
+    # flag. sale.order.sb_hard_validation_issues_html (sale_order.py)
+    # gives the order-level summary; this gives the order_line list a
+    # way to flag the OFFENDING row directly (decoration-danger in
+    # views/sale_order_views.xml). Computed from the exact same
+    # sale.order.southbrook_hard_validation_issues() scan — not a
+    # second rule engine, just a per-line lookup into its result.
+    # ------------------------------------------------------------------
+    sb_hard_validation_message = fields.Char(
+        string="Rule Violation",
+        compute="_compute_sb_hard_validation_message",
+        store=False,
+        help=(
+            "Why this line cannot be confirmed as configured. Empty "
+            "when the line is clean."
+        ),
+    )
+
+    @api.depends(
+        "order_id.order_line.product_id",
+        "order_id.order_line.product_id.product_template_attribute_value_ids",
+    )
+    def _compute_sb_hard_validation_message(self):
+        issues_by_order = {}
+        for line in self:
+            order = line.order_id
+            if not order:
+                line.sb_hard_validation_message = False
+                continue
+            if order.id not in issues_by_order:
+                issues_by_order[order.id] = (
+                    order.southbrook_hard_validation_issues())
+            messages = [
+                issue["message"] for issue in issues_by_order[order.id]
+                if issue["line_id"] == line.id
+            ]
+            line.sb_hard_validation_message = (
+                " | ".join(messages) if messages else False)
+
     @api.onchange("zone")
     def _onchange_zone_clear_label(self):
         """Clear zone_label when leaving the 'other' zone."""
