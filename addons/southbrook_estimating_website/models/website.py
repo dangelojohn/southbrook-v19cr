@@ -36,8 +36,13 @@ class Website(models.Model):
         / Order Builder flow (custom jsonrpc controllers in
         southbrook_kitchen_3d_configurator +
         southbrook_estimating_website — never website_sale's generic
-        cart/checkout), so excluding them from the shop domain does not
-        touch any real purchase path.
+        cart/checkout) — but this override only closes shop DISCOVERY
+        (listing/search/sitemap); it does not touch website_sale's
+        cart-add/checkout path, which never consults _product_domain(),
+        so a visitor with a direct product-page URL can still complete
+        checkout on an is_published corner/appliance SKU. That residual
+        is a prod data decision (is_published), flagged for the catalog
+        owner in task-30-report.md's Concerns section.
 
         Scope discipline: only ``corner`` and ``appliance``
         southbrook_cabinet_type — the exact two families task-30 named
