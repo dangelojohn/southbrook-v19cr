@@ -33,14 +33,23 @@ import { KitchenCanvas } from "@southbrook_kitchen_3d_configurator/js/canvas/kit
 // constants.esm.js. Used below to default a new cabinet's persisted
 // `wall` to the active wall selection.
 import { WALLS } from "@southbrook_kitchen_3d_configurator/js/canvas/constants.esm";
+// SBK-030 — local toast discipline. See toast_store.esm.js's own
+// header for why this replaces `useService("notification")` for every
+// message this component produces.
+import { ToastStore } from "@southbrook_kitchen_3d_configurator/js/toast/toast_store.esm";
 
 const actionRegistry = registry.category("actions");
 
 // ─── OWL Component ────────────────────────────────────────────────────────────
 class SouthbrookKitchenConfigurator extends Component {
     setup() {
-        this.notification = useService("notification");
-        this.action       = useService("action");
+        this.action = useService("action");
+        // SBK-030 — local toast store (reducer) + its reactive render
+        // mirror. `_toast()` is the single funnel every notification-
+        // worthy event in this file goes through now; nothing in this
+        // component calls `useService("notification")` anymore — see
+        // the import comment above and toast_store.esm.js's header.
+        this._toastStore = new ToastStore();
 
         // PR2.5 — Odoo 19 client-action components receive `props.action`
         // (the full ir.actions.client record); `_getActionInfo` in the
@@ -225,6 +234,11 @@ class SouthbrookKitchenConfigurator extends Component {
             pickerOpen:        false,
             pickerLoading:     false,
             pickerResults:     [],
+            // SBK-030 — reactive render mirror of this._toastStore
+            // (getView()'s shape). Kept inside the same `state` root as
+            // everything else so the template's existing `state.foo`
+            // convention holds; `_syncToastView()` is the only writer.
+            toastView: { visible: [], overflowCount: 0 },
         });
         // Auto-save debounce timer (not reactive; managed imperatively).
         this._autoSaveTimer = null;
@@ -288,6 +302,18 @@ class SouthbrookKitchenConfigurator extends Component {
         this._userActed = false;
 
         onMounted(() => {
+            // SBK-030 — auto-dismiss clock for non-sticky toasts. A
+            // 1s tick is coarse enough to be free and fine-grained
+            // enough that an ~8s auto-dismiss never visibly lags.
+            // `.unref()` (Node-only; real browsers return a plain
+            // number with no such method, hence the guard) keeps this
+            // from holding a headless/test process open forever if a
+            // caller never triggers onWillUnmount — it has no effect
+            // on the interval actually firing while the page is alive.
+            this._toastTimer = setInterval(() => this._tickToasts(), 1000);
+            if (typeof this._toastTimer.unref === "function") {
+                this._toastTimer.unref();
+            }
             // 24e — scene bring-up is <KitchenCanvas>'s job. Parent
             // only wires window-scoped keyboard shortcuts here.
             window.addEventListener("keydown", this._onKeyDown);
@@ -316,6 +342,11 @@ class SouthbrookKitchenConfigurator extends Component {
                 clearTimeout(this._autoSaveTimer);
                 this._autoSaveTimer = null;
             }
+            // SBK-030 — stop the toast auto-dismiss clock.
+            if (this._toastTimer) {
+                clearInterval(this._toastTimer);
+                this._toastTimer = null;
+            }
             window.removeEventListener("keydown", this._onKeyDown);
             if (window.__sbk) {
                 delete window.__sbk.getLayout;   // T7 — hook dies with us
@@ -328,6 +359,51 @@ class SouthbrookKitchenConfigurator extends Component {
     // room change, wall select) and nowhere else.
     _markUserAction() {
         this._userActed = true;
+    }
+
+    // ─── SBK-030 — local toast discipline ───────────────────────────────────────
+    // The single funnel every message in this file uses. Mirrors the
+    // shape `useService("notification").add(message, opts)` used to
+    // take (`type`, `sticky`) so most call sites were a rename, not a
+    // rewrite. `opts.dedupeKey` and `opts.actions` are new — see
+    // toast_store.esm.js's header for the full contract.
+    _toast(message, opts = {}) {
+        this._toastStore.add(message, opts);
+        this._syncToastView();
+    }
+
+    // Pushes the store's current view (cap+rollup already applied) into
+    // reactive state so the template re-renders. The ONLY writer of
+    // state.toastView.
+    _syncToastView() {
+        const { visible, overflowCount } = this._toastStore.getView();
+        this.state.toastView.visible = visible;
+        this.state.toastView.overflowCount = overflowCount;
+    }
+
+    _dismissToast(id) {
+        this._toastStore.dismiss(id);
+        this._syncToastView();
+    }
+
+    _dismissAllToasts() {
+        this._toastStore.dismissAll();
+        this._syncToastView();
+    }
+
+    // Runs on the ~1s interval armed in onMounted; a no-op render-wise
+    // unless something actually expired.
+    _tickToasts() {
+        const removed = this._toastStore.tick(Date.now());
+        if (removed.length) this._syncToastView();
+    }
+
+    // A toast action button (e.g. "Add anyway") always dismisses its
+    // own toast on click unless the action opts out — the decision it
+    // represents has been made, so the prompt has nothing left to say.
+    _runToastAction(toast, action) {
+        if (typeof action.onClick === "function") action.onClick();
+        if (action.dismissOnClick !== false) this._dismissToast(toast.id);
     }
 
     // ─── Odoo data ──────────────────────────────────────────────────────────────
@@ -364,9 +440,9 @@ class SouthbrookKitchenConfigurator extends Component {
                 depth:  this.state.room.depth_in,
                 height: this.state.room.height_in,
             });
-            this.notification.add("Saved as your default room size.", { type: "success" });
+            this._toast("Saved as your default room size.", { type: "success" });
         } catch (e) {
-            this.notification.add("Couldn't save default: " + (e.message || e), { type: "danger" });
+            this._toast("Couldn't save default: " + (e.message || e), { type: "danger" });
         }
     }
 
@@ -470,7 +546,7 @@ class SouthbrookKitchenConfigurator extends Component {
                 await this._setCustomer({ id: pid, name: "Walk-in Customer" });
             }
         } catch (e) {
-            this.notification.add(
+            this._toast(
                 "Couldn't set walk-in customer: " + (e.message || e),
                 { type: "danger", sticky: true }
             );
@@ -734,11 +810,11 @@ class SouthbrookKitchenConfigurator extends Component {
                 if (res.room) {
                     this.state.room = { ...this.state.room, ...res.room };
                 }
-                this.notification.add(res.error, { type: "warning" });
+                this._toast(res.error, { type: "warning" });
                 return false;
             }
             if (res && res.error) {
-                this.notification.add(res.error, { type: "danger" });
+                this._toast(res.error, { type: "danger" });
                 return false;
             }
             const lines = (res && res.lines) || [];
@@ -757,7 +833,7 @@ class SouthbrookKitchenConfigurator extends Component {
         } catch (e) {
             console.warn(
                 "[SouthbrookKitchenConfigurator] rearrange failed:", e);
-            this.notification.add(
+            this._toast(
                 "Room resize failed — nothing was changed.",
                 { type: "danger" });
             return false;
@@ -1045,13 +1121,19 @@ class SouthbrookKitchenConfigurator extends Component {
         return this._canvasApi?.computeDropWall(ev) ?? null;
     }
 
-    // Generic add — used by drop AND by a future "click to add" button.
+    // Generic add — used by drop AND by the "+ Add" button.
     // D14 — `targetX` (inches) sets the new item's sort-key so it
     // slots in at the dropped position. _recomputeLayoutFromItems
     // then sorts-by-x and re-packs contiguously: visual semantic is
     // "where in the run order does this go". `null` = append at end.
-    _addCabinetFromProduct(product, targetX = null, wallOverride = null) {
+    //
+    // SBK-030 — `opts.force` (default false) is the "Add anyway" exit
+    // from the over-length refusal gate below. It is never set by a
+    // human click directly; it's the onClick a refused toast's "Add
+    // anyway" action re-invokes this same method with.
+    _addCabinetFromProduct(product, targetX = null, wallOverride = null, opts = {}) {
         this._markUserAction();   // T7 gate
+        const force = !!opts.force;
         const type = product.cabinet_type || "base";
         // PR3.0 — y/z field-semantics migration: y_position_in is the
         // canonical mount-height/elevation field, z_position_in is the
@@ -1126,21 +1208,44 @@ class SouthbrookKitchenConfigurator extends Component {
             // tests/node_js/contracts/09_drag_to_wall_convergence.test.mjs.
             wall:          this.state.activeWall || wallOverride || WALLS.BACK,
         };
+
+        // SBK-030 — refuse-by-default over-length add. T7 already
+        // forbade silently GROWING the room to fit; the audit finding
+        // was one step worse — an add that clearly doesn't fit was
+        // still allowed, backed only by a warning toast that (with the
+        // old unbounded notification stack) got buried under identical
+        // repeats within a few more adds. Now: compute what the run
+        // WOULD be with this candidate BEFORE it's ever pushed into
+        // state.items, and refuse the mutation entirely unless the rep
+        // explicitly opts in via the toast's "Add anyway" action
+        // (which re-calls this method with opts.force = true).
+        // Scoped to the BACK wall only — _currentRunWidthIn (C5) only
+        // ever measures the back run; a side-wall add can't trip it.
+        const required = this._currentRunWidthIn(newItem);
+        const overflowsRoom = newItem.wall === WALLS.BACK
+            && required > this.state.room.width_in;
+        if (overflowsRoom && !force) {
+            this._toast(
+                `${product.name} won't fit — run needs ` +
+                `${Math.ceil(required)}″, room is ` +
+                `${this.state.room.width_in}″. Remove a cabinet, widen ` +
+                `the room, or add it anyway.`,
+                {
+                    type: "warning",
+                    sticky: true,
+                    actions: [{
+                        label: "Add anyway",
+                        onClick: () => this._addCabinetFromProduct(
+                            product, targetX, wallOverride, { force: true }),
+                    }],
+                }
+            );
+            return;   // refused — nothing added, nothing saved
+        }
+
         this.state.items = [...(this.state.items || []), newItem];
         this.state.selected = newItem;
         this._recomputeLayoutFromItems();
-        // T7 — NO silent room growth (the spec's "54->60->84" defect):
-        // an overflowing run gets an honest warning, never a mutated
-        // room. The server-side validators flag the overflow too.
-        const required = this._currentRunWidthIn();
-        if (required > this.state.room.width_in) {
-            this.notification.add(
-                `Run needs ${Math.ceil(required)}″ — room is ` +
-                `${this.state.room.width_in}″. Remove a cabinet or ` +
-                `widen the room.`,
-                { type: "warning" }
-            );
-        }
         // D14 — Drop UX feedback: tell the rep WHERE it landed when
         // they used drop-positioning (vs the bare "Added X" toast).
         //
@@ -1157,19 +1262,31 @@ class SouthbrookKitchenConfigurator extends Component {
         // scope here): true positional side-wall drops — the engine
         // only supports append-by-run-order today, so a non-back wall
         // always gets a wall-only toast, never a position.
-        if (newItem.wall !== WALLS.BACK) {
-            this.notification.add(
+        //
+        // SBK-030 — the force=true path (explicit "Add anyway" opt-in)
+        // gets its own honest confirmation instead of the generic
+        // "Added X" — the rep just overrode a refusal and should see
+        // the overflow acknowledged, not silently dropped.
+        if (overflowsRoom && force) {
+            this._toast(
+                `Added ${product.name} anyway — run needs ` +
+                `${Math.ceil(required)}″, room is ` +
+                `${this.state.room.width_in}″.`,
+                { type: "warning" }
+            );
+        } else if (newItem.wall !== WALLS.BACK) {
+            this._toast(
                 `Added ${product.name} to ${this._wallLabel(newItem.wall)} wall`,
                 { type: "success" }
             );
         } else if (typeof targetX === "number" && !Number.isNaN(targetX)) {
             const finalX = newItem.x_position_in;
-            this.notification.add(
+            this._toast(
                 `Added ${product.name} at ${finalX}″`,
                 { type: "success" }
             );
         } else {
-            this.notification.add(`Added ${product.name}`, { type: "success" });
+            this._toast(`Added ${product.name}`, { type: "success" });
         }
         // C2 — a cabinet landing on a non-back wall (or added to a
         // design that already spans 2+ walls) may complete an inside
@@ -1207,10 +1324,19 @@ class SouthbrookKitchenConfigurator extends Component {
     // left-wall run's cabinet widths were summed in with the back
     // wall's and grew room.width_in to fit (measured: 120in -> 240in
     // for a single added left-wall run) — the C5 defect.
-    _currentRunWidthIn() {
+    //
+    // SBK-030 — takes an optional `candidate` item so the over-length
+    // gate in _addCabinetFromProduct can ask "what WOULD the run be if
+    // this were added" BEFORE mutating state.items, instead of the old
+    // push-then-measure-then-warn order. `_currentRunWidthIn()` (no
+    // arg) reduces to exactly the prior behavior.
+    _currentRunWidthIn(candidate = null) {
         const items = (this.state.items || []).filter(
             it => (it.wall || "back") === "back"
         );
+        if (candidate && (candidate.wall || "back") === "back") {
+            items.push(candidate);
+        }
         const by = {};
         for (const it of items) {
             const t = it.cabinet_type || "other";
@@ -1657,13 +1783,11 @@ class SouthbrookKitchenConfigurator extends Component {
             const doomedType = doomed.cabinet_type || "item";
             e.preventDefault();
             this._removeSelectedCabinet();
-            if (this.notification && this.notification.add) {
-                this.notification.add(
-                    "Removed " + doomedName + " (" + doomedType +
-                    ") from the layout and quote.",
-                    { type: "info" }
-                );
-            }
+            this._toast(
+                "Removed " + doomedName + " (" + doomedType +
+                ") from the layout and quote.",
+                { type: "info" }
+            );
             return;
         }
     }
@@ -1715,12 +1839,10 @@ class SouthbrookKitchenConfigurator extends Component {
         item.rotation_deg = (cur + 360) % 360;
         item.pinned = true;
         this._savePinnedPosition(item);
-        if (this.notification && this.notification.add) {
-            this.notification.add(
-                `Rotated ${item.product_name || item.name || "cabinet"} to ${item.rotation_deg}°`,
-                { type: "success" }
-            );
-        }
+        this._toast(
+            `Rotated ${item.product_name || item.name || "cabinet"} to ${item.rotation_deg}°`,
+            { type: "success" }
+        );
         this._queueAutoSave();
     }
 
@@ -1789,7 +1911,7 @@ class SouthbrookKitchenConfigurator extends Component {
             this._recomputeLayoutFromItems();
         }
         if (result && result.layout_warning) {
-            this.notification.add(result.layout_warning,
+            this._toast(result.layout_warning,
                 { type: "warning", sticky: true });
         }
     }
@@ -1800,7 +1922,7 @@ class SouthbrookKitchenConfigurator extends Component {
         // design, so a manual save (button or Cmd/Ctrl+S) must also be
         // refused rather than overwriting it.
         if (this._hydrationFailed) {
-            this.notification.add(
+            this._toast(
                 "Saving is disabled — the saved design failed to load. "
                 + "Reload the page to try again.",
                 { type: "danger", sticky: true }
@@ -1837,7 +1959,7 @@ class SouthbrookKitchenConfigurator extends Component {
             // Previous format ("Saved: ${name}") leaked implementation
             // detail into the message; the rep already sees the design
             // title in the header pill.
-            this.notification.add("Design saved", { type: "success", sticky: false });
+            this._toast("Design saved", { type: "success", sticky: false });
         } catch (e) {
             // Task #48 — actionable error when the server rejects for
             // missing partner. Server-side validation raises with a
@@ -1848,12 +1970,12 @@ class SouthbrookKitchenConfigurator extends Component {
                 && !this.state.portalUser
                 && /partner|customer/i.test(msg);
             if (missingPartner) {
-                this.notification.add(
+                this._toast(
                     "Assign a customer via the picker (top-right) — " + msg,
                     { type: "warning", sticky: true }
                 );
             } else {
-                this.notification.add(msg, { type: "danger", sticky: true });
+                this._toast(msg, { type: "danger", sticky: true });
             }
         } finally {
             this.state.saving = false;
@@ -1897,7 +2019,7 @@ class SouthbrookKitchenConfigurator extends Component {
                     actionToDispatch = action;
                 }
             }
-            this.notification.add(
+            this._toast(
                 orderName
                     ? `Quotation created (${orderName}) — check the Sale Order form`
                     : "Quotation created — check the Sale Order form",
@@ -1912,12 +2034,12 @@ class SouthbrookKitchenConfigurator extends Component {
                 && !this.state.portalUser
                 && /partner|customer/i.test(msg);
             if (missingPartner) {
-                this.notification.add(
+                this._toast(
                     "Assign a customer via the picker (top-right) — " + msg,
                     { type: "warning", sticky: true }
                 );
             } else {
-                this.notification.add(msg, { type: "danger", sticky: true });
+                this._toast(msg, { type: "danger", sticky: true });
             }
         } finally {
             this.state.saving = false;
@@ -2028,7 +2150,7 @@ class SouthbrookKitchenConfigurator extends Component {
         try {
             return this.action.doAction(cta.action);
         } catch (e) {
-            this.notification.add(
+            this._toast(
                 "Couldn't open the cabinet catalog: " + (e.message || e),
                 { type: "danger" }
             );
@@ -2500,6 +2622,48 @@ SouthbrookKitchenConfigurator.template = xml`
         <t t-elif="state.view === 'persp'">Drag cabinet to move • Drag empty space to orbit • Wheel zoom • ←/→ cycle • R reset</t>
         <t t-else="">+/- zoom • Click select • ←/→ cycle • Switch to Iso/Top/Persp to move cabinets</t>
       </div>
+
+      <!-- SBK-030 — local toast stack. Anchored bottom-left INSIDE the
+           scene panel (this <main>, position:relative) — structurally
+           incapable of covering the header (o_sbk_topbar, a sibling
+           above this element) or either sidebar (o_sbk_controls /
+           o_sbk_inventory, both siblings beside it). Caps at 3 visible
+           (state.toastView.visible, already capped by
+           ToastStore.getView()) with an "N more" rollup; every close
+           target is a real ≥32×32 <button>; "Dismiss all" clears the
+           whole stack including the rolled-up overflow in one click. -->
+      <div t-if="state.toastView.visible.length" class="o_sbk_toast_stack"
+           role="status" aria-live="polite">
+        <div t-foreach="state.toastView.visible" t-as="toast" t-key="toast.id"
+             t-att-class="'o_sbk_toast o_sbk_toast_' + toast.type">
+          <div class="o_sbk_toast_body">
+            <span class="o_sbk_toast_message">
+              <t t-esc="toast.message"/>
+              <span t-if="toast.count &gt; 1" class="o_sbk_toast_count">
+                × <t t-esc="toast.count"/>
+              </span>
+            </span>
+            <div t-if="toast.actions" class="o_sbk_toast_actions">
+              <button t-foreach="toast.actions" t-as="toastAction" t-key="toastAction.label"
+                      type="button" class="o_sbk_toast_action"
+                      t-on-click="() => this._runToastAction(toast, toastAction)">
+                <t t-esc="toastAction.label"/>
+              </button>
+            </div>
+          </div>
+          <button type="button" class="o_sbk_toast_close"
+                  t-att-aria-label="'Dismiss: ' + toast.message"
+                  title="Dismiss"
+                  t-on-click="() => this._dismissToast(toast.id)">×</button>
+        </div>
+        <div class="o_sbk_toast_footer">
+          <span t-if="state.toastView.overflowCount &gt; 0" class="o_sbk_toast_rollup">
+            +<t t-esc="state.toastView.overflowCount"/> more
+          </span>
+          <button type="button" class="o_sbk_toast_dismiss_all"
+                  t-on-click="_dismissAllToasts">Dismiss all</button>
+        </div>
+      </div>
     </main>
 
     <!-- Right inventory + detail panel -->
@@ -2759,7 +2923,7 @@ SouthbrookKitchenConfigurator.prototype._onCanvasMove = function ({ item, x_posi
         this._savePinnedPosition(item);
     }
     this._recomputeLayoutFromItems();
-    this.notification.add(
+    this._toast(
         `Moved ${item.product_name || item.name || "cabinet"} to ${Math.round(x_position_in)}″`,
         { type: "success" }
     );

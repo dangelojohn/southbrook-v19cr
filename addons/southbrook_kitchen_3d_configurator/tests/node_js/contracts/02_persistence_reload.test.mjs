@@ -61,13 +61,17 @@ test("fail-loud: a rejected load_design_lines sets _hydrationFailed and disables
     assert.equal(h.component._hydrationFailed, true);
     assert.equal(h.component.state.errorCode, "HYDRATION_FAILED");
 
-    // Manual save must refuse — no /save RPC, sticky danger notification —
+    // Manual save must refuse — no /save RPC, sticky danger toast —
     // exactly the overwrite class PR2.5a closed (a failed hydrate must
     // never let the next save full-replace the saved design).
+    // SBK-030 — this component's toasts route through its own local
+    // ToastStore now, not the (still-mocked but unused) `notification`
+    // service — see state.toastView / _toastStore.
     await h.component._saveDesign();
     assert.equal(h.rpcCalls("/southbrook_kitchen/configurator/save").length, 0);
-    assert.equal(h.notificationCalls.length, 1);
-    assert.equal(h.notificationCalls[0].opts.type, "danger");
+    assert.equal(h.component._toastStore.toasts.length, 1);
+    assert.equal(h.component._toastStore.toasts[0].type, "danger");
+    assert.equal(h.component._toastStore.toasts[0].sticky, true);
 
     // The debounced auto-save path is gated the same way.
     h.component._queueAutoSave();

@@ -25,8 +25,9 @@ test("onMoveItem -> _onCanvasMove pins the item, recomputes layout, notifies, qu
     h.component.state.items = [item];
     h.canvasProps().onMoveItem({ item, x_position_in: 36, pinnable: true });
     assert.equal(item.pinned, true, "pinnable move sets item.pinned");
-    assert.equal(h.notificationCalls.length, 1);
-    assert.match(h.notificationCalls[0].message, /Moved .* to 36/);
+    // SBK-030 — local toast (see 02_persistence_reload for the rationale).
+    assert.equal(h.component._toastStore.toasts.length, 1);
+    assert.match(h.component._toastStore.toasts[0].message, /Moved .* to 36/);
     assert.ok(h.component._autoSaveTimer, "_queueAutoSave armed the debounce timer");
     // The real 3s debounce timer would otherwise fire well after this
     // test (and this file's process) moves on, hitting an unregistered
@@ -41,7 +42,7 @@ test("onMoveItem with pinnable=false does not pin, still notifies", async () => 
     h.component.state.items = [item];
     h.canvasProps().onMoveItem({ item, x_position_in: 12, pinnable: false });
     assert.equal(item.pinned, false);
-    assert.equal(h.notificationCalls.length, 1);
+    assert.equal(h.component._toastStore.toasts.length, 1);
     clearTimeout(h.component._autoSaveTimer);
 });
 

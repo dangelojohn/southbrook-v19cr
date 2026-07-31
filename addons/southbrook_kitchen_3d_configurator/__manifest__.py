@@ -129,6 +129,11 @@
             # Empty component registered so the module id resolves;
             # migrated from parent in 24b-e.
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/kitchen_canvas.esm.js",
+            # Task 17 (corner-remediation, 2026-07-30) — SBK-030 toast
+            # discipline. Pure reducer (dedupe/cap/auto-dismiss), no DOM
+            # dependency; imported by kitchen_configurator.js, so it
+            # must load before it, like every other ES module here.
+            "southbrook_kitchen_3d_configurator/static/src/js/toast/toast_store.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/kitchen_configurator.js",
         ],
     },

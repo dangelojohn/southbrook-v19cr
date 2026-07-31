@@ -869,6 +869,165 @@ $sbk-amber:      #B45309;
     text-align: right;
 }
 
+// ─── SBK-030 — local toast stack ──────────────────────────────────────────────
+// Anchored INSIDE .o_sbk_scene_panel (bottom-left), which is
+// `position: relative` — this stack can therefore never cover the
+// topbar or either sidebar, both of which sit OUTSIDE this element in
+// the DOM. z-index 40 clears every other in-panel overlay (viewbar is
+// the highest of those at 8) without needing to fight Odoo's own
+// page-level notification layer, since this component no longer uses
+// that service at all.
+.o_sbk_toast_stack {
+    position: absolute;
+    left: 14px;
+    bottom: 12px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 320px;
+    max-width: calc(100% - 28px);
+    pointer-events: none;   // gaps between toasts let canvas drags through
+
+    // Typo-spec conventions: display font for prose, existing radius /
+    // transition tokens, no new ad-hoc values.
+    font-family: var(--sb-font-display);
+}
+
+.o_sbk_toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 10px 6px 10px 12px;
+    border-radius: var(--sb-radius);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+    font-size: 12px;
+    line-height: 1.4;
+    background: $sbk-white;
+    border: 1px solid $sbk-border;
+    border-left: 3px solid $sbk-accent;
+    color: $sbk-dark;
+    pointer-events: auto;   // the toast itself IS interactive
+}
+.o_sbk_toast_success {
+    border-left-color: $sbk-success;
+    background: rgba(21, 128, 61, 0.06);
+}
+.o_sbk_toast_warning {
+    border-left-color: $sbk-amber;
+    background: #FEF9EC;
+}
+.o_sbk_toast_danger {
+    border-left-color: $sbk-warn;
+    background: #FEF2F2;
+}
+
+.o_sbk_toast_body {
+    flex: 1;
+    min-width: 0;
+}
+.o_sbk_toast_message {
+    display: block;
+    word-break: break-word;
+}
+.o_sbk_toast_count {
+    // Typo-spec item 2 — numeric badge, mono token.
+    font-family: var(--sb-font-mono);
+    font-weight: 700;
+    opacity: 0.7;
+    margin-left: 2px;
+}
+
+.o_sbk_toast_actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+.o_sbk_toast_action {
+    min-height: 28px;
+    padding: 5px 10px;
+    background: $sbk-accent;
+    border: 1px solid $sbk-accent;
+    color: $sbk-white;
+    border-radius: var(--sb-radius-btn);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--sb-transition);
+    &:hover { background: #124e9e; }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
+}
+
+// AC — every close target is >=32x32px (the audit finding was
+// "unreliable ~tiny close targets"). Real <button>, not a text glyph
+// sized to its font.
+.o_sbk_toast_close {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: var(--sb-radius-btn);
+    font-size: 18px;
+    line-height: 1;
+    color: $sbk-mid;
+    opacity: 0.65;
+    cursor: pointer;
+    transition: var(--sb-transition);
+    &:hover {
+        opacity: 1;
+        background: rgba(0, 0, 0, 0.06);
+    }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+        opacity: 1;
+    }
+}
+
+.o_sbk_toast_footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    pointer-events: auto;
+}
+.o_sbk_toast_rollup {
+    font-size: 10px;
+    font-weight: 600;
+    color: $sbk-mid;
+    background: $sbk-white;
+    border: 1px solid $sbk-border;
+    border-radius: 999px;
+    padding: 4px 10px;
+}
+.o_sbk_toast_dismiss_all {
+    min-height: 32px;
+    padding: 6px 12px;
+    background: $sbk-white;
+    border: 1px solid $sbk-border;
+    color: $sbk-mid;
+    border-radius: var(--sb-radius-btn);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--sb-transition);
+    &:hover {
+        background: rgba(0, 0, 0, 0.04);
+        color: $sbk-dark;
+    }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
+}
+
 // ─── Right inventory panel ────────────────────────────────────────────────────
 .o_sbk_inventory {
     background: $sbk-white;
