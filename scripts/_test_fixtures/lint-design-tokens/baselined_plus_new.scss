@@ -1,0 +1,9 @@
+// baselined_plus_new.scss — one baselined violation + one brand-new one.
+
+.alert-box {
+  color: #c92a2a;   // OLD03: baselined, must not print by default
+}
+
+.warn-box {
+  color: #d97706;   // NEW02: new violation, must always fail and print
+}

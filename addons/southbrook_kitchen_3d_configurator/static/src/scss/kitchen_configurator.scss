@@ -889,14 +889,30 @@ $sbk-amber:      #B45309;
 .o_sbk_warning_text { flex: 1; }
 
 // D7 — Filler-strategy selector + snap-hint CTA
-.o_sbk_metric_filler {
+// 2026-07-31 — this used to style the wrapping <div>, but the number
+// lives in a nested <strong> and `.o_sbk_metric strong` (line ~490) sets
+// an explicit 22px/700 there. The more specific rule won, so the filler
+// figure rendered identically to a primary metric — the secondary
+// treatment never applied. Target the <strong>, matching the
+// `.o_sbk_metric_price strong` / `.o_sbk_metric_unplaced strong` idiom.
+.o_sbk_metric_filler strong {
     color: #1e9e6a;
     font-size: 12px;
 }
-// Task 7 (SBK-033) — unresolved/GHOST placeholder count. Warning color
-// (matches the existing $6 remainder banner's palette) so an unresolved
-// slot reads as "needs attention", distinct from the neutral base/wall/
-// corner counters above it.
+// Task 7 (SBK-033) — unresolved/GHOST placeholder count.
+// 2026-07-31 — a colour swap alone left this at the same 22px/700 weight
+// as the neutral base/wall/corner counters, so the one metric that means
+// "this design cannot be quoted yet" read as ordinary. It now carries the
+// same background+border warning idiom as `.o_sbk_warning_blocking`, so
+// it separates from the counters above it at a glance.
+.o_sbk_metric_unplaced {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border-top: 0;
+    border-radius: 4px;
+    background: rgba(180, 83, 9, 0.10);
+    border: 1px solid rgba(180, 83, 9, 0.40);
+}
 .o_sbk_metric_unplaced strong { color: #B45309; }
 .o_sbk_remainder_strategy {
     font-size: 10px;

@@ -78,6 +78,11 @@ by southbrook_floor_traveler.
         # their quote). Reuses the AI-agent gateway's CRM tag + shared
         # provenance patterns (crm + utm come transitively).
         "southbrook_agent_gateway",
+        # Phase 0 design-system consolidation (2026-07-31) — qr_scan.scss
+        # already reads var(--sb-*) tokens; southbrook_ui is the new
+        # canonical, dependency-light token layer those names should
+        # resolve through going forward.
+        "southbrook_ui",
     ],
     # httpx is imported lazily inside southbrook.room.capture._call_anthropic
     # (guarded exactly like addons/southbrook_ai_design/models/

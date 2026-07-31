@@ -60,6 +60,11 @@ RoomOutlinePreview for reuse).
         # shared offerings catalog, and the "AI Agent"/CRM tag pattern
         # (crm + utm come transitively via the gateway).
         "southbrook_agent_gateway",
+        # Phase 0 design-system consolidation (2026-07-31) — this
+        # addon's room_chat.scss already reads var(--sb-*) tokens;
+        # southbrook_ui is the new canonical, dependency-light token
+        # layer those names should resolve through going forward.
+        "southbrook_ui",
     ],
     # httpx is imported lazily inside southbrook.room.chat.agent._call_anthropic
     # (guarded exactly like southbrook_room_capture's own _call_anthropic) so

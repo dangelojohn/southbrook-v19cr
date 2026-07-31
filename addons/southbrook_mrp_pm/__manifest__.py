@@ -51,6 +51,11 @@ analysis. Layered build:
         "southbrook_plm",                # ECO model for M20 notification
         "mrp",                           # workcenter + production + routing
         "maintenance",                   # equipment + condition
+        # Phase 0 design-system consolidation (2026-07-31) — floor.scss
+        # already reads var(--sb-*) tokens; southbrook_ui is the new
+        # canonical, dependency-light token layer those names should
+        # resolve through going forward.
+        "southbrook_ui",
     ],
     "data": [
         # M17 — Floor Manager security group + ACL. Loads FIRST so

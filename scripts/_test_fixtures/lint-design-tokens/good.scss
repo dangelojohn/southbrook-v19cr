@@ -1,0 +1,13 @@
+// good.scss — must NOT be flagged.
+
+// old ok color, no longer used: #2b8a3e
+.neutral {
+  color: #6b3f2a;   // G01: brand walnut, no status context on this or the preceding line
+}
+
+/* success color retired: #1f9d6b */
+.brand {
+  background: #f4ede2;   // G02: linen neutral; the flagged-word comment above is 2 lines up, not adjacent
+}
+
+$brand-sky: #2b4f6b;   // G03: plain brand token, no status keyword anywhere nearby
