@@ -85,6 +85,11 @@ from . import test_layout_manipulation
 # hand-aware variant pick, flip swaps LH->RH.
 from . import test_corner_repair
 
+# Corner remediation T5 (2026-07-30) — ONE corner price-resolution path:
+# the shared `_sb_resolve_corner_variant` / `_sb_variant_price` helper
+# (V3-products.md claim 3).
+from . import test_corner_price_resolution
+
 # Kitchen Templates T6 (2026-07-27) — total_cabinets excludes fillers;
 # filler_count carries the strips; price semantics unchanged.
 from . import test_totals_filler_exclusion

@@ -11,11 +11,15 @@ docs/superpowers/specs/2026-07-27-kitchen-templates-design.md
 No geometry fields live here — `wall` + `run_seq` is the whole spatial
 contract; the kitchen_layout_engine (via action_auto_arrange) owns poses.
 """
+import logging
+
 from odoo import api, fields, models
 
 # Reuse — never fork — the room lexicon and the design-line zone lexicon.
 from odoo.addons.southbrook_estimating.models.southbrook_room import _LAYOUT_SHAPES
 from .kitchen_design import ZONE_SELECTION, _ZONE_FROM_CABINET_TYPE
+
+_logger = logging.getLogger(__name__)
 
 
 class SouthbrookKitchenTemplate(models.Model):
@@ -180,6 +184,30 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             return Product  # archetype known, no linked product -> unresolved
         # Last rung: cabinet_type + exact width among flagged cabinets
         # (again variant-bearing only — see the archetype rung's note).
+        _logger.info(
+            "[kitchen-template] resolver fallback rung fired for slot "
+            "%s (template %s, cabinet_type=%s width=%.2f) — no pin, no "
+            "archetype match", slot.slot_code, self.code,
+            slot.cabinet_type, width_in)
+        # T5 (corner remediation 2026-07-30, V3-products.md claim 3) —
+        # a corner slot MUST resolve through the SAME single resolver
+        # the auto-arrange corner writer uses, not this generic
+        # cabinet_type+width template search: that search would return
+        # `tmpls[:1].product_variant_id` — Odoo's arbitrary "first"
+        # materialized variant for the template — which is not
+        # guaranteed to be the exact-default_code, hand-aware variant
+        # auto-arrange resolves for the identical nominal SKU, and can
+        # carry a different attribute price_extra (a different price
+        # for what a user perceives as the same cabinet). Neither hand
+        # nor base/wall layer is known at this rung (the template slot
+        # carries neither field); "SB-CORNER" is the same base-layer
+        # default action_auto_arrange itself falls back to when a
+        # corner node carries no rule SKU and no layer match
+        # (`SouthbrookKitchenDesign._CORNER_SKU`'s own default).
+        if slot.cabinet_type == "corner":
+            Line = self.env["southbrook.kitchen.design.line"]
+            variant, _tmpl = Line._sb_resolve_corner_variant("SB-CORNER")
+            return variant
         tmpls = self.env["product.template"].search([
             ("southbrook_is_cabinet", "=", True),
             ("southbrook_cabinet_type", "=", slot.cabinet_type),

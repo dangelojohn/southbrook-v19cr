@@ -721,35 +721,19 @@ class SouthbrookKitchenDesign(models.Model):
                 # SKU; _CORNER_SKU stays the legacy-fallback mapping.
                 code = (node.get("sku")
                         or self._CORNER_SKU.get(node["layer"], "SB-CORNER"))
-                # T4a — variant-level lookup FIRST: a multi-variant corner
-                # template (LH + RH after the SB-CORNER repair) has NO
-                # template-level default_code (Odoo only relates it for
-                # single-variant templates), so template-only search would
-                # silently stop finding the corner SKU.
-                Product = self.env["product.product"].sudo()
-                variant = Product.search(
-                    [("default_code", "=", code)], limit=1)
-                tmpl = variant.product_tmpl_id
-                if not tmpl:
-                    tmpl = self.env["product.template"].sudo().search(
-                        [("default_code", "=", code)], limit=1)
-                if tmpl:
-                    # Pick the variant matching the corner node's
-                    # handedness (engine tags "L"/"R"); fall back to any
-                    # variant so single-hand catalogs keep working.
-                    hand = node.get("handed")
-                    if hand in ("L", "R") and len(tmpl.product_variant_ids) > 1:
-                        prefix = "LH" if hand == "L" else "RH"
-                        handed = tmpl.product_variant_ids.filtered(
-                            lambda v: any(
-                                pt.attribute_id.name == "Hinge Side"
-                                and (pt.name or "").startswith(prefix)
-                                for pt in
-                                v.product_template_attribute_value_ids))
-                        variant = handed[:1] or variant
-                    if not variant:
-                        variant = (tmpl.product_variant_id
-                                   or tmpl.product_variant_ids[:1])
+                # T5 — single shared resolver (was inline here): exact
+                # default_code match first (a multi-variant corner
+                # template — LH + RH after the SB-CORNER repair — has NO
+                # template-level default_code, since Odoo only relates it
+                # for single-variant templates, so template-only search
+                # would silently stop finding the corner SKU), then
+                # hand-aware Hinge Side override. Also used by
+                # kitchen_template._resolve_slot's fallback rung,
+                # action_swap_product, and the reconcile mirror, so every
+                # corner-pricing surface resolves the SAME product.product
+                # for the same nominal SKU (V3-products.md claim 3).
+                variant, tmpl = Line._sb_resolve_corner_variant(
+                    code, hand=node.get("handed"))
                 if not variant:
                     _logger.warning(
                         "[auto-arrange] corner SKU %s missing/no-variant — "
@@ -759,7 +743,7 @@ class SouthbrookKitchenDesign(models.Model):
                     "design_id":     design.id,
                     "product_id":    variant.id,
                     "quantity":      1,
-                    "price_unit":    variant.list_price or tmpl.list_price,
+                    "price_unit":    Line._sb_variant_price(variant, tmpl),
                     "cabinet_type":  "corner",
                     # C8 fix — corner lines omitted `zone`, so both
                     # layers silently persisted the field's old truthy
@@ -2980,6 +2964,75 @@ class SouthbrookKitchenDesignLine(models.Model):
             label = type_map.get(line.cabinet_type, line.cabinet_type)
             line.position_label = "%s @ X=%.0f\"" % (label, line.x_position_in)
 
+    # ── T5 (corner remediation 2026-07-30) — ONE corner price-resolution
+    # path (V3-products.md claim 3). Before this, the auto-arrange corner
+    # writer resolved a variant by EXACT default_code match + hand-aware
+    # Hinge Side override, while kitchen_template._resolve_slot's
+    # fallback rung resolved template+width and took Odoo's arbitrary
+    # "first" variant (`product_variant_id`) — two different
+    # product.product rows for the "same" nominal SKU, each with its own
+    # attribute price_extra, producing two different frozen prices for
+    # what a user perceives as one cabinet. `_sb_resolve_corner_variant`
+    # is now the SINGLE resolver (auto-arrange corner writer, the
+    # template fallback rung, action_swap_product's price recompute, and
+    # the reconcile freeze all call it); `_sb_variant_price` is the ONE
+    # price formula. Semantic target is the pre-existing exact-
+    # default_code path — the template path converges TO it.
+    @api.model
+    def _sb_resolve_corner_variant(self, code, hand=None):
+        """Resolve ONE product.product for a corner SKU family.
+
+        Precedence (unchanged from the original auto-arrange corner
+        writer, now shared):
+        1. Exact `default_code` match — lands on whichever specific
+           materialized variant carries that code (e.g. the LH twin
+           `corner_sku_repair.py` backfills `SB-CORNER` onto).
+        2. If `hand` is "L"/"R" and the resolved template has more than
+           one materialized variant, prefer the variant whose "Hinge
+           Side" PTAV name starts with LH/RH.
+        3. Otherwise fall back to the template's default/first variant.
+
+        Returns (variant, tmpl) — both may be empty recordsets when
+        `code` resolves to nothing in the catalog at all.
+        """
+        Product = self.env["product.product"].sudo()
+        variant = Product.search([("default_code", "=", code)], limit=1)
+        tmpl = variant.product_tmpl_id
+        if not tmpl:
+            tmpl = self.env["product.template"].sudo().search(
+                [("default_code", "=", code)], limit=1)
+        if tmpl:
+            if hand in ("L", "R") and len(tmpl.product_variant_ids) > 1:
+                prefix = "LH" if hand == "L" else "RH"
+                handed = tmpl.product_variant_ids.filtered(
+                    lambda v: any(
+                        pt.attribute_id.name == "Hinge Side"
+                        and (pt.name or "").startswith(prefix)
+                        for pt in v.product_template_attribute_value_ids))
+                variant = handed[:1] or variant
+            if not variant:
+                variant = (tmpl.product_variant_id
+                           or tmpl.product_variant_ids[:1])
+        return variant, tmpl
+
+    @api.model
+    def _sb_variant_price(self, variant, tmpl=None):
+        """The ONE price formula for a resolved variant: `lst_price`
+        (the variant's own base + attribute price_extra) with the
+        template's `list_price` as a last-resort fallback.
+
+        Deliberately NOT `variant.list_price` — `product.product`
+        delegates `list_price` to `product.template` via `_inherits`,
+        so it is IDENTICAL for every variant of the same template and
+        silently drops attribute price_extra. `lst_price` is the
+        computed field (`list_price + price_extra`) that actually
+        differs per variant — the "$810-style" exact-variant number V3
+        claim 3 identifies as the correct semantic target.
+        """
+        tmpl = tmpl or (variant.product_tmpl_id if variant else False)
+        return ((variant.lst_price if variant else 0.0)
+                or (tmpl.list_price if tmpl else 0.0))
+
     # ── Task 5 (kitchen templates) — line manipulation API ────────────
     # Server-side formalization of the client-only _swapSelectedProduct /
     # _updateSelectedWidth (kitchen_configurator.js) — the client paths
@@ -3029,7 +3082,8 @@ class SouthbrookKitchenDesignLine(models.Model):
         tmpl = product.product_tmpl_id
         return self._write_then_rearrange({
             "product_id": product.id,
-            "price_unit": product.lst_price or tmpl.list_price or 0.0,
+            # T5 — same shared formula every corner write site uses.
+            "price_unit": self._sb_variant_price(product, tmpl),
             "cabinet_type": tmpl.southbrook_cabinet_type or self.cabinet_type,
             "width_in": tmpl.southbrook_width_in or self.width_in,
             "height_in": tmpl.southbrook_height_in or self.height_in,

@@ -226,11 +226,30 @@ class SouthbrookDesignReconcile(models.AbstractModel):
             # complete dims set. Honesty contract: 0 here means
             # "nothing to report", never a fabricated measurement.
             dims = dline._sb_dims_mm()
+            # T5 (corner remediation 2026-07-30, V3-products.md claim 3) —
+            # for corner lines specifically, recompute price_unit from the
+            # CURRENT variant via the single shared formula every corner
+            # write site now uses, rather than trusting whatever got
+            # frozen into the design line (possibly by a stale pre-fix
+            # formula, or before an upstream catalog edit changed the
+            # resolved variant's price_extra). Cheap and idempotent:
+            # corner lines are DERIVED artifacts regenerated on every
+            # auto-arrange run anyway, and this heals any pre-existing
+            # corner line on the next reconcile tick without touching the
+            # design's own price_unit (a Sprint-1 one-way mirror never
+            # writes back to the design side). Non-corner lines keep the
+            # design line's authored price_unit verbatim, unchanged.
+            price_unit = dline.price_unit
+            if dline.cabinet_type == "corner" and dline.product_id:
+                price_unit = self.env[
+                    "southbrook.kitchen.design.line"
+                ].sudo()._sb_variant_price(
+                    dline.product_id, dline.product_id.product_tmpl_id)
             line_vals = {
                 "order_id":              design.sale_order_id.id,
                 "product_id":            dline.product_id.id,
                 "product_uom_qty":       dline.quantity,
-                "price_unit":            dline.price_unit,
+                "price_unit":            price_unit,
                 "wall_id":               wall.id,
                 "position_from_left_mm": int(round((dline.x_position_in or 0) * IN_TO_MM)),
                 "sb_layout_x_mm":        (dline.x_position_in or 0) * IN_TO_MM,
