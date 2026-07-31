@@ -19,7 +19,15 @@
  * Fixed by recomputing every derivable key fresh from state.items each
  * call and dropping (never spreading forward) whatever isn't
  * recomputable client-side (snap_hint).
+ *   Task 10 (SBK-023) amendment — F13 made remainder_in FRESH but not
+ *   HONEST: it defined remainder_in as the sum of currently-surviving
+ *   filler items' widths, which understated the true gap the moment a
+ *   filler line was deleted without repacking the survivors. Task 10
+ *   redefines remainder_in as the geometric identity (run length minus
+ *   occupied cabinet-run length), independent of which/how-many filler
+ *   items happen to still exist. See the second F13 test below.
  *
+
  * F14 — clicking an inventory/catalog row used to write the raw catalog
  * product straight into `state.selected` (no layout_key), so the
  * "Selected Cabinet" edit drawer's actions (remove/width/swap) would
@@ -158,7 +166,7 @@ test("F13: fresh /layout summary carries filler_price/remainder_in/snap_hint as 
     assert.ok(h.component.state.summary.snap_hint);
 });
 
-test("F13: removing the filler drops stale filler_price/remainder_in/snap_hint instead of carrying them forward", async () => {
+test("F13: removing the filler drops stale filler_price/snap_hint instead of carrying them forward", async () => {
     const h = await mountFreshWithFiller();
     const filler = h.component.state.items.find((it) => it.cabinet_type === "filler");
     assert.ok(filler, "fixture filler item present before removal");
@@ -170,8 +178,18 @@ test("F13: removing the filler drops stale filler_price/remainder_in/snap_hint i
     const s = h.component.state.summary;
     assert.equal(s.filler_price, 0,
         "filler_price must be recomputed from current items (0 fillers left), not spread forward stale");
-    assert.equal(s.remainder_in, 0,
-        "remainder_in must be recomputed from current filler widths (none left), not spread forward stale");
+    // Task 10 (SBK-023) — this used to assert remainder_in === 0 here,
+    // matching the OLD (buggy, "understated") definition of remainder_in
+    // as "sum of currently surviving filler widths". That was the
+    // confirmed SBK-023 finding #7 understated-direction bug: deleting
+    // one filler line doesn't shrink the room's real physical gap, so
+    // reporting 0 lied. remainder_in is now the honest geometric
+    // identity (room width 96 minus the 24in occupied by the surviving
+    // base cabinet = 72), unchanged by a filler item's presence/absence.
+    assert.equal(s.remainder_in, 72,
+        "remainder_in is the geometric gap (room width - occupied cabinet "
+        + "run), not a sum of surviving filler widths — deleting the "
+        + "filler must not shrink the true remaining gap");
     assert.equal(s.cabinet_price, 500, "cabinet_price still reflects the remaining base cabinet");
     assert.equal(s.price, 500);
     assert.ok(!("snap_hint" in s),

@@ -126,7 +126,21 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         module_w = base.product_tmpl_id.southbrook_width_in or 24.0
         rw = float(room_width_in)
         n  = max(0, int(math.floor(rw / module_w)))
-        remainder = rw - n * module_w
+        # Task 10 (SBK-023) — remainder only has meaning in the context of
+        # a real cabinet run; an undersized/empty room (n==0, e.g. the
+        # client's own 12in minimum room width vs. a 24in module) has no
+        # run to complete, so it must not synthesize one. Pre-fix this
+        # computed `remainder = rw` unconditionally for n==0, and the
+        # filler-creation branch below then priced + placed that as a
+        # real (phantom) filler line on a room with ZERO real cabinets —
+        # the confirmed "[FP3] +$140 filler on an empty 12in room" /
+        # "$70 persisted, zero cabinets" findings (V5-partc §SBK-023).
+        # For n >= 1 this is UNCHANGED: `rw - n*module_w` is the honest
+        # geometric gap and stays authoritative for every filler_strategy
+        # (including "scribe" — remainder_in there is by design the true
+        # physical gap the installer scribes on site, decoupled from
+        # filler $, same pattern as "Est. excludes filler by design").
+        remainder = (rw - n * module_w) if n > 0 else 0.0
 
         # Cabinet dimensions for placement
         base_h = base.product_tmpl_id.southbrook_height_in or 34.5

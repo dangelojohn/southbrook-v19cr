@@ -589,7 +589,17 @@ class SouthbrookKitchenConfigurator extends Component {
             // emits `product_name`; alias it here so a hydrated
             // session's selected-cabinet panel isn't blank.
             this.state.items = lines.map(line => this._lineToItem(line));
-            if (this.state.items.length) {
+            // Task 10 (SBK-023) — a design saved before this fix could
+            // have ended up with a lone filler line and ZERO real
+            // cabinets (the confirmed "$70 persisted, zero cabinets"
+            // finding). Reopening such a design must not pre-select
+            // that phantom filler as if it were a real cabinet to edit;
+            // leave nothing selected instead. Any design with at least
+            // one real cabinet keeps the original items[0] selection
+            // unchanged.
+            const hasRealCabinet = this.state.items.some(
+                it => it.cabinet_type !== "filler");
+            if (this.state.items.length && hasRealCabinet) {
                 this.state.selected = this.state.items[0];
             }
             this._recomputeLayoutFromItems();
@@ -1380,11 +1390,9 @@ class SouthbrookKitchenConfigurator extends Component {
 
         let price = 0;
         let fillerPrice = 0;
-        let fillerWidthIn = 0;
         for (const it of items) {
             if (it.cabinet_type === "filler") {
-                fillerPrice   += (it.price    || 0);
-                fillerWidthIn += (it.width_in || 0);
+                fillerPrice += (it.price || 0);
             } else {
                 price += (it.price || 0);
             }
@@ -1402,12 +1410,8 @@ class SouthbrookKitchenConfigurator extends Component {
         // F13 defect.
         //   - cabinet_price mirrors `price` (same definition server-side:
         //     controllers/main.py sums non-filler item prices for both).
-        //   - filler_price / remainder_in ARE recomputable locally:
-        //     remainder_in's established meaning (controllers/main.py's
-        //     /layout: `remainder = rw - n * module_w`) is exactly the
-        //     total width of the filler item(s) that fill that gap, so
-        //     it's safely derived here as the sum of current filler
-        //     widths.
+        //   - filler_price is recomputable locally as the sum of current
+        //     filler items' prices (unchanged by Task 10).
         //   - filler_strategy isn't read from state.summary anywhere in
         //     the template (state.fillerStrategy is used directly) and
         //     snap_hint is NOT recomputable client-side (it needs the
@@ -1416,6 +1420,39 @@ class SouthbrookKitchenConfigurator extends Component {
         //     DROPPED rather than spread forward stale. A fresh /layout
         //     round-trip (a room-dimension edit on a not-yet-hydrated
         //     session) repopulates snap_hint when it's next valid.
+        //
+        // Task 10 (SBK-023) — remainder_in used to be redefined here as
+        // `fillerWidthIn`, the sum of CURRENTLY SURVIVING filler items'
+        // widths. That understated the true gap the moment a user
+        // deleted one filler line (e.g. one half of a "split" pair) —
+        // deleting a filler doesn't repack the survivors to close the
+        // gap (see the "left untouched here on purpose" note above), so
+        // the room's real physical gap is unchanged, but the old formula
+        // reported only half of it. remainder_in must instead be the
+        // HONEST geometric identity — run length minus occupied length —
+        // matching controllers/main.py's `rw - n*module_w` for the same
+        // run. Occupied length is base-cabinet footprint PLUS any corner
+        // cell's footprint on that same wall: a corner cabinet reserves
+        // real run length too (kitchen_design.py folds its footprint
+        // into wall_start_offsets server-side), so it belongs in
+        // "occupied", not in the leftover gap. Scoped to the back wall —
+        // the only run this scalar has ever described (its origin is the
+        // single-wall /layout controller, and packRow above is likewise
+        // back-wall-only); a left/right wall's run length is room.depth_in,
+        // a dimension this one field was never meant to carry. No
+        // cabinets at all (n==0, mirroring the server's own n>0 gate) ->
+        // no honest "remainder" to report either, same as a fresh empty
+        // room never gets a phantom filler.
+        const hasCabinets = items.some(it => it.cabinet_type !== "filler");
+        const backRunOccupiedIn = items
+            .filter(it => (it.wall || "back") === "back"
+                && (it.cabinet_type === "base" || it.cabinet_type === "corner"))
+            .reduce((sum, it) => sum + (it.width_in || 0), 0);
+        const roomWidthIn = (this.state.room && this.state.room.width_in) || 0;
+        const remainderIn = hasCabinets
+            ? Math.max(0, roomWidthIn - backRunOccupiedIn)
+            : 0;
+
         this.state.summary = {
             base_count:    bases.length,
             wall_count:    walls.length,
@@ -1423,7 +1460,7 @@ class SouthbrookKitchenConfigurator extends Component {
             price:         price,
             cabinet_price: price,
             filler_price:  fillerPrice,
-            remainder_in:  fillerWidthIn,
+            remainder_in:  remainderIn,
         };
 
         // Runtime validation — surface a warning if any end-cap panel would
