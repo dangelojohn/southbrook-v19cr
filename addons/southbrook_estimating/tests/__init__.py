@@ -57,6 +57,10 @@ from . import test_corner_family_repair
 # Task 23 (corner-remediation-2026-07-30, SBK-037) — catalogue hygiene:
 # unique, non-empty default_code on cabinet-family variants.
 from . import test_cabinet_variant_ref_repair
+# Deploy-gate hotfix (2026-07-31) — catalog-family duplicate template
+# archive sweep (repair_corner_sku's SB-WALL-CORNER seed variant-first
+# fix + archive_catalog_family_duplicate_templates).
+from . import test_catalog_family_duplicate_archive
 # Task 4b (corner-remediation-2026-07-30 follow-up) — deploy-blocking
 # gap: migrations/19.0.9.2.0/post-migrate.py re-runs the full corner/
 # cabinet-variant repair chain since prod is already at 19.0.9.1.0.

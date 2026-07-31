@@ -38,8 +38,30 @@ def repair_corner_sku(env):
     summary = {"width_fixed": 0, "codes_set": 0, "rh_created": False,
                "wall_corner_created": False}
     Template = env["product.template"]
-    if not Template.search(
-            [("default_code", "=", "SB-WALL-CORNER")], limit=1):
+    Product = env["product.product"]
+    # Deploy-gate hotfix (2026-07-31, same SBK-037-class bug as Task 23's
+    # _resolve_template_sku) — repair_corner_family_skus() below gives
+    # SB-WALL-CORNER a materialized RH twin, at which point its
+    # TEMPLATE-level default_code correctly blanks (Odoo only mirrors a
+    # single variant onto the template field). This function gets
+    # called TWICE in the same upgrade run (19.0.9.1.0's migration, then
+    # 19.0.9.2.0's, each with its own fresh env) — the FIRST call still
+    # sees a non-blank template-level code (twin not created yet) and
+    # correctly finds it; the SECOND call, re-entering AFTER the first
+    # call's twin-creation has been flushed to DB, saw nothing via a
+    # template-only, active-only search and minted a SECOND, single-
+    # variant, attribute-less "SB-WALL-CORNER" template every such pass
+    # — the deploy-gate-caught duplicate. Resolve via the still-unique
+    # VARIANT default_code first (T4a's own LH variant always carries
+    # it, blanking never touches product.product), falling back to the
+    # template-level field only when no variant resolves at all (a
+    # genuinely bare DB).
+    wall_corner_variant = Product.search(
+        [("default_code", "=", "SB-WALL-CORNER")], limit=1)
+    wall_corner_tmpl = (
+        wall_corner_variant.product_tmpl_id if wall_corner_variant else
+        Template.search([("default_code", "=", "SB-WALL-CORNER")], limit=1))
+    if not wall_corner_tmpl:
         vals = {
             "name": "Wall Corner 24",
             "default_code": "SB-WALL-CORNER",
@@ -114,6 +136,16 @@ def repair_corner_sku(env):
     # southbrook_kitchen_3d_configurator/tests/test_corner_repair.py::
     # test_repair_is_idempotent) must keep passing unchanged.
     repair_corner_family_skus(env)
+
+    # Deploy-gate hotfix (2026-07-31) — cleanup pass for any catalog-
+    # family duplicate TEMPLATES a prior run of this same repair chain
+    # (or catalog_expansion.build_catalog()) already minted before the
+    # variant-first fixes above/in catalog_expansion.py landed. Runs
+    # AFTER repair_corner_family_skus so a real template's RH twin
+    # already exists to identify it by, and BEFORE the generic dedup
+    # below (whose corner-family exclusion means it would otherwise
+    # never notice or fix this class of duplicate at all).
+    archive_catalog_family_duplicate_templates(env)
 
     # Task 23 (SBK-037, .superpowers/sdd/corner-remediation-2026-07-30/
     # task-23-brief.md) — same pattern again: its own independent
@@ -487,6 +519,107 @@ def repair_corner_family_skus(env):
 
     if any(summary.values()):
         _logger.info("[T4 corner family repair] %s", summary)
+    return summary
+
+
+def archive_catalog_family_duplicate_templates(env):
+    """Deploy-gate hotfix (2026-07-31) — archive catalog-family
+    duplicate TEMPLATES minted by the exact SBK-037-class bug the T23
+    generic-dedup exclusion above was written to sidestep for the
+    corner family.
+
+    Mechanism (confirmed against a real reproduction, gate DB tmpl
+    13790): once a corner-family template (SB-CORNER, SB-CORNER-BLIND,
+    SB-CORNER-DIAG, SB-WALL-CORNER) gets a materialized "-R" hand
+    twin, its TEMPLATE-level default_code correctly blanks (Odoo only
+    mirrors a single variant). A caller that re-enters this repair
+    chain on a LATER pass with a fresh env — e.g. this module's own
+    two stacked migrations (19.0.9.1.0 then 19.0.9.2.0) both calling
+    repair_corner_sku in the SAME upgrade run — can then find nothing
+    via an active-only, template-level search and mint a SECOND,
+    single-variant, attribute-less TEMPLATE carrying the SAME bare
+    corner-family code on its own lone variant. This is now fixed at
+    the source (repair_corner_sku's own SB-WALL-CORNER seed above, and
+    catalog_expansion.build_catalog()'s existence check), but this
+    sweep cleans up any duplicate that already got minted before those
+    fixes landed (the gate DB has at least one; prod could too, since
+    the exact same two-migration shape exists there).
+
+    Never touches repair_cabinet_variant_refs()'s generic dedup path:
+    corner-family codes are excluded there by design (owned
+    exclusively by this file's own repair, never the generic
+    Width-suffix convention) — which is exactly why a DEDICATED sweep
+    for this specific duplicate shape is needed here instead.
+
+    For each corner-family bare code, if more than one ACTIVE variant
+    anywhere carries it (a genuine cross-TEMPLATE duplicate default_
+    code), the template that ALSO carries the materialized "<code>-R"
+    hand twin is treated as the real one — T4/T4a always creates the
+    twin on the real template, never an impostor. Any OTHER template
+    holding that bare code is archived (never deleted, never
+    resurrected), UNLESS it carries any real sale.order.line or
+    southbrook.kitchen.design.line reference, in which case it is left
+    alone and logged for human review — this bug should only ever
+    produce a same-session, zero-reference impostor, but this never
+    risks a false-positive archive of real business data. Idempotent:
+    an already-archived impostor no longer counts as an active
+    duplicate, so a second call finds nothing left to do.
+    """
+    summary = {"duplicate_templates_archived": 0,
+               "skipped_has_references": 0}
+    Product = env["product.product"]
+    Template = env["product.template"]
+    SaleOrderLine = env["sale.order.line"]
+
+    for base_code in sorted(_CORNER_FAMILY_BASE_CODES):
+        bare_variants = Product.search([("default_code", "=", base_code)])
+        tmpl_ids = set(bare_variants.mapped("product_tmpl_id").ids)
+        if len(tmpl_ids) <= 1:
+            continue  # no cross-template duplicate for this code
+
+        twin_code = base_code + "-R"
+        real_tmpl_ids = set(
+            Product.search([("default_code", "=", twin_code)])
+            .mapped("product_tmpl_id").ids)
+        # The real template is whichever candidate also owns the hand
+        # twin; if none (or, pathologically, more than one) does, fall
+        # back to the lowest template id -- oldest, first-created,
+        # same "first wins, never touch it" discipline as the LSUSAN
+        # sweep above.
+        real_candidates = tmpl_ids & real_tmpl_ids
+        real_id = min(real_candidates) if real_candidates else min(tmpl_ids)
+
+        for dup_id in sorted(tmpl_ids - {real_id}):
+            dup_tmpl = Template.browse(dup_id)
+            dup_variant_ids = bare_variants.filtered(
+                lambda v, _id=dup_id: v.product_tmpl_id.id == _id).ids
+            has_references = bool(SaleOrderLine.search_count(
+                [("product_id", "in", dup_variant_ids)]))
+            if (not has_references
+                    and "southbrook.kitchen.design.line"
+                    in env.registry.models):
+                has_references = bool(
+                    env["southbrook.kitchen.design.line"].search_count(
+                        [("product_id", "in", dup_variant_ids)]))
+            if has_references:
+                summary["skipped_has_references"] += 1
+                _logger.warning(
+                    "[SBK-037 hotfix] %s: candidate duplicate template "
+                    "id=%s carries a real sale-order-line/design-line "
+                    "reference -- skipped, NOT archived, needs human "
+                    "review.", base_code, dup_id)
+                continue
+            _logger.info(
+                "[SBK-037 hotfix] archiving catalog-family duplicate "
+                "template id=%s (%r) for code %s -- real template is "
+                "id=%s.", dup_id, dup_tmpl.name, base_code, real_id)
+            dup_tmpl.active = False
+            summary["duplicate_templates_archived"] += 1
+
+    if any(summary.values()):
+        _logger.info(
+            "[SBK-037 hotfix] archive_catalog_family_duplicate_"
+            "templates: %s", summary)
     return summary
 
 

@@ -255,6 +255,7 @@ class CatalogExpansion(models.AbstractModel):
     @api.model
     def build_catalog(self):
         Template = self.env["product.template"]
+        Product = self.env["product.product"]
         Attr = self.env["product.attribute"]
         AttrVal = self.env["product.attribute.value"]
         AttrLine = self.env["product.template.attribute.line"]
@@ -300,21 +301,47 @@ class CatalogExpansion(models.AbstractModel):
 
         for (sku, name, family_val, category_badge, icon_key, price,
              attr_keys, width_subset) in _CATALOG:
-            # Look up by default_code, OR by name as fallback (covers
-            # re-runs after a prior build wrote the template but lost
-            # default_code through variant recompute — see SKU-fix note
-            # below). active_test=False (T4 code review finding 1a):
-            # a plain, active-only search can't see a template another
-            # repair archived on purpose (e.g. SB-CORNER-LSUSAN, retired
-            # as a duplicate by corner_sku_repair.repair_corner_family_
-            # skus()) — without this, this loop would conclude "doesn't
-            # exist yet" and mint a fresh ACTIVE duplicate with a new id
-            # on every upgrade, silently un-doing that archive. Since
-            # `vals` below never sets "active", finding an archived
-            # record here just updates its name/price/etc in place and
-            # leaves it archived — it does not resurrect it.
+            # Look up by VARIANT default_code first, then template
+            # default_code, then name as a last fallback.
+            # active_test=False throughout (T4 code review finding
+            # 1a): a plain, active-only search can't see a template
+            # another repair archived on purpose (e.g. SB-CORNER-LSUSAN,
+            # retired as a duplicate by corner_sku_repair.
+            # repair_corner_family_skus()) — without this, this loop
+            # would conclude "doesn't exist yet" and mint a fresh
+            # ACTIVE duplicate with a new id on every upgrade, silently
+            # un-doing that archive. Since `vals` below never sets
+            # "active", finding an archived record here just updates
+            # its name/price/etc in place and leaves it archived — it
+            # does not resurrect it.
+            #
+            # Deploy-gate hotfix (2026-07-31, SBK-037-class bug) —
+            # variant-first is now the PRIMARY lookup, not a fallback:
+            # once ANY cabinet template genuinely has more than one
+            # variant (corner_sku_repair.py's RH-twin creation, or
+            # repair_cabinet_variant_refs()'s own hygiene split),
+            # product.template.default_code correctly blanks (Odoo
+            # only mirrors a single variant onto the template field —
+            # see product_config_line.py's _resolve_template_sku for
+            # the identical fix in that consumer). A template-only
+            # search then finds nothing and — because the old code was
+            # `A or B or C`, which short-circuits the instant ANY
+            # clause returns a non-empty (even WRONG) recordset — never
+            # even reaches the name fallback if some OTHER record
+            # happens to carry the code on its own variant/template.
+            # Live-verified: this is exactly how the deploy gate's
+            # duplicate SB-WALL-CORNER template got "adopted" and
+            # renamed to the real one's name instead of the real
+            # template ever being found. Resolving via the variant
+            # first sidesteps the whole blanking trap for every
+            # multi-variant template, not just the one that happened
+            # to be duplicated.
+            ArchiveAwareProduct = Product.with_context(active_test=False)
             ArchiveAwareTemplate = Template.with_context(active_test=False)
+            existing_variant = ArchiveAwareProduct.search(
+                [("default_code", "=", sku)], limit=1)
             existing = (
+                existing_variant.product_tmpl_id if existing_variant else
                 ArchiveAwareTemplate.search([("default_code", "=", sku)], limit=1)
                 or ArchiveAwareTemplate.search([("name", "=", name)], limit=1)
             )

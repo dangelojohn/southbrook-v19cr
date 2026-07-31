@@ -284,3 +284,83 @@ class TestCornerFamilyRepair(TransactionCase):
             self.Template.search(
                 [("default_code", "=", "SB-CORNER-LSUSAN")]),
             "no active SB-CORNER-LSUSAN record may remain")
+
+
+@tagged("post_install", "-at_install", "southbrook", "southbrook_estimating",
+        "corner_catalog_truth")
+class TestRepairCornerSkuWallCornerHotfix(TransactionCase):
+    """Deploy-gate hotfix (2026-07-31) — repair_corner_sku()'s own
+    SB-WALL-CORNER seed-if-missing check (T4a, top of corner_sku_
+    repair.py) used an active-only, template-only search. Once
+    repair_corner_family_skus() (chained from the SAME call) gives the
+    real template an RH twin, its TEMPLATE-level default_code
+    correctly blanks (Odoo only mirrors a single variant) once that
+    compute is genuinely persisted and re-read — which is exactly what
+    happens when repair_corner_sku() is called a SECOND time with a
+    fresh env, as it is on prod/CI (southbrook_estimating's
+    19.0.9.1.0 migration, then its 19.0.9.2.0 migration, both calling
+    repair_corner_sku in the same upgrade run). The old check then
+    found nothing and minted a second "Wall Corner 24" template,
+    single-variant, carrying the same bare SB-WALL-CORNER code — the
+    deploy-gate-caught duplicate (tmpl 13790 on the gate DB, later
+    "adopted"/renamed by catalog_expansion.build_catalog() to look
+    like the real one).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.Product = cls.env["product.product"]
+        cls.Template = cls.env["product.template"]
+
+    def test_second_call_does_not_remint_wall_corner(self):
+        from odoo.addons.southbrook_estimating.models.corner_sku_repair import (
+            repair_corner_sku,
+        )
+        repair_corner_sku(self.env)
+        real = self.Product.search(
+            [("default_code", "=", "SB-WALL-CORNER")], limit=1
+        ).product_tmpl_id
+        self.assertTrue(real, "the real SB-WALL-CORNER template must resolve")
+        self.assertTrue(
+            self.Product.search([("default_code", "=", "SB-WALL-CORNER-R")]),
+            "sanity: the RH twin must already exist")
+
+        # Force the exact precondition the gate hit: the template-
+        # level default_code genuinely blank in the DB. Odoo's own
+        # stored compute eventually reaches this once a template has
+        # more than one variant, but the EXACT recompute timing is
+        # DB-state-dependent (e.g. already "healed" back non-blank by
+        # catalog_expansion.build_catalog()'s own end-of-row
+        # `tmpl.write({"default_code": sku})` on a DB where that
+        # module already ran) and not worth fighting in a test — pin
+        # the observable end-state directly via raw SQL, the same
+        # technique test_cabinet_variant_ref_repair.py's own
+        # test_empty_default_code_filled_from_sibling_when_template_
+        # code_blank uses for the identical class of precondition.
+        self.env.cr.execute(
+            "UPDATE product_template SET default_code = NULL WHERE id = %s",
+            (real.id,))
+        real.invalidate_recordset(["default_code"])
+        self.assertFalse(
+            real.default_code,
+            "sanity: the real template must read blank — the exact "
+            "condition the gate hit")
+
+        second_summary = repair_corner_sku(self.env)
+        self.assertFalse(
+            second_summary["wall_corner_created"],
+            "the second call must not mint a duplicate SB-WALL-CORNER "
+            "template — exactly the deploy-gate-caught bug")
+
+        all_wall_corner_tmpl_ids = set(
+            self.Product.search([("default_code", "=", "SB-WALL-CORNER")])
+            .mapped("product_tmpl_id").ids)
+        self.assertEqual(
+            all_wall_corner_tmpl_ids, {real.id},
+            "no second template carrying SB-WALL-CORNER may exist")
+
+        # Third call for good measure — idempotent, not just "safe
+        # exactly once more".
+        third_summary = repair_corner_sku(self.env)
+        self.assertFalse(third_summary["wall_corner_created"])
