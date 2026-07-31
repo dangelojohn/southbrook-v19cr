@@ -426,11 +426,32 @@ class SouthbrookKitchenTemplateResolve(models.Model):
                     "module width — the room is never grown automatically."
                     % (design.room_width_in, design.room_depth_in, e)) from e
             design.state = "configured"
+
+            # Task 16 (SBK-028) — chatter honesty. `fit["slots"]` is the
+            # PRE-arrange plan (every non-corner slot, one Line.create
+            # each, above). action_auto_arrange can then SUPERSEDE
+            # (archive, never delete) some of those canonical lines when
+            # a real corner cabinet's footprint absorbs them — reporting
+            # the plan count as if it were the final line count would be
+            # dishonest whenever a corner substitution happened. Read the
+            # ACTUAL post-arrange state instead of trusting the plan OR
+            # action_auto_arrange's own returned counters: written/
+            # absorbed/dropped and is_unresolved below are all computed
+            # straight from cabinet_line_ids, so "written" always equals
+            # len(design.cabinet_line_ids) by construction.
+            requested = len(fit["slots"])
+            written = design.cabinet_line_ids  # active only — what the client sees
+            all_slot_lines = design.with_context(
+                active_test=False).cabinet_line_ids.filtered("template_slot_code")
+            absorbed = len(all_slot_lines.filtered(lambda l: not l.active))
+            dropped = max(requested - len(all_slot_lines), 0)
+            unresolved = len(written.filtered("is_unresolved"))
             design.message_post(body=(
-                "Instantiated from template %s (%s): %d slot(s), %d "
-                "unresolved%s." % (
-                    self.name, self.code, len(fit["slots"]),
-                    len(design.cabinet_line_ids.filtered("is_unresolved")),
+                "Instantiated from template %s (%s): %d slot(s) requested, "
+                "%d line(s) written, %d absorbed into corner geometry, "
+                "%d dropped, %d unresolved%s." % (
+                    self.name, self.code, requested, len(written), absorbed,
+                    dropped, unresolved,
                     "; corner preference expressed by %d template slot(s) — "
                     "corner geometry is engine-derived" % len(corner_slots)
                     if corner_slots else "")))

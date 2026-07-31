@@ -96,6 +96,35 @@ class TestSaveDesignAcl(TransactionCase):
         cls.archived_tmpl.southbrook_cabinet_type = "base"
         cls.archived_variant = cls.archived_tmpl.product_variant_id
 
+        # Task 16 (SBK-028) — an appliance-space stand-in, shaped exactly
+        # like the shipped SBK-APPL-* seed data: southbrook_is_cabinet
+        # stays False (never in the drag catalog) but
+        # southbrook_cabinet_type='appliance'. list_price is deliberately
+        # NONZERO here — the whole point of the test below is that this
+        # never reaches the persisted line regardless of what the catalog
+        # or a channel pricelist would otherwise charge for it.
+        cls.appliance_tmpl = cls.env["product.template"].create({
+            "name": "Appliance Space — Test Range",
+            "type": "consu",
+            "sale_ok": True,
+            "list_price": 999.0,
+        })
+        cls.appliance_tmpl.southbrook_cabinet_type = "appliance"
+        cls.appliance_variant = cls.appliance_tmpl.product_variant_id
+        assert cls.appliance_variant
+
+        # Same shape, but sale_ok=False — ctype='appliance' must NOT
+        # bypass the sale_ok leg of the contract.
+        cls.appliance_unsaleable_tmpl = cls.env["product.template"].create({
+            "name": "Appliance Space — Unsaleable",
+            "type": "consu",
+            "sale_ok": False,
+            "list_price": 0.0,
+        })
+        cls.appliance_unsaleable_tmpl.southbrook_cabinet_type = "appliance"
+        cls.appliance_unsaleable_variant = (
+            cls.appliance_unsaleable_tmpl.product_variant_id)
+
     def _controller(self):
         return ctrl_main.SouthbrookKitchenConfiguratorController()
 
@@ -230,3 +259,134 @@ class TestSaveDesignAcl(TransactionCase):
         ])
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0].product_id, self.good_variant)
+
+    # ── Task 16 (SBK-028) — the ctype='appliance' catalog widening ─────
+    def test_08_appliance_product_admitted_at_zero_price(self):
+        """The catalog contract's narrow ctype='appliance' OR-branch
+        admits the product, but price_unit is HARD-PINNED to 0.0 — never
+        routed through _channel_price — even though this product's own
+        list_price is 999.0. This is the actual money-vector gate: the
+        widening must never become a way to persist a non-zero-priced
+        line for a product that was never meant to be sold on its own."""
+        _, lines = self._save([self.appliance_variant.id])
+        self.assertEqual(
+            len(lines), 1,
+            "an appliance-space stand-in must be admitted by the "
+            "catalog contract now (Task 16)")
+        self.assertEqual(lines[0].product_id, self.appliance_variant)
+        self.assertEqual(lines[0].cabinet_type, "appliance")
+        self.assertEqual(
+            lines[0].price_unit, 0.0,
+            "appliance lines must never be priceable above 0 through "
+            "save_design, regardless of the product's own list_price")
+
+    def test_09_appliance_still_requires_sale_ok(self):
+        """ctype='appliance' is an OR-branch on TOP of sale_ok=True, not
+        a bypass of it — an unsaleable appliance product must still be
+        rejected."""
+        _, lines = self._save([self.appliance_unsaleable_variant.id])
+        self.assertEqual(
+            len(lines), 0,
+            "sale_ok=False must still reject an appliance-typed product")
+
+    def test_10_appliance_line_survives_unchanged_resave(self):
+        """Regression pin for the prod-verified bug (design 102: a
+        U-shape design's RANGE slot vanished): before Task 16, an
+        appliance line's product_id failed the catalog contract on
+        EVERY save, so a second save_design call with the exact same
+        payload the client just loaded (e.g. a template-instantiated
+        design reopened in the 3D configurator and saved again with no
+        changes) silently unlinked the appliance line via the stale-
+        keys cleanup. Two successive identical saves must both keep it."""
+        items = [
+            {
+                "product_id":    self.good_variant.id,
+                "layout_key":    "base-1",
+                "x_position_in": 0,
+            },
+            {
+                "product_id":    self.appliance_variant.id,
+                "layout_key":    "range-1",
+                "x_position_in": 30,
+                "appliance_type": "range",
+            },
+        ]
+        controller = self._controller()
+        with stubbed_request(self.env):
+            controller.save_design(
+                name=self.design.name,
+                room={"width_in": 120, "depth_in": 96, "height_in": 96},
+                items=items, partner_id=self.partner.id,
+                design_id=self.design.id,
+            )
+        lines_after_1 = self.env["southbrook.kitchen.design.line"].search([
+            ("design_id", "=", self.design.id),
+            ("origin", "=", "configurator"),
+        ])
+        self.assertEqual(len(lines_after_1), 2, "first save must persist both lines")
+        appl_line = lines_after_1.filtered(
+            lambda l: l.cabinet_type == "appliance")
+        self.assertEqual(len(appl_line), 1)
+        self.assertEqual(appl_line.appliance_type, "range")
+
+        # Re-save the EXACT same payload — simulates "load, then save
+        # with no edits". The appliance line must NOT be dropped.
+        with stubbed_request(self.env):
+            controller.save_design(
+                name=self.design.name,
+                room={"width_in": 120, "depth_in": 96, "height_in": 96},
+                items=items, partner_id=self.partner.id,
+                design_id=self.design.id,
+            )
+        lines_after_2 = self.env["southbrook.kitchen.design.line"].search([
+            ("design_id", "=", self.design.id),
+            ("origin", "=", "configurator"),
+        ])
+        self.assertEqual(
+            len(lines_after_2), 2,
+            "an unchanged re-save must not silently drop the appliance line")
+        self.assertEqual(
+            len(lines_after_2.filtered(lambda l: l.cabinet_type == "appliance")),
+            1, "appliance line must survive the second save")
+
+    def test_11_appliance_type_round_trips_through_load_and_resave(self):
+        """load_design_lines must echo appliance_type (it now persists it
+        on save) so a load -> unmodified resave doesn't quietly blank
+        the field back to False."""
+        controller = self._controller()
+        with stubbed_request(self.env):
+            controller.save_design(
+                name=self.design.name,
+                room={"width_in": 120, "depth_in": 96, "height_in": 96},
+                items=[{
+                    "product_id":     self.appliance_variant.id,
+                    "layout_key":     "range-rt",
+                    "x_position_in":  0,
+                    "appliance_type": "range",
+                }],
+                partner_id=self.partner.id,
+                design_id=self.design.id,
+            )
+        with stubbed_request(self.env):
+            loaded = controller.load_design_lines(design_id=self.design.id)
+        line_dict = next(
+            it for it in loaded["lines"] if it["layout_key"] == "range-rt")
+        self.assertEqual(line_dict["appliance_type"], "range")
+
+        # Resave the exact dict the client just loaded, unmodified.
+        with stubbed_request(self.env):
+            controller.save_design(
+                name=self.design.name,
+                room={"width_in": 120, "depth_in": 96, "height_in": 96},
+                items=[line_dict],
+                partner_id=self.partner.id,
+                design_id=self.design.id,
+            )
+        line = self.env["southbrook.kitchen.design.line"].search([
+            ("design_id", "=", self.design.id),
+            ("origin", "=", "configurator"),
+            ("layout_key", "=", "range-rt"),
+        ], limit=1)
+        self.assertEqual(
+            line.appliance_type, "range",
+            "appliance_type must survive an unmodified load -> resave round trip")

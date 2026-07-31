@@ -97,3 +97,76 @@ class TestTemplateInstantiate(TransactionCase):
         b1 = design.cabinet_line_ids.filtered(
             lambda l: l.template_slot_code == "B1")
         self.assertEqual(b1.width_in, 21.0)
+
+    # ── Task 16 (SBK-028) — appliance footprint is genuinely RESERVED ──
+    # by the run math, not just cosmetically present as a line. T2-SW-10's
+    # back wall: SINK (33in, fixed) + B1 (24in, repeat_ok) + RANGE
+    # (30in, fixed appliance) + W1 (wall layer, doesn't consume floor
+    # capacity). Room width 120in, module 24in.
+    #   fixed[back]    = 33 (SINK) + 30 (RANGE) = 63
+    #   capacity[back] = floor((120 - 63) / 24) = 2   <- B1 may grow by 2
+    #   n_fixed_modules = 2 floor non-repeat/repeat slots (SINK+B1) - 1 repeat = 1
+    #   n_max = 1 + 2 = 3
+    # If the 30in RANGE were NOT reserved, capacity would floor
+    # ((120-33)/24) = 3 and n_max would be 4 instead — the exact
+    # off-by-one a silently-dropped appliance line would produce.
+    def test_appliance_reservation_bounds_repeat_growth(self):
+        fit = self.tpl.parametric_fit(module_width_in=24.0)
+        self.assertTrue(fit["ok"], fit["message"])
+        self.assertEqual(
+            fit["n_max"], 3,
+            "the RANGE slot's 30in must be subtracted from the back "
+            "wall's capacity BEFORE computing how many extra B1 modules "
+            "can grow into it")
+        # One more than n_max must fail — proves the cap is load-bearing,
+        # not a coincidence of the default count.
+        with self.assertRaises(UserError):
+            self.tpl.action_instantiate(cabinet_count=4, module_width_in=24.0)
+
+    def test_appliance_reservation_consumes_wall_length_no_overlap(self):
+        """The 30in RANGE gap must occupy real, exclusive wall length —
+        every other floor cabinet on the run packs AROUND it, never
+        through it, and the run never exceeds the room."""
+        design = self.tpl.action_instantiate(cabinet_count=3, module_width_in=24.0)
+        floor = design.cabinet_line_ids.filtered(
+            lambda l: l.wall == "back" and l.cabinet_type != "wall"
+        ).sorted(lambda l: l.x_position_in)
+        # SINK(33) + B1(24) + B1(24) + RANGE(30) — nothing absorbed
+        # (no corner in this template) and nothing dropped.
+        self.assertEqual(len(floor), 4)
+        widths = floor.mapped("width_in")
+        self.assertEqual(sum(widths), 111.0)
+        # No overlap: each line's [x, x+width] interval is disjoint from
+        # the next along the run.
+        prev_end = 0.0
+        for line in floor:
+            self.assertGreaterEqual(
+                line.x_position_in + 1e-6, prev_end,
+                "cabinet run must never overlap the previous line's "
+                "reserved footprint")
+            prev_end = line.x_position_in + line.width_in
+        self.assertLessEqual(prev_end, design.room_width_in + 1e-6)
+        # The RANGE slot itself really did reserve exactly 30in.
+        range_line = floor.filtered(lambda l: l.cabinet_type == "appliance")
+        self.assertEqual(len(range_line), 1)
+        self.assertEqual(range_line.width_in, 30.0)
+        self.assertEqual(range_line.price_unit, 0.0)
+
+    def test_instantiation_chatter_reconciles_with_line_count(self):
+        """The instantiation chatter message must report the ACTUAL
+        post-arrange line count (honesty contract, Task 16) — not the
+        pre-arrange slot-plan count. On T2-SW-10 (no corners), nothing
+        gets absorbed, so written == requested slots and both numbers
+        must appear, reconciling with len(cabinet_line_ids)."""
+        design = self.tpl.action_instantiate(cabinet_count=3, module_width_in=24.0)
+        msg = design.message_ids.filtered(
+            lambda m: "Instantiated from template" in (m.body or ""))
+        self.assertEqual(len(msg), 1, "instantiation chatter must be posted")
+        body = msg.body
+        self.assertIn(
+            "%d line(s) written" % len(design.cabinet_line_ids), body,
+            "chatter's written-count must equal len(cabinet_line_ids): %s"
+            % body)
+        self.assertIn("0 absorbed", body)
+        self.assertIn("0 dropped", body)
+        self.assertIn("0 unresolved", body)

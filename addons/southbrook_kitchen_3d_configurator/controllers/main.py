@@ -439,8 +439,9 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         Product = request.env["product.product"]
         # Batch the ACL-respecting catalog lookup into ONE search (was a
         # search() per item — 40-60 queries on a large save). Preserves the
-        # /products contract: southbrook_is_cabinet=True AND sale_ok=True AND
-        # readable by the caller.
+        # /products contract (southbrook_is_cabinet=True AND sale_ok=True
+        # AND readable by the caller) PLUS the narrow ctype='appliance'
+        # admission below (Task 16 / SBK-028) — see that block's comment.
         wanted_ids = []
         for item in items:
             try:
@@ -449,10 +450,30 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 pass
         products_by_id = {}
         if wanted_ids:
+            # Task 16 (SBK-028) — the is_cabinet gate above never admits
+            # the SBK-APPL-* appliance-space stand-ins (southbrook_
+            # is_cabinet=False BY DESIGN — they're excluded from the drag
+            # catalog on purpose; see data/template_support_products.xml).
+            # That meant a design instantiated from a template (which DOES
+            # create real appliance lines — kitchen_template.py
+            # action_instantiate) silently lost its appliance line on the
+            # NEXT save from this 3D configurator page: the client re-
+            # posts every line it currently has loaded, this search
+            # rejected the appliance product_id, the line never made it
+            # into incoming_keys below, and the removed-keys cleanup then
+            # unlinked it as "stale" (prod-verified: design 102's RANGE
+            # slot). Admit ctype='appliance' as a second, narrow OR-branch
+            # — nothing else about the is_cabinet gate widens. The HIGH-1
+            # money vector stays closed: price_unit is hard-pinned to 0.0
+            # for every appliance line below, never routed through
+            # _channel_price (a bigbox/fixed pricelist rule could
+            # otherwise price a $0 stand-in at $98/SKU).
             for _p in Product.search([
                 ("id", "in", wanted_ids),
-                ("product_tmpl_id.southbrook_is_cabinet", "=", True),
                 ("sale_ok", "=", True),
+                "|",
+                    ("product_tmpl_id.southbrook_is_cabinet", "=", True),
+                    ("product_tmpl_id.southbrook_cabinet_type", "=", "appliance"),
             ]):
                 products_by_id[_p.id] = _p
         incoming_keys = set()
@@ -481,21 +502,39 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 # website/controllers/room_api.py:_get_room_scoped).
                 _logger.warning(
                     "save_design: rejected product_id=%d on design=%s "
-                    "(fails /products catalog contract: must be "
-                    "southbrook_is_cabinet=True AND sale_ok=True AND "
-                    "readable by user)",
+                    "(fails /products catalog contract: must be sale_ok="
+                    "True AND readable by user AND either "
+                    "southbrook_is_cabinet=True OR "
+                    "southbrook_cabinet_type='appliance')",
                     pid, design.id,
                 )
                 continue
             tmpl    = product.product_tmpl_id
             layout_key = item.get("layout_key") or "auto-%d" % seq
             incoming_keys.add(layout_key)
+            is_appliance = tmpl.southbrook_cabinet_type == "appliance"
             line_vals = {
                 "sequence":       seq * 10,
                 "product_id":     product.id,
                 "quantity":       1,
-                "price_unit":     self._channel_price(product, pricelist, partner),
+                # Task 16 (SBK-028) — appliance placeholders are ALWAYS
+                # free: never route through _channel_price. This is the
+                # actual price-vector gate for the ctype='appliance'
+                # widening above — every other product type is unaffected
+                # and keeps pricing from the resolved channel pricelist.
+                "price_unit":     (0.0 if is_appliance else
+                                    self._channel_price(product, pricelist, partner)),
                 "cabinet_type":   tmpl.southbrook_cabinet_type,
+                # Whitelist, not passthrough — an unrecognised selection
+                # value would raise ValueError deep in Line.create and
+                # crash the WHOLE batch save (matches the defensive
+                # posture the "wall" field gets above); a value outside
+                # the model's Selection just degrades to unset.
+                "appliance_type": (item.get("appliance_type")
+                                    if item.get("appliance_type") in (
+                                        "range", "fridge", "dishwasher",
+                                        "hood", "other")
+                                    else False),
                 "width_in":       item.get("width_in",  tmpl.southbrook_width_in or 24.0),
                 "height_in":      item.get("height_in", tmpl.southbrook_height_in or 34.5),
                 "depth_in":       item.get("depth_in",  tmpl.southbrook_depth_in or 24.0),
@@ -887,6 +926,10 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 # migration) reads back as "back" for backward compat,
                 # matching the model field's own default.
                 "wall":           line.wall or "back",
+                # Task 16 (SBK-028) — round-trip appliance_type so a
+                # load -> unmodified resave doesn't blank it out (save_design
+                # now writes this field for cabinet_type='appliance' lines).
+                "appliance_type": line.appliance_type or False,
             })
         return out
 
