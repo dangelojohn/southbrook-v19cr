@@ -64,10 +64,24 @@ class TestUShapeTemplate(TransactionCase):
         self.assertFalse(design.cabinet_line_ids.filtered("is_unresolved"))
         self.assertGreater(design.estimated_price, 0.0)
         self.assertEqual(design.room_width_in, 120.0)  # never grown
+        # Task 1 (corner-remediation 2026-07-30) — the real issue-dict key
+        # is "severity", not "blocking" (V2-validator.md Claim 1): the
+        # original `i.get("blocking")` was always None, so this assertion
+        # was a silent no-op tautology that never actually exercised
+        # _check_production_ready. Customer/BOM gates are genuinely out
+        # of scope here (this design carries no partner_id, and this bare
+        # test DB may not seed every catalog BOM) — every OTHER blocking
+        # code (collision, out-of-room, hand-mismatch, ...) must still be
+        # empty on a freshly instantiated + arranged shipped template.
+        blocking = [i for i in design._check_production_ready()
+                    if i["severity"] == "blocking"]
+        geometry_blocks = [i for i in blocking
+                           if i["code"] not in ("MISSING_CUSTOMER",
+                                                 "MISSING_BOM")]
         self.assertFalse(
-            [i for i in design._check_production_ready()
-             if i.get("blocking")],
-            "a shipped template must instantiate with no blocking issues")
+            geometry_blocks,
+            "a shipped template must instantiate with no geometry/hand/"
+            "bounds blocking issues: %s" % geometry_blocks)
 
     def test_flip_keeps_both_corners_hands_swapped(self):
         design = self.tpl.action_instantiate()

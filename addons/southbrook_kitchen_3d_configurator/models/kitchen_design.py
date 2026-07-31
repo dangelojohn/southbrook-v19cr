@@ -13,6 +13,39 @@ from odoo.addons.southbrook_estimating.models import kitchen_layout_engine
 
 _logger = logging.getLogger(__name__)
 
+# Inches -> millimetres, matching kitchen_layout_engine's metric-only
+# geometry primitives (COORDINATE_CONTRACT.md). Reused by every
+# _check_production_ready block below that hands persisted inch
+# fields to the engine.
+_MM_PER_IN = 25.4
+
+
+def _line_ref(*items):
+    """Message hygiene (Task 1, corner-remediation 2026-07-30) — appends
+    ' (line #<id>)' once per involved `southbrook.kitchen.design.line`
+    so an issue naming a product that repeats across lines (e.g. two
+    SB-WALL-CORNER lines at different junctions, V2-validator.md Claim 2)
+    is still attributable to one specific record instead of only a
+    display name. Accepts recordsets, bare ids, or (nested) iterables of
+    either; falsy/empty args are skipped. Pure — no `self`, safe to call
+    from anywhere in this module."""
+    ids = []
+
+    def _collect(item):
+        if not item:
+            return
+        if hasattr(item, "ids"):
+            ids.extend(item.ids)
+        elif isinstance(item, (list, tuple, set)):
+            for sub in item:
+                _collect(sub)
+        else:
+            ids.append(item)
+
+    for item in items:
+        _collect(item)
+    return "".join(" (line #%d)" % i for i in ids)
+
 
 class SouthbrookKitchenDesign(models.Model):
     _name = "southbrook.kitchen.design"
@@ -1012,10 +1045,11 @@ class SouthbrookKitchenDesign(models.Model):
             issues.append({
                 "code":     "UNRESOLVED_SLOT",
                 "severity": "blocking",
-                "message":  "Template slot '%s' has no matching product yet. "
-                            "Swap the placeholder for a real cabinet before "
-                            "quoting." % (line.template_slot_code
-                                          or line.display_name),
+                "message":  ("Template slot '%s' has no matching product yet. "
+                             "Swap the placeholder for a real cabinet before "
+                             "quoting." % (line.template_slot_code
+                                           or line.display_name))
+                            + _line_ref(line),
             })
 
         # 2) Customer required — message polished 2026-07-01 task #48
@@ -1032,35 +1066,158 @@ class SouthbrookKitchenDesign(models.Model):
                             "pick 'Walk-in Customer').",
             })
 
-        # 3) Collision detection per cabinet_type (skip fillers — they
-        #    intentionally bridge gaps).
+        # 3) Collision detection — grouped by (wall, zone), comparing REAL
+        #    anchor-convention footprints (kitchen_layout_engine.
+        #    footprint_from_anchor_mm — the same primitive check #7 uses),
+        #    with a 2mm tolerance. Skip fillers/panels — they intentionally
+        #    bridge gaps / attach flush to a host's face.
+        #
+        #    C-fix (Task 1, corner-remediation 2026-07-30) — the prior
+        #    "group by cabinet_type, sort by x_position_in, compare
+        #    adjacent pairs" heuristic had no wall/zone/rotation awareness
+        #    at all: a left-wall cabinet's x_position_in is CONSTANT
+        #    across its whole run (cross-axis offset, not along-wall
+        #    position), so any two same-type cabinets sharing a wall (or
+        #    even opposite walls that happened to sort adjacently) tied
+        #    on x and false-positived. Worse, a base-layer corner and its
+        #    stacked wall-layer corner share the SAME x/z cell by design
+        #    (different elevation only) and were guaranteed to collide —
+        #    firing on every shipped L/U template with wall cabinets
+        #    (V1-geometry.md / V2-validator.md Claims 1/2/6). Grouping by
+        #    (wall, zone) first means a base-vs-wall-layer pair or a
+        #    left-vs-right-wall pair is never even compared; the
+        #    footprint math (not a coordinate heuristic) then still
+        #    blocks a genuine same-wall same-zone overlap.
+        # by_type still feeds checks #8/#9/#10 below (tall/wall vertical
+        # collision, orphan filler, panel wall-attach) — unchanged from
+        # before this rewrite, kept for those checks only; the collision
+        # scan itself now runs on by_wall_zone (below).
         by_type = {}
         for line in self.cabinet_line_ids:
             by_type.setdefault(line.cabinet_type, []).append(line)
-        for ct, lines in by_type.items():
-            if ct in ("filler", "panel"):
+
+        _CHECK3_MM = _MM_PER_IN
+        by_wall_zone = {}
+        for line in self.cabinet_line_ids:
+            if line.cabinet_type in ("filler", "panel"):
                 continue
-            ordered = sorted(lines, key=lambda l: l.x_position_in)
-            for i in range(len(ordered) - 1):
-                a, b = ordered[i], ordered[i + 1]
-                if a.x_position_in + a.width_in > b.x_position_in + 0.01:
+            key = (line.wall or "back", line.zone or "base_run")
+            by_wall_zone.setdefault(key, []).append(line)
+        for (wall, zone), lines in by_wall_zone.items():
+            for i in range(len(lines)):
+                for j in range(i + 1, len(lines)):
+                    a, b = lines[i], lines[j]
+                    cab_a = {"width_mm": (a.width_in or 0) * _CHECK3_MM,
+                             "depth_mm": (a.depth_in or 0) * _CHECK3_MM}
+                    cab_b = {"width_mm": (b.width_in or 0) * _CHECK3_MM,
+                             "depth_mm": (b.depth_in or 0) * _CHECK3_MM}
+                    place_a = {"x": (a.x_position_in or 0) * _CHECK3_MM,
+                               "z": (a.z_position_in or 0) * _CHECK3_MM,
+                               "rotation_deg": a.rotation_deg or 0}
+                    place_b = {"x": (b.x_position_in or 0) * _CHECK3_MM,
+                               "z": (b.z_position_in or 0) * _CHECK3_MM,
+                               "rotation_deg": b.rotation_deg or 0}
+                    fp_a = kitchen_layout_engine.footprint_from_anchor_mm(
+                        cab_a, place_a)
+                    fp_b = kitchen_layout_engine.footprint_from_anchor_mm(
+                        cab_b, place_b)
+                    if not kitchen_layout_engine.footprints_overlap(
+                            fp_a, fp_b, eps=2.0):
+                        continue
                     issues.append({
                         "code":     "CABINET_COLLISION",
                         "severity": "blocking",
                         "message":  (
-                            "%s cabinets overlap at x=%.1f\": %s extends past %s start"
-                        ) % (
-                            ct.title(),
-                            b.x_position_in,
-                            a.product_id.display_name,
-                            b.product_id.display_name,
-                        ),
+                            "Cabinets overlap on the %s wall (%s zone): "
+                            "%s and %s occupy the same space"
+                        ) % (wall, zone, a.product_id.display_name,
+                             b.product_id.display_name) + _line_ref(a, b),
                     })
+
+        # 3b) NEW — out-of-room bounds (V2 §4b). `obb_within_room` is the
+        #     rotation-safe, anchor-convention in-room primitive — defined,
+        #     unit-tested, but never wired into the validator, so a
+        #     cabinet dragged outside the room in the 3D view and then
+        #     pinned (taken out of auto-arrange's control) sailed through
+        #     validation unchecked. Catches e.g. real prod debris parked
+        #     at x=1,000,000" (design 99).
+        _OOB_MM = _MM_PER_IN
+        room_box = {"width_mm": (self.room_width_in or 0) * _OOB_MM,
+                    "depth_mm": (self.room_depth_in or 0) * _OOB_MM}
+        for line in self.cabinet_line_ids:
+            if line.cabinet_type in ("filler", "panel"):
+                continue
+            cab = {"width_mm": (line.width_in or 0) * _OOB_MM,
+                   "depth_mm": (line.depth_in or 0) * _OOB_MM}
+            place = {"x": (line.x_position_in or 0) * _OOB_MM,
+                     "z": (line.z_position_in or 0) * _OOB_MM,
+                     "rotation_deg": line.rotation_deg or 0}
+            if kitchen_layout_engine.obb_within_room(cab, place, room_box):
+                continue
+            issues.append({
+                "code":     "OUT_OF_ROOM_BOUNDS",
+                "severity": "blocking",
+                "message":  (
+                    "%s sits outside the room (%.0f\" x %.0f\") at "
+                    "x=%.1f\", z=%.1f\""
+                ) % (line.product_id.display_name, self.room_width_in or 0,
+                     self.room_depth_in or 0, line.x_position_in or 0,
+                     line.z_position_in or 0) + _line_ref(line),
+            })
+
+        # 3c) NEW — corner hand vs. junction mismatch (V2 §4d). The corner
+        #     writer (kitchen_design.py ~line 665 region) picks a
+        #     hand-matched variant when one exists, but silently falls
+        #     back to whatever variant it already had
+        #     (`variant = handed[:1] or variant`) when no matching-hand
+        #     variant is found — no backstop existed anywhere in the
+        #     validator (this is exactly the class of bug
+        #     corner_sku_repair.py had to fix in prod: an LH-only
+        #     template silently serving right-facing junctions). This
+        #     derives the SAME expected hand the writer computes — from
+        #     the corner name baked into a derived line's layout_key,
+        #     via the same _CORNER_RESOLVE/_CORNER_STANDALONE tables the
+        #     writer consults — and blocks if the ASSIGNED product's own
+        #     Hinge Side attribute value (when it carries one at all)
+        #     disagrees. Products with no Hinge Side PTAV (e.g.
+        #     SB-WALL-CORNER, which has no L/R split) carry nothing to
+        #     check and are silently skipped, not flagged.
+        key_prefix_hand = "corner-%s-" % self.id
+        for cl in self.cabinet_line_ids.filtered(
+                lambda l: l.cabinet_type == "corner"
+                and l.layout_role == "derived"
+                and (l.layout_key or "").startswith(key_prefix_hand)):
+            cname = cl.layout_key[len(key_prefix_hand):].rsplit("-", 1)[0]
+            spec = kitchen_layout_engine._CORNER_RESOLVE.get(cname)
+            if spec is not None:
+                expected_hand = spec[3]
+            elif cname in kitchen_layout_engine._CORNER_STANDALONE:
+                # resolve_and_layout hardcodes "L" for the standalone
+                # (both-high) front-right corner node.
+                expected_hand = "L"
+            else:
+                continue
+            prefix = "LH" if expected_hand == "L" else "RH"
+            hinge_ptavs = cl.product_id.product_template_attribute_value_ids.filtered(
+                lambda pt: pt.attribute_id.name == "Hinge Side")
+            if not hinge_ptavs:
+                continue
+            if any((pt.name or "").startswith(prefix) for pt in hinge_ptavs):
+                continue
+            issues.append({
+                "code":     "CORNER_HAND_MISMATCH",
+                "severity": "blocking",
+                "message":  (
+                    "%s is the wrong hand for its %s junction (needs "
+                    "%s) — the corner mechanism will not clear"
+                ) % (cl.product_id.display_name, cname, prefix)
+                            + _line_ref(cl),
+            })
 
         # 4) BOM presence — required for MO generation. Check both
         #    template-level and variant-level BOMs.
         Bom = self.env["mrp.bom"]
-        missing = set()
+        missing = {}
         for line in self.cabinet_line_ids:
             if line.cabinet_type in ("filler",):
                 continue
@@ -1074,12 +1231,13 @@ class SouthbrookKitchenDesign(models.Model):
                 ("product_id", "=", False),
             ], limit=1)
             if not has_bom:
-                missing.add(line.product_id.display_name)
+                missing.setdefault(line.product_id.display_name, []).append(line.id)
         if missing:
+            parts = [name + _line_ref(missing[name]) for name in sorted(missing)]
             issues.append({
                 "code":     "MISSING_BOM",
                 "severity": "blocking",
-                "message":  "No BOM defined: %s" % ", ".join(sorted(missing)),
+                "message":  "No BOM defined: %s" % ", ".join(parts),
             })
 
         # 5) Non-standard widths — soft warning. Catches data-entry
@@ -1097,17 +1255,22 @@ class SouthbrookKitchenDesign(models.Model):
                     "severity": "warning",
                     "message":  (
                         "%s is %d\" wide (non-standard; nesting/cutting may waste material)"
-                    ) % (line.product_id.display_name, int(wr)),
+                    ) % (line.product_id.display_name, int(wr)) + _line_ref(line),
                 })
 
         # 6) Soffit/ceiling clearance — replicates the controller check
         #    so the form-level validate button matches the configurator.
         base_h, wall_h, ctr_t, gap = 34.5, 30.0, 1.5, 18.0
+        base_h_line = wall_h_line = None
         for line in self.cabinet_line_ids:
             if line.cabinet_type == "base":
-                base_h = max(base_h, line.height_in or base_h)
+                cand = line.height_in or base_h
+                if cand > base_h:
+                    base_h, base_h_line = cand, line
             elif line.cabinet_type == "wall":
-                wall_h = max(wall_h, line.height_in or wall_h)
+                cand = line.height_in or wall_h
+                if cand > wall_h:
+                    wall_h, wall_h_line = cand, line
         if (self.wall_cab_top_alignment or "fixed_gap") == "to_soffit":
             eff_top = self.soffit_height_in or 0
         else:
@@ -1127,7 +1290,7 @@ class SouthbrookKitchenDesign(models.Model):
                     "Wall cabinet top reaches %.1f\" but %s sits at %.1f\""
                 ) % (wz + wall_h,
                      "soffit" if self.wall_cab_top_alignment == "to_soffit" else "ceiling",
-                     eff_top),
+                     eff_top) + _line_ref(wall_h_line, base_h_line),
             })
 
         # ── v19.0.4.22.0 audit P2#7 — extended production checks ──────
@@ -1206,7 +1369,7 @@ class SouthbrookKitchenDesign(models.Model):
                             b.product_id.display_name, b.wall or "back",
                             b.x_position_in or 0, b.z_position_in or 0,
                             b.rotation_deg or 0,
-                        ),
+                        ) + _line_ref(a, b),
                     })
 
         # 8) Vertical (mount-height) collision — wall-cab vertical extent
@@ -1251,7 +1414,7 @@ class SouthbrookKitchenDesign(models.Model):
                         wall.product_id.display_name, wy0,
                         tall.product_id.display_name, ty1,
                         tall.x_position_in,
-                    ),
+                    ) + _line_ref(wall, tall),
                 })
 
         # 9) Orphan filler — filler with no adjacent base/wall/tall
@@ -1278,7 +1441,7 @@ class SouthbrookKitchenDesign(models.Model):
                     "message":  (
                         "Filler %s at x=%.1f\" has no adjacent cabinet; "
                         "fillers must bridge two cabinets."
-                    ) % (f.product_id.display_name, fx0),
+                    ) % (f.product_id.display_name, fx0) + _line_ref(f),
                 })
 
         # 10) End-cap panel adjacency — twin of the controller-side
@@ -1309,7 +1472,7 @@ class SouthbrookKitchenDesign(models.Model):
                             "End-cap panel %s at x=%.1f\" isn't adjacent "
                             "to any base/wall side face; panels can't "
                             "attach to room walls."
-                        ) % (p.product_id.display_name, px),
+                        ) % (p.product_id.display_name, px) + _line_ref(p),
                     })
 
         # 11) Unrealistic single-base width — warning (custom 60"+
@@ -1325,7 +1488,7 @@ class SouthbrookKitchenDesign(models.Model):
                     "message":  (
                         "%s is %.1f\" wide — over 60\" on a single base "
                         "is unusual; confirm not a typo."
-                    ) % (line.product_id.display_name, line.width_in),
+                    ) % (line.product_id.display_name, line.width_in) + _line_ref(line),
                 })
 
         # 12) M4 — corner MOTION envelope vs. solids. A corner rule may
@@ -1358,6 +1521,44 @@ class SouthbrookKitchenDesign(models.Model):
                 return {"width_mm": (line.width_in or 0) * _MM12,
                         "depth_mm": (line.depth_in or 0) * _MM12}
 
+            # Task 1 pt.6 diagnosis (corner-remediation 2026-07-30) — the
+            # motion envelope (below) extends a corner's OWN footprint
+            # along its WALL-PRESENTATION rotation (_CORNER_RESOLVE_
+            # PRESENTATION in kitchen_layout_engine.py — chosen purely so
+            # the corner renders as "turning into" whichever run it was
+            # tagged onto, NOT the true direction a diagonal lazy-susan/
+            # pie-cut door actually swings, which bisects the junction).
+            # Because a corner cell is flush against BOTH its walls at
+            # once, that envelope's cross-axis span always covers the
+            # corner's FULL leg extent on the presentation wall — which
+            # geometrically reaches straight into whatever cabinet the
+            # corner's OWN other-leg reservation legitimately placed
+            # flush next to it (wall_start_offsets in
+            # kitchen_layout_engine.resolve_and_layout — contiguous,
+            # zero-gap, by construction; verified against the live
+            # U-10X8X10 template's back-left junction, design 102,
+            # V1-geometry.md). That is a validator-side modeling defect,
+            # not a real clearance violation: the engine's own placement
+            # is correct (zero overlaps, zero gaps, well inside the
+            # room — V1-geometry.md §3). Fix: a candidate flush-touching
+            # (within 2mm) the corner's OWN footprint, with its extent
+            # overlapping the corner's on the OTHER axis, is "the next
+            # cabinet in the run the corner made room for" — excluded
+            # from this check. A candidate with genuine standoff (a real
+            # intrusion, e.g. the collision-matrix suite's planted
+            # mid-envelope cabinet) is still flagged.
+            def _flush_with_corner(fp_corner, fp_other, tol_mm=2.0):
+                ax0, ax1, az0, az1 = fp_corner
+                bx0, bx1, bz0, bz1 = fp_other
+                x_touch = (abs(ax1 - bx0) <= tol_mm
+                           or abs(bx1 - ax0) <= tol_mm)
+                z_touch = (abs(az1 - bz0) <= tol_mm
+                           or abs(bz1 - az0) <= tol_mm)
+                x_span_overlaps = ax0 < bx1 - tol_mm and bx0 < ax1 - tol_mm
+                z_span_overlaps = az0 < bz1 - tol_mm and bz0 < az1 - tol_mm
+                return ((x_touch and z_span_overlaps)
+                        or (z_touch and x_span_overlaps))
+
             rules_by_tmpl = {}
             for rr in Rule.sudo().search(
                     [("anchor_class", "=", "junction")]):
@@ -1382,6 +1583,8 @@ class SouthbrookKitchenDesign(models.Model):
                               for a in (0, 90, 180, 270, 360)) <= 1.0
                 clearance = payload.get("clearance_front_mm") or 0
                 if clearance > 0 and ortho12:
+                    fp_corner = kitchen_layout_engine.footprint_from_anchor_mm(
+                        _cab(cl), _anchor_place(cl))
                     env_box = kitchen_layout_engine.\
                         motion_envelope_from_anchor_mm(
                             _cab(cl), _anchor_place(cl), clearance)
@@ -1394,20 +1597,27 @@ class SouthbrookKitchenDesign(models.Model):
                             continue
                         fp = kitchen_layout_engine.footprint_from_anchor_mm(
                             _cab(other), _anchor_place(other))
+                        if _flush_with_corner(fp_corner, fp):
+                            continue
                         if kitchen_layout_engine.footprints_overlap(
                                 env_box, fp):
                             issues.append({
                                 "code":     "MOTION_ENVELOPE_COLLISION",
                                 "severity": "blocking",
+                                # V2-validator.md Claim 3 — the corner is
+                                # the grammatical subject, the intruding
+                                # neighbour named second (was: neighbour
+                                # first, biasing any downstream consumer
+                                # toward "blame the neighbour").
                                 "message":  (
-                                    "%s sits inside the %.1f\" door/"
-                                    "mechanism clearance in front of the "
-                                    "corner cabinet %s (%s) — the corner "
-                                    "cannot open."
-                                ) % (other.product_id.display_name,
-                                     clearance / _MM12,
-                                     cl.product_id.display_name,
-                                     rr.corner_type_id or rr.name),
+                                    "Corner cabinet %s (%s) cannot open: "
+                                    "%s sits inside its %.1f\" door/"
+                                    "mechanism clearance."
+                                ) % (cl.product_id.display_name,
+                                     rr.corner_type_id or rr.name,
+                                     other.product_id.display_name,
+                                     clearance / _MM12)
+                                            + _line_ref(cl, other),
                             })
                 # -- 13: demanded fillers present --
                 fx = payload.get("filler_x_mm") or 0
@@ -1440,7 +1650,7 @@ class SouthbrookKitchenDesign(models.Model):
                                 "missing — re-run auto-arrange or plan "
                                 "to scribe on site."
                             ) % (cname, cl.product_id.display_name,
-                                 fw / _MM12, w),
+                                 fw / _MM12, w) + _line_ref(cl),
                         })
 
         return issues

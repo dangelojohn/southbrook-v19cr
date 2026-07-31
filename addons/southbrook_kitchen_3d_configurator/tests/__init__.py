@@ -98,3 +98,8 @@ from . import test_rearrange_route
 # end-aware fit claims, all four corners derive (LH/RH base + 2 wall),
 # flip symmetry, u_shape compat preset resolves.
 from . import test_u_shape_template
+
+# Task 1, corner-remediation (2026-07-30) — validator repair: check #3
+# CABINET_COLLISION rewrite (wall/zone-grouped, real footprints), new
+# OUT_OF_ROOM_BOUNDS and CORNER_HAND_MISMATCH checks.
+from . import test_validator_repair
