@@ -10,3 +10,4 @@ from . import test_room_api_inheritance
 from . import test_design_3d_tab
 from . import test_design_3d_add_new_wall
 from . import test_room_geometry
+from . import test_shop_catalog_exposure

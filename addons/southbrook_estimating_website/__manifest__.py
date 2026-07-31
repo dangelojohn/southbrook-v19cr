@@ -19,6 +19,11 @@
     "depends": [
         "southbrook_estimating",
         "website_product_configurator",   # OCA — public-facing wizard base
+        # Declared explicitly (already pulled in transitively via
+        # website_product_configurator) because models/website.py
+        # inherits website_sale's Website model directly (Task 30,
+        # corner-remediation-2026-07-30 shop-exposure gate).
+        "website_sale",
         "portal",                          # /my/... portal layout + auth
         # views/auth_template.xml inherits auth_passkey.auth_passkey_login_oauth;
         # it is auto_install upstream, but declare it so the inherit is explicit
