@@ -54,3 +54,6 @@ from . import test_placement_rule
 # SKUs for SB-CORNER-BLIND/DIAG/WALL-CORNER, SB-CORNER renamed, the
 # SB-CORNER-LSUSAN duplicate archived.
 from . import test_corner_family_repair
+# Task 23 (corner-remediation-2026-07-30, SBK-037) — catalogue hygiene:
+# unique, non-empty default_code on cabinet-family variants.
+from . import test_cabinet_variant_ref_repair

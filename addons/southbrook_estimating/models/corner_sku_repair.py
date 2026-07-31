@@ -15,6 +15,7 @@ is guarded to the known-bad state, so a later hand edit is never
 clobbered and re-running is a no-op.
 """
 import logging
+import re
 
 _logger = logging.getLogger(__name__)
 
@@ -113,6 +114,13 @@ def repair_corner_sku(env):
     # southbrook_kitchen_3d_configurator/tests/test_corner_repair.py::
     # test_repair_is_idempotent) must keep passing unchanged.
     repair_corner_family_skus(env)
+
+    # Task 23 (SBK-037, .superpowers/sdd/corner-remediation-2026-07-30/
+    # task-23-brief.md) — same pattern again: its own independent
+    # summary, called last so it sees the codes T4/T4a just settled
+    # (SB-CORNER-BLIND/-DIAG/-WALL-CORNER's LH/RH twins, etc.) rather
+    # than racing them.
+    repair_cabinet_variant_refs(env)
     return summary
 
 
@@ -449,4 +457,272 @@ def repair_corner_family_skus(env):
 
     if any(summary.values()):
         _logger.info("[T4 corner family repair] %s", summary)
+    return summary
+
+
+# ---------------------------------------------------------------------
+# Task 23 (SBK-037, .superpowers/sdd/corner-remediation-2026-07-30/
+# task-23-brief.md) — catalogue hygiene: unique, non-empty
+# product.product.default_code on cabinet-family VARIANTS.
+#
+# Live-verified (2026-07-30, ci_corner_full clone): a config_ok
+# multi-variant cabinet template's template-level default_code (e.g.
+# "SB-BASE-2DR") reads back onto MORE THAN ONE of its materialized
+# variants -- a stale mirror from the moment the template briefly had
+# exactly one variant (product.template._compute_default_code only
+# blanks the template-level field on its NEXT recompute, not
+# retroactively -- see product/models/product_template.py's
+# _compute_template_field_from_variant_field), while a sibling variant
+# of the SAME template ends up with no code at all. Both are catalogue-
+# hygiene bugs: duplicate refs break barcode/PO/label lookups by code,
+# and an empty ref means the SKU can't be looked up by code at all.
+# The brief's own example, SB-BASE-1DR, is the same class of bug on a
+# different template/DB snapshot -- this repair is written generically
+# against the pattern (any cabinet-family duplicate/empty ref), not
+# hard-coded to one default_code.
+# ---------------------------------------------------------------------
+
+def _code_slug(value):
+    """Deterministic, code-safe suffix derived from an attribute
+    value's display name -- NEVER random. A numeric-leading value
+    (e.g. "24 in", "36 in" -- the Width vocabulary used throughout
+    this file) collapses to just the leading number ("24", "36"); a
+    non-numeric value (e.g. a Hinge Side or Family name) collapses to
+    an upper-cased alnum token."""
+    if not value:
+        return ""
+    value = value.strip()
+    m = re.match(r"^(\d+(?:\.\d+)?)", value)
+    if m:
+        num = m.group(1)
+        return num[:-2] if num.endswith(".0") else num
+    return re.sub(r"[^A-Za-z0-9]+", "", value).upper() or ""
+
+
+def _distinguishing_suffix(variant):
+    """Pick the attribute value that should distinguish this variant's
+    code from its siblings. Width preferred (it's what actually varies
+    within every live duplicate group found on this catalogue); falls
+    back to the variant's other attribute values (lowest attribute id
+    first, for determinism), then -- for a genuinely bare variant with
+    no attribute combination at all -- to the variant's own database
+    id, which is still fully deterministic and guaranteed unique,
+    never random."""
+    ptavs = variant.product_template_attribute_value_ids
+    width = ptavs.filtered(lambda p: p.attribute_id.name == "Width")
+    if width:
+        slug = _code_slug(width[0].name)
+        if slug:
+            return slug
+    for ptav in ptavs.sorted(key=lambda p: p.attribute_id.id):
+        slug = _code_slug(ptav.name)
+        if slug:
+            return slug
+    return str(variant.id)
+
+
+def _unique_code(candidate, taken, disambiguator):
+    """`candidate` unless it collides with an already-known/assigned
+    code, in which case the (still deterministic, never random)
+    variant id is appended so this repair can never manufacture a NEW
+    collision."""
+    if candidate not in taken:
+        return candidate
+    return "%s-%s" % (candidate, disambiguator)
+
+
+def _cabinet_template_base_code(cr, tmpl_id):
+    """Best-effort recovery of the intended base internal-reference
+    prefix for a cabinet template, read via raw SQL (not the ORM) so
+    the stored compute's pre-drift value survives even though the ORM
+    would recompute product.template.default_code to blank the moment
+    product_variant_ids is re-evaluated with more than one active
+    variant (the same trap documented on repair_corner_family_skus's
+    _resolve_tmpl above)."""
+    cr.execute(
+        "SELECT default_code FROM product_template WHERE id = %s",
+        (tmpl_id,))
+    row = cr.fetchone()
+    code = (row[0] or "").strip() if row else ""
+    return code or None
+
+
+def _cabinet_sibling_base_code(cr, tmpl_id, exclude_variant_ids=()):
+    """Fallback base-code source when the template-level code is also
+    empty (or stale-blank): the lowest-id OTHER active variant of the
+    same template that already carries a code. `exclude_variant_ids`
+    keeps this from picking a code THIS SAME repair pass just
+    generated for a sibling (which would already carry a distinguishing
+    suffix and produce a nonsense double-suffixed code on the next
+    variant) -- callers pass the running set of just-written variant
+    ids."""
+    cr.execute(
+        "SELECT id, default_code FROM product_product "
+        "WHERE product_tmpl_id = %s AND active = true ORDER BY id",
+        (tmpl_id,))
+    for vid, code in cr.fetchall():
+        if vid in exclude_variant_ids:
+            continue
+        code = (code or "").strip()
+        if code:
+            return code
+    return None
+
+
+def repair_cabinet_variant_refs(env):
+    """Unique, non-empty default_code on every active cabinet-family
+    (southbrook_is_cabinet=True) product.product variant. Returns a
+    summary dict.
+
+    Deterministic repair, never random: every rewritten variant gets a
+    code of the form "<base>-<suffix>", where <base> is the shared
+    duplicate code itself (for a duplicate group) or the best-effort
+    recovered template base code (for an empty ref -- see
+    _cabinet_template_base_code / _cabinet_sibling_base_code above),
+    and <suffix> is derived from the variant's OWN distinguishing
+    attribute value (see _distinguishing_suffix). Idempotent: once a
+    variant's code is unique and non-empty it is no longer part of any
+    duplicate group and no longer empty, so a second pass finds
+    nothing left to do for it -- confirmed by
+    test_cabinet_variant_ref_repair.py's idempotency test.
+
+    Scope is deliberately the coarse southbrook_is_cabinet flag, not
+    southbrook_cabinet_type -- a duplicate/empty ref is a hygiene bug
+    on ANY cabinet regardless of type (base/wall/tall/corner/...).
+    Non-cabinet products (hardware, accessories, KD components, ...)
+    are REPORT-ONLY per the brief: logged and counted, never written --
+    their SKU conventions aren't verified against this repair's
+    assumptions, and the brief scopes the write to cabinets.
+
+    Never writes product.template.default_code -- per the brief,
+    multi-variant cabinet templates deliberately carry no
+    template-level ref (a locked convention); only variant rows
+    (product.product) are ever written here. When kitchen_3d_
+    configurator isn't installed on this DB (southbrook_is_cabinet
+    doesn't exist as a column at all), there is no cabinet/non-cabinet
+    distinction to make, so every active product falls into the
+    report-only bucket and nothing is written.
+    """
+    summary = {
+        "duplicates_split": 0, "empty_filled": 0,
+        "skipped_unresolvable": 0,
+        "noncabinet_duplicate_groups_reported": 0,
+        "noncabinet_empty_reported": 0,
+    }
+    cr = env.cr
+    Product = env["product.product"]
+
+    cr.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'product_template'
+        AND column_name = 'southbrook_is_cabinet'
+    """)
+    has_cabinet_flag = bool(cr.fetchone())
+
+    is_cabinet_sql = "pt.southbrook_is_cabinet" if has_cabinet_flag else "false"
+    cr.execute("""
+        SELECT pp.id, pp.product_tmpl_id, pp.default_code, %s
+        FROM product_product pp
+        JOIN product_template pt ON pt.id = pp.product_tmpl_id
+        WHERE pp.active = true AND pt.active = true
+        ORDER BY pp.product_tmpl_id, pp.id
+    """ % is_cabinet_sql)
+    rows = cr.fetchall()
+
+    cabinet_rows = [r for r in rows if r[3]]
+    noncabinet_rows = [r for r in rows if not r[3]]
+
+    # -- report-only: non-cabinet products ---------------------------
+    nc_by_code = {}
+    nc_empty = 0
+    for vid, _tmpl_id, code, _is_cab in noncabinet_rows:
+        code = (code or "").strip()
+        if not code:
+            nc_empty += 1
+            continue
+        nc_by_code.setdefault(code, []).append(vid)
+    nc_dupes = {c: ids for c, ids in nc_by_code.items() if len(ids) > 1}
+    if nc_dupes:
+        summary["noncabinet_duplicate_groups_reported"] = len(nc_dupes)
+        _logger.info(
+            "[SBK-037 report-only] %d non-cabinet default_code(s) "
+            "shared by more than one active variant -- NOT repaired "
+            "(cabinet-only scope): %s",
+            len(nc_dupes), nc_dupes)
+    if nc_empty:
+        summary["noncabinet_empty_reported"] = nc_empty
+        _logger.info(
+            "[SBK-037 report-only] %d active non-cabinet variant(s) "
+            "have no default_code -- NOT repaired (cabinet-only "
+            "scope).", nc_empty)
+
+    if not cabinet_rows:
+        return summary
+
+    # Every currently-known code, cabinet + non-cabinet: the collision
+    # guard for every candidate this pass ever writes.
+    taken = {(code or "").strip() for _vid, _t, code, _c in rows}
+    taken.discard("")
+
+    # -- duplicates among cabinet variants ----------------------------
+    by_code = {}
+    for vid, _tmpl_id, code, _is_cab in cabinet_rows:
+        code = (code or "").strip()
+        if code:
+            by_code.setdefault(code, []).append(vid)
+    dup_groups = {c: ids for c, ids in by_code.items() if len(ids) > 1}
+
+    generated_this_run = set()
+
+    for base_code, variant_ids in sorted(dup_groups.items()):
+        for variant in Product.browse(sorted(variant_ids)):
+            suffix = _distinguishing_suffix(variant)
+            candidate = ("%s-%s" % (base_code, suffix)) if suffix else base_code
+            candidate = _unique_code(candidate, taken, variant.id)
+            if candidate == (variant.default_code or "").strip():
+                continue
+            old_code = variant.default_code
+            variant.default_code = candidate
+            taken.add(candidate)
+            generated_this_run.add(variant.id)
+            summary["duplicates_split"] += 1
+            _logger.info(
+                "[SBK-037 cabinet ref repair] variant id=%s (tmpl "
+                "id=%s): duplicate default_code %r -> %r",
+                variant.id, variant.product_tmpl_id.id, old_code, candidate)
+
+    # -- empty default_code among cabinet variants --------------------
+    empty_variant_ids = sorted(
+        vid for vid, _t, code, _c in cabinet_rows
+        if not (code or "").strip())
+
+    for vid in empty_variant_ids:
+        variant = Product.browse(vid)
+        tmpl_id = variant.product_tmpl_id.id
+        base = (_cabinet_template_base_code(cr, tmpl_id)
+                or _cabinet_sibling_base_code(
+                    cr, tmpl_id, generated_this_run | {vid}))
+        if not base:
+            summary["skipped_unresolvable"] += 1
+            _logger.warning(
+                "[SBK-037 cabinet ref repair] variant id=%s (tmpl "
+                "id=%s) has no default_code and no resolvable base "
+                "code (no template-level code, no coded sibling) -- "
+                "skipped, left for a human to reconcile.",
+                vid, tmpl_id)
+            continue
+        suffix = _distinguishing_suffix(variant)
+        candidate = ("%s-%s" % (base, suffix)) if suffix else base
+        candidate = _unique_code(candidate, taken, vid)
+        variant.default_code = candidate
+        taken.add(candidate)
+        generated_this_run.add(vid)
+        summary["empty_filled"] += 1
+        _logger.info(
+            "[SBK-037 cabinet ref repair] variant id=%s (tmpl id=%s): "
+            "empty default_code -> %r (base %r)",
+            vid, tmpl_id, candidate, base)
+
+    if any(summary.values()):
+        _logger.info("[SBK-037 cabinet variant ref repair] %s", summary)
     return summary

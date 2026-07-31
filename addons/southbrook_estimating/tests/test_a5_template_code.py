@@ -32,6 +32,24 @@ class TestA5TemplateCode(TransactionCase):
         # test the SHIPPED codes, not the aspiration. When/if the
         # Prodboard-cipher migration lands, update this table and add
         # a one-shot migration to overwrite the legacy codes.
+        #
+        # Task 23 (SBK-037) — corner_sku_repair.py::
+        # repair_cabinet_variant_refs may since have split a
+        # duplicate-default_code cabinet template's variants into
+        # distinct, Width-suffixed codes ("SB-BASE-2DR" ->
+        # "SB-BASE-2DR-24"/"-30") or filled a previously-empty variant
+        # ref ("SB-DRAWER" sibling -> "SB-DRAWER-12"). Once a template
+        # genuinely has more than one variant, product.template.
+        # default_code correctly reads False (Odoo only mirrors a
+        # SINGLE variant's code onto the template — see product/models/
+        # product_template.py's _compute_template_field_from_variant_
+        # field, and the brief's own "do NOT add a template-level
+        # default_code to multi-variant templates" convention), so
+        # this now resolves through the template's variant(s) rather
+        # than asserting the bare template-level field, accepting
+        # either the exact shipped code (single-variant / untouched-
+        # sibling case) or a "<code>-<suffix>" hygiene-repair code
+        # (split-duplicate / filled-empty case).
         expectations = {
             "base_1dr":    "SB-BASE-1DR",
             "base_2dr":    "SB-BASE-2DR",
@@ -54,9 +72,31 @@ class TestA5TemplateCode(TransactionCase):
             if not tmpl:
                 continue
             checked += 1
-            self.assertEqual(
-                tmpl.default_code, expected_code,
-                f"{slug}: expected {expected_code}, got {tmpl.default_code}")
+            variants = tmpl.product_variant_ids
+            if not variants:
+                # create_variant='dynamic' (Q6 hybrid model, used
+                # throughout this catalogue) means nothing is
+                # auto-materialized — a bare/CI-minimal DB can carry a
+                # Q8 template with zero physical variants at all until
+                # the configurator creates one. The template-level
+                # field is the only thing seeded in that case.
+                self.assertEqual(
+                    tmpl.default_code, expected_code,
+                    f"{slug}: expected {expected_code}, got "
+                    f"{tmpl.default_code}")
+                continue
+            variant_codes = variants.mapped("default_code")
+            matches = [
+                c for c in variant_codes
+                if c == expected_code
+                or (c or "").startswith(expected_code + "-")
+            ]
+            self.assertTrue(
+                matches,
+                f"{slug}: expected a variant carrying {expected_code} "
+                f"(exact, or hygiene-repair-suffixed), got variant "
+                f"codes {variant_codes!r} "
+                f"(template-level default_code={tmpl.default_code!r})")
         # We don't hard-fail if some xml_ids aren't present in this DB
         # (CI runs against minimal subsets); but at least ONE should
         # be checked or the seed isn't actually being exercised.
