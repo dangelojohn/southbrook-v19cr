@@ -92,7 +92,10 @@ export class MaterialsHardwareCatalog extends Component {
             // gets to win.
             return;
         }
-        Object.assign(this.state, payload, { loading: false });
+        // search_note is ADDITIVE and only present when a search synonym
+        // fired server-side — reset it first so a stale note from the
+        // previous payload never outlives the search that produced it.
+        Object.assign(this.state, { search_note: null }, payload, { loading: false });
 
         if (!this.state.ok) {
             this.state.selectedProductId = null;

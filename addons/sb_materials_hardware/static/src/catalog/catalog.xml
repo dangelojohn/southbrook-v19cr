@@ -12,6 +12,11 @@
       <button class="o_matcat_clear" t-on-click="clearFilters">Clear</button>
     </div>
 
+    <!-- Synonym transparency: when the server widened a search through a
+         declared synonym (e.g. "solvent"), say what it covered — an empty
+         grid after a synonym hit is honest data but a mute UI without it. -->
+    <div class="o_matcat_searchnote" t-if="state.search_note" t-esc="state.search_note"/>
+
     <t t-if="!state.ok">
       <div class="o_matcat_empty">
         Catalog unavailable. <t t-esc="state.reason"/>

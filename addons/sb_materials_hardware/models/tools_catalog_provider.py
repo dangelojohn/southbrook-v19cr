@@ -139,7 +139,7 @@ class ToolsCatalogProvider(models.AbstractModel):
         columns = self._columns(category)
         rows, total = self._rows(category, facets, search, offset, limit,
                                   columns)
-        return {
+        payload = {
             "ok": True,
             "reason": None,
             "scope": scope,
@@ -151,6 +151,25 @@ class ToolsCatalogProvider(models.AbstractModel):
             "total": total,
             "provenance": PROVENANCE,
         }
+        # ADDITIVE key (absent unless a synonym fired — old clients simply
+        # ignore it): when the search term resolved through a
+        # materials.catalog.search.synonym, say so, and say what it
+        # covered. Without this, searching "solvent" on a taxonomy whose
+        # solvent categories hold zero products yields a silently empty
+        # grid — honest data, mute UI. The note makes the emptiness
+        # legible: the term DID resolve, the categories it names are just
+        # not populated yet.
+        synonym_cat_ids = self._synonym_category_ids(search)
+        if synonym_cat_ids:
+            cats = self.env["southbrook.tool.category"].browse(synonym_cat_ids)
+            payload["search_note"] = (
+                '"%s" also searched the %s categor%s — %s'
+                % (search.strip(),
+                   " and ".join(cats.mapped("name")),
+                   "y" if len(cats) == 1 else "ies",
+                   ("no products are classified there yet"
+                    if total == 0 else "%d result(s) total" % total)))
+        return payload
 
     @api.model
     def _categories_best_effort(self):

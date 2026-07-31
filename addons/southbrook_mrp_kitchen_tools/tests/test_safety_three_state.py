@@ -31,6 +31,7 @@ import os
 
 from odoo.exceptions import ValidationError
 from odoo.tests import TransactionCase, tagged
+from odoo.tools.safe_eval import safe_eval
 
 
 def _load_migration(filename):
@@ -351,3 +352,35 @@ class TestSafetyThreeState(TransactionCase):
             product.x_southbrook_tool_category_id,
             self.env.ref("southbrook_mrp_kitchen_tools.cat_paint_booth_filter"),
         )
+
+    # ──────────────────────────────────────────────────────────────────
+    # Data-Quality worklist — "Safety Assessment — Not Assessed"
+    # ──────────────────────────────────────────────────────────────────
+    def test_safety_worklist_action_lists_unassessed_chemicals(self):
+        # The worklist domain is data (dq_views.xml), not Python — read it
+        # off the live action the same way the client would, rather than
+        # re-deriving it, so the test breaks if the shipped domain drifts.
+        action = self.env.ref(
+            "southbrook_mrp_kitchen_tools.action_dq_safety_assessment")
+        domain = safe_eval(action.domain)
+
+        baseline = self.Product.search_count(domain)
+        product = self.Product.create({
+            "name": "Worklist Probe Adhesive",
+            "x_southbrook_tool_category_id": self.cat_adhesives.id,
+            # all four safety fields left at their 'not_assessed' default
+        })
+        self.assertEqual(
+            self.Product.search_count(domain), baseline + 1,
+            "a fresh, unassessed adhesive product must join the worklist")
+
+        product.write({
+            "x_southbrook_hazardous": "yes",
+            "x_southbrook_flammable": "no",
+            "x_southbrook_requires_ventilation": "no",
+            "x_southbrook_msds_required": "yes",
+        })
+        self.assertEqual(
+            self.Product.search_count(domain), baseline,
+            "once all four fields are assessed the product must drop off "
+            "the worklist")

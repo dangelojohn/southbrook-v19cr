@@ -75,4 +75,13 @@
               action="action_dq_unclassified_consumables"
               sequence="81"/>
 
+    <!-- The tri-state conversion's actionable queue: chemicals whose
+         safety fields are still not_assessed. Sits directly under the
+         DQ worklist — same audience, same working session. -->
+    <menuitem id="menu_southbrook_tools_safety_assessment"
+              name="Safety Assessment — Not Assessed"
+              parent="stock.menu_stock_inventory_control"
+              action="action_dq_safety_assessment"
+              sequence="82"/>
+
 </odoo>

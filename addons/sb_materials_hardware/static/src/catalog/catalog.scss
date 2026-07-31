@@ -343,3 +343,13 @@
     --mc-flag: #fff3d6;
     --mc-link: #1851a8;
 }
+
+// Synonym transparency line under the masthead (see catalog.xml) — muted,
+// single line, same token family as the rest of the shell.
+.o_matcat .o_matcat_searchnote {
+    padding: 4px 16px;
+    font-size: 12px;
+    font-style: italic;
+    color: var(--mc-muted, #777);
+    border-bottom: 1px solid var(--mc-border, #e4e0e4);
+}

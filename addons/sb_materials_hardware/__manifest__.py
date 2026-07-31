@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 {
     "name": "Southbrook Materials — Hardware Catalog",
-    "version": "19.0.2.0.0",
+    "version": "19.0.2.1.0",
     "category": "Manufacturing",
     "summary": "Faceted, spec-first catalog for hardware, tooling and shop "
                "consumables. Reads southbrook_mrp_kitchen_tools data; owns no "

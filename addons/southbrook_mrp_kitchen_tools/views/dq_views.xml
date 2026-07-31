@@ -95,6 +95,44 @@
         </field>
     </record>
 
+    <!-- ─── Safety Assessment worklist ─────────────────────────────────
+         The queue the tri-state conversion creates: every product in the
+         gated chemical subtrees whose safety story is still "nobody has
+         looked yet". This is the list a human works through BEFORE the
+         release gate starts blocking them one at a time at release
+         moment — proactive instead of reactive. ref() resolves the two
+         subtree roots at load time (both ondelete="restrict", so the ids
+         cannot dangle); 'in' with False keeps a bare SQL NULL in the
+         worklist too (a row bulk-loaded around the ORM default is
+         exactly a row nobody has assessed). -->
+    <record id="action_dq_safety_assessment" model="ir.actions.act_window">
+        <field name="name">Safety Assessment — Not Assessed</field>
+        <field name="res_model">product.template</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain"
+               eval="['&amp;',
+                      '|',
+                      ('x_southbrook_tool_category_id', 'child_of', ref('cat_adhesives')),
+                      ('x_southbrook_tool_category_id', 'child_of', ref('cat_finishing')),
+                      '|', '|', '|',
+                      ('x_southbrook_hazardous', 'in', ['not_assessed', False]),
+                      ('x_southbrook_flammable', 'in', ['not_assessed', False]),
+                      ('x_southbrook_requires_ventilation', 'in', ['not_assessed', False]),
+                      ('x_southbrook_msds_required', 'in', ['not_assessed', False])]"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                Every chemical here has a complete safety assessment.
+            </p>
+            <p>
+                Products in the Adhesives or Finishing subtrees with any
+                safety field still at "Not assessed". Open each one, set
+                Hazardous / Flammable / Ventilation / MSDS to a real Yes
+                or No, and it leaves this list — and clears the release
+                gate — on save.
+            </p>
+        </field>
+    </record>
+
     <!-- ─── Reverse substrate lens: smart button on product.category ─── -->
     <record id="view_product_category_form_inherit_tools" model="ir.ui.view">
         <field name="name">product.category.form.inherit.southbrook.tools</field>

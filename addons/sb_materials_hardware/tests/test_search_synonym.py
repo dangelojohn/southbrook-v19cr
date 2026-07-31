@@ -109,3 +109,44 @@ class TestSearchSynonym(TransactionCase):
         self.assertEqual(
             {c["id"] for c in plain["categories"]},
             {c["id"] for c in widened["categories"]})
+
+    def test_synonym_search_carries_a_transparency_note(self):
+        """A synonym hit adds an ADDITIVE 'search_note' key explaining what
+        the search term also widened to — the categories it names, and
+        (when the browsed category has no matches) that the emptiness is
+        expected rather than a broken search.
+        """
+        payload = self.Provider.get_catalog(
+            scope="tools", category_id=self.finishing.id, search="solvent")
+        self.assertTrue(payload["ok"])
+        self.assertIn("search_note", payload)
+        note = payload["search_note"]
+        self.assertTrue(note)
+        self.assertTrue(
+            any(name in note for name in
+                (self.thinner.name, self.degreaser.name)),
+            "search_note must mention at least one mapped category name, "
+            "got: %r" % note)
+
+        # Browsing a category the synonym does NOT widen into (Screws) —
+        # the synonym still fires (it's keyed on the search term, not the
+        # browsed category), but no rows can match, so total is 0 and the
+        # note must say so explicitly rather than leaving a silently empty
+        # grid.
+        empty_payload = self.Provider.get_catalog(
+            scope="tools", category_id=self.screws.id, search="solvent")
+        self.assertTrue(empty_payload["ok"])
+        self.assertEqual(empty_payload["total"], 0)
+        self.assertIn("search_note", empty_payload)
+        self.assertIn(
+            "no products are classified there yet",
+            empty_payload["search_note"])
+
+    def test_plain_search_has_no_note(self):
+        """search_note is additive — it must be entirely absent (not just
+        falsy) for a search term with no synonym record.
+        """
+        payload = self.Provider.get_catalog(
+            scope="tools", category_id=self.finishing.id, search="Reducer")
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("search_note", payload)
