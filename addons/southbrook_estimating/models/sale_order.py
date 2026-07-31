@@ -472,7 +472,17 @@ class SaleOrder(models.Model):
 
         for line in self.order_line:
             tmpl = line.product_id.product_tmpl_id if line.product_id else None
-            sku = tmpl.default_code if tmpl else None
+            # Task 23 (SBK-037) review finding 1, item 1 — same fallback
+            # product_config_line.py's _extract_cabinet_inputs() uses:
+            # tmpl.default_code reads blank for a genuinely multi-variant
+            # template (Odoo only mirrors it for a single variant), which
+            # is exactly right post-repair for a split SB-BASE-2DR/
+            # SB-WALL-2DR-class template — but a naive read here fell
+            # straight through to the generic-box fallback below instead
+            # of resolving the real SKU row. Session._resolve_template_sku
+            # accepts an explicit tmpl override precisely for callers like
+            # this one that don't have a product.config.session instance.
+            sku = Session._resolve_template_sku(tmpl) if tmpl else None
             row = sku_defaults.get(sku) if sku else None
             if not row:
                 # QA Bug 3 fix (2026-07-04): used to `continue` here,
@@ -627,10 +637,16 @@ class SaleOrder(models.Model):
         return {
             "panels": all_panels,
             "metadata": {
+                # Same fallback as the main render loop above (Task 23
+                # review finding 1, item 1) — a raw default_code read
+                # here would under-count post-repair multi-variant
+                # templates even though the loop above correctly
+                # renders their panels.
                 "line_count": len([
                     l for l in self.order_line
                     if l.product_id
-                    and l.product_id.product_tmpl_id.default_code
+                    and Session._resolve_template_sku(
+                        l.product_id.product_tmpl_id)
                     in sku_defaults
                 ]),
                 "kitchen_width_mm":  kitchen_w,

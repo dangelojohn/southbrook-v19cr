@@ -237,9 +237,14 @@ class ProductConfigSession(models.Model):
         tried, since a key can itself contain a "-", e.g. "W24-2" —
         prefix-matching that against the unrelated "W24" key first
         would misfire), then the repair's own "<key>-<suffix>" prefix
-        convention. `_SKU_DEFAULTS` is a small, closed, known table,
-        so this reverse lookup — not a generic string-split heuristic
-        — is what stays safe as the table grows.
+        convention, keys tried **longest first** (review finding, item
+        2): "W24" is itself a dash-prefix of the distinct key "W24-2",
+        so a hypothetical repaired variant coded e.g. "W24-2-30" must
+        match the more specific "W24-2" before the shorter "W24" ever
+        gets a chance, regardless of dict insertion order. `_SKU_
+        DEFAULTS` is a small, closed, known table, so this reverse
+        lookup — not a generic string-split heuristic — is what stays
+        safe as the table grows.
         """
         tmpl = tmpl or self.product_tmpl_id
         if not tmpl:
@@ -253,8 +258,10 @@ class ProductConfigSession(models.Model):
         for variant_code in variant_codes:
             if variant_code in self._SKU_DEFAULTS:
                 return variant_code
+        longest_first_keys = sorted(
+            self._SKU_DEFAULTS, key=len, reverse=True)
         for variant_code in variant_codes:
-            for key in self._SKU_DEFAULTS:
+            for key in longest_first_keys:
                 if variant_code.startswith(key + "-"):
                     return key
         return ""

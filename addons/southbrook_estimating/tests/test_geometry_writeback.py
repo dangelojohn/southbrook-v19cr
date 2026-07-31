@@ -459,6 +459,91 @@ class TestGeometryWritebackVariantCreation(TransactionCase):
         self.assertEqual(session._resolve_template_sku(), "")
         self.assertFalse(session._extract_cabinet_inputs()["_geo_resolved"])
 
+    def test_resolve_template_sku_prefers_the_longer_more_specific_key(self):
+        """Task 23 (SBK-037) review round 2, item 2 — "W24" is itself a
+        dash-prefix of the distinct _SKU_DEFAULTS key "W24-2". A
+        variant coded "W24-2-30" (the shape a repair split of the
+        "W24-2" SKU would produce) must resolve to the more specific
+        "W24-2", never the shorter "W24", regardless of dict
+        insertion/iteration order."""
+        Session = self.env["product.config.session"]
+        self.assertIn("W24", Session._SKU_DEFAULTS)
+        self.assertIn("W24-2", Session._SKU_DEFAULTS)
+        # NOTE: today's two rows happen to carry identical values (per
+        # the reviewer's own "inert today" framing) — this test asserts
+        # on the KEY STRING _resolve_template_sku() itself picks, not
+        # on the resolved geometry, since the geometry alone can't
+        # distinguish a correct match from a lucky coincidence here.
+
+        ProductTemplate = self.env["product.template"]
+        Attribute = self.env["product.attribute"]
+        Value = self.env["product.attribute.value"]
+        AttrLine = self.env["product.template.attribute.line"]
+        Product = self.env["product.product"]
+        PTAV = self.env["product.template.attribute.value"]
+
+        attr = Attribute.create({
+            "name": "TestAttr_T23KeyPrefixCollision",
+            "create_variant": "dynamic",
+        })
+        # Two values/variants — a SINGLE-variant template would let
+        # tmpl.default_code legitimately mirror its one variant's code
+        # (the OTHER branch of _resolve_template_sku, already covered
+        # by test_resolve_template_sku_single_variant_behavior_
+        # unchanged above) and never reach the fallback this test
+        # means to exercise at all.
+        val_a = Value.create({"name": "A", "attribute_id": attr.id})
+        val_b = Value.create({"name": "B", "attribute_id": attr.id})
+        tmpl = ProductTemplate.create({
+            "name": "W24-2 Prefix-Collision Probe", "config_ok": True,
+        })
+        AttrLine.create({
+            "product_tmpl_id": tmpl.id,
+            "attribute_id": attr.id,
+            "value_ids": [(6, 0, (val_a | val_b).ids)],
+        })
+        ptav_a = PTAV.search([
+            ("product_tmpl_id", "=", tmpl.id),
+            ("product_attribute_value_id", "=", val_a.id),
+        ], limit=1)
+        ptav_b = PTAV.search([
+            ("product_tmpl_id", "=", tmpl.id),
+            ("product_attribute_value_id", "=", val_b.id),
+        ], limit=1)
+        Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav_a.id])],
+            "default_code": "W24-2-30",
+        })
+        Product.create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, [ptav_b.id])],
+            "default_code": "ZZ-UNRELATED-SIBLING",
+        })
+        tmpl.invalidate_recordset(["default_code"])
+        self.assertFalse(
+            tmpl.default_code,
+            "sanity: a genuinely multi-variant template's default_code "
+            "must read blank, forcing the variant-code fallback path")
+
+        session = self.Session.create({
+            "product_tmpl_id": tmpl.id,
+            "user_id": self.env.uid,
+        })
+        self.assertEqual(
+            session._resolve_template_sku(), "W24-2",
+            "must match the longer, more specific key 'W24-2', not "
+            "the shorter 'W24' that also happens to be a dash-prefix")
+
+        cab = session._extract_cabinet_inputs()
+        expected = Session._SKU_DEFAULTS["W24-2"]
+        fam, doors, drawers, w, h, d = expected
+        self.assertEqual(cab["family"], fam)
+        self.assertEqual(cab["door_count"], doors)
+        self.assertEqual(cab["width_mm"], w)
+        self.assertEqual(cab["height_mm"], h)
+        self.assertEqual(cab["depth_mm"], d)
+
 
 @tagged("post_install", "-at_install", "sb_geo")
 class TestGeometryBackfill(TransactionCase):
