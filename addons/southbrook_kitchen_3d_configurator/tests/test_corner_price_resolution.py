@@ -80,9 +80,14 @@ class TestSharedCornerVariantResolver(TransactionCase):
         # Force codes so the "decoy" (whatever Odoo's default variant
         # accessor surfaces) is NEVER the variant an exact-default_code
         # lookup targets — this is the exact shape of the bug V3 claim 3
-        # describes.
+        # describes. The pair follows the corner family's own "-R"
+        # hand-twin convention (corner_sku_repair owns it): since the
+        # 2026-07-31 wizard-variant hardening, the resolver's hand
+        # preference only ever picks among the family's coded rows
+        # (base code + "-R"), so the fixture must speak that convention
+        # for the hand-override tests to exercise the real semantic.
         cls.decoy.default_code = "AAA-T5-DECOY"
-        cls.target.default_code = "T5-CORNER"
+        cls.target.default_code = "AAA-T5-DECOY-R"
 
     def test_00_fixture_reproduces_the_bug_shape(self):
         """Sanity check on the fixture itself: Odoo's `product_variant_id`
@@ -95,7 +100,7 @@ class TestSharedCornerVariantResolver(TransactionCase):
         self.assertNotEqual(self.tmpl.product_variant_id.id, self.target.id)
 
     def test_resolve_corner_variant_picks_the_coded_variant_not_the_default(self):
-        variant, tmpl = self.Line._sb_resolve_corner_variant("T5-CORNER")
+        variant, tmpl = self.Line._sb_resolve_corner_variant("AAA-T5-DECOY-R")
         self.assertEqual(variant.id, self.target.id)
         self.assertEqual(tmpl.id, self.tmpl.id)
 
@@ -371,3 +376,87 @@ class TestCornerPricingConvergence(TransactionCase):
         expected = self.Line._sb_variant_price(
             corner_variant, corner_variant.product_tmpl_id)
         self.assertEqual(line.sale_order_line_id.price_unit, expected)
+
+
+@tagged("post_install", "-at_install", "southbrook",
+        "southbrook_kitchen_3d_configurator", "corner_price_resolution")
+class TestResolverIgnoresWizardVariants(TransactionCase):
+    """Prod regression (2026-07-31, smoke B): a customer's wizard-
+    configured variant — code-less, carrying a Hinge Side PTAV — was
+    the ONLY hinge-carrying variant on the blind template, so the
+    resolver's hand preference (formerly filtered over ALL variants)
+    outranked the exact-code match and auto-arrange wrote the user's
+    personal configuration (a code-less line) into brand-new designs.
+    The hand preference must only ever pick among the family's own
+    coded rows."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.Line = cls.env["southbrook.kitchen.design.line"]
+        hinge = cls.env["product.attribute"].create({
+            "name": "Hinge Side", "create_variant": "dynamic",
+        })
+        lh_val = cls.env["product.attribute.value"].create(
+            {"name": "LH (Left Hand)", "attribute_id": hinge.id})
+        rh_val = cls.env["product.attribute.value"].create(
+            {"name": "RH (Right Hand)", "attribute_id": hinge.id})
+        width = cls.env["product.attribute"].create({
+            "name": "Width", "create_variant": "dynamic",
+        })
+        w33 = cls.env["product.attribute.value"].create(
+            {"name": "33 in", "attribute_id": width.id})
+        w45 = cls.env["product.attribute.value"].create(
+            {"name": "45 in", "attribute_id": width.id})
+        cls.tmpl = cls.env["product.template"].create({
+            "name": "T6 Blind-Shape Corner", "type": "consu",
+            "list_price": 500.0,
+        })
+        hinge_line = cls.env["product.template.attribute.line"].create({
+            "product_tmpl_id": cls.tmpl.id, "attribute_id": hinge.id,
+            "value_ids": [(6, 0, [lh_val.id, rh_val.id])],
+        })
+        width_line = cls.env["product.template.attribute.line"].create({
+            "product_tmpl_id": cls.tmpl.id, "attribute_id": width.id,
+            "value_ids": [(6, 0, [w33.id, w45.id])],
+        })
+        hinge_ptavs = hinge_line.product_template_value_ids
+        cls.lh_ptav = hinge_ptavs.filtered(
+            lambda p: p.product_attribute_value_id == lh_val)
+        width_ptavs = width_line.product_template_value_ids
+        cls.w33_ptav = width_ptavs.filtered(
+            lambda p: p.product_attribute_value_id == w33)
+        cls.w45_ptav = width_ptavs.filtered(
+            lambda p: p.product_attribute_value_id == w45)
+        Product = cls.env["product.product"]
+        # The family's seeded row: coded, hinge-LESS (the prod blind
+        # 1104 shape — a single Width value, no Hinge Side at all).
+        cls.seeded = Product.create({
+            "product_tmpl_id": cls.tmpl.id,
+            "product_template_attribute_value_ids":
+                [(6, 0, cls.w45_ptav.ids)],
+            "default_code": "T6-BLIND",
+        })
+        # The customer's wizard config: code-less, and the template's
+        # ONLY variant carrying a Hinge Side PTAV.
+        cls.wizard = Product.create({
+            "product_tmpl_id": cls.tmpl.id,
+            "product_template_attribute_value_ids":
+                [(6, 0, (cls.lh_ptav | cls.w33_ptav).ids)],
+        })
+
+    def test_hand_preference_never_picks_a_code_less_wizard_variant(self):
+        variant, tmpl = self.Line._sb_resolve_corner_variant(
+            "T6-BLIND", hand="L")
+        self.assertEqual(tmpl.id, self.tmpl.id)
+        self.assertEqual(
+            variant.id, self.seeded.id,
+            "hand preference scanned ALL variants and picked the "
+            "customer's code-less wizard config (%s) instead of the "
+            "family's own coded row" % variant.default_code)
+
+    def test_wizard_variant_untouched_by_resolution(self):
+        self.Line._sb_resolve_corner_variant("T6-BLIND", hand="L")
+        self.assertFalse(self.wizard.default_code or "")
+        self.assertIn(self.w33_ptav,
+                      self.wizard.product_template_attribute_value_ids)

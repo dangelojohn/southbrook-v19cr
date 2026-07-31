@@ -4029,8 +4029,20 @@ class SouthbrookKitchenDesignLine(models.Model):
         if tmpl:
             if hand in ("L", "R") and len(tmpl.product_variant_ids) > 1:
                 prefix = "LH" if hand == "L" else "RH"
+                # Hand preference only ever picks among the FAMILY's own
+                # coded rows (the bare code + its "-R" twin — the rows
+                # corner_sku_repair owns). A wizard-configured variant
+                # is a customer's personal configuration, not a catalog
+                # row: on live prod (2026-07-31) a user's code-less 33in
+                # LH blind config was the ONLY variant carrying a Hinge
+                # PTAV on the blind template, so this filter — formerly
+                # over ALL variants — outranked the exact-code match and
+                # auto-arrange wrote a code-less line into new designs.
+                base = code[:-2] if (code or "").endswith("-R") else code
+                family_codes = {base, base + "-R"}
                 handed = tmpl.product_variant_ids.filtered(
-                    lambda v: any(
+                    lambda v: (v.default_code or "") in family_codes
+                    and any(
                         pt.attribute_id.name == "Hinge Side"
                         and (pt.name or "").startswith(prefix)
                         for pt in v.product_template_attribute_value_ids))
