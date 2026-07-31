@@ -61,7 +61,17 @@ from . import test_cabinet_variant_ref_repair
 # archive sweep (repair_corner_sku's SB-WALL-CORNER seed variant-first
 # fix + archive_catalog_family_duplicate_templates).
 from . import test_catalog_family_duplicate_archive
+# Prod-audit follow-up (2026-07-31) — archive_zero_variant_duplicate_
+# templates: the template-first, code-list-agnostic sweep that catches
+# zero-variant catalog-family duplicates archive_catalog_family_
+# duplicate_templates structurally cannot see (SB-BASE-1DR/-2DR,
+# SB-WALL-1DR, SB-WALL-CORNER debris ids 1094/1095/1097/1098).
+from . import test_zero_variant_duplicate_archive
 # Task 4b (corner-remediation-2026-07-30 follow-up) — deploy-blocking
 # gap: migrations/19.0.9.2.0/post-migrate.py re-runs the full corner/
 # cabinet-variant repair chain since prod is already at 19.0.9.1.0.
 from . import test_corner_repair_chain_migration
+# Task 4 (2026-07-31, height-drift) — base corner height was 876.0mm
+# (34.488" -> persisted 34.49") while every other base cabinet read
+# 34.50"; 876.3 = 25.4 * 34.5 is inch-exact.
+from . import test_corner_base_height_precision

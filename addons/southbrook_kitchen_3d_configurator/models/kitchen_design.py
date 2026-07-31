@@ -191,6 +191,86 @@ def placed_width_in(product):
     return float(product.product_tmpl_id.southbrook_width_in or 0.0)
 
 
+# ── Remainder-occupancy fix (2026-07-31) ────────────────────────────────
+# `remainder_in` (below, computed in `_compute_totals`) used to be a pure
+# ROOM-WIDE modulo against a single global catalog module width — it read
+# NO per-line data, so a real multi-wall L/U design with a genuine
+# leftover gap on one wall could still read 0.00 whenever the room's
+# total width happened to be evenly divisible by the module width.
+# Verified on production design 107 (L-shape, room 120x96): the back-wall
+# base run is corner 0->36, cabinet 36->60, appliance 60->90, cabinet
+# 90->114 — a REAL 6" gap — yet 120 % 24 == 0, so the old formula
+# reported 0.00.
+#
+# Fix: once the design has at least one placed BASE-ELEVATION line (see
+# `_base_run_eligible_lines`), remainder_in is derived from REAL
+# occupancy instead: for every wall, project each eligible line's real
+# footprint (`kitchen_layout_engine.footprint_from_anchor_mm` — the SAME
+# anchor-convention primitive `_check_production_ready`'s collision check
+# already uses) onto that wall's along-axis (back/front -> X, extent =
+# room_width_in; left/right -> Z, extent = room_depth_in), merge
+# overlapping/adjacent intervals, and sum (wall extent - covered length)
+# across every wall that actually carries a base run. A wall nothing is
+# assigned to contributes 0 — never counted as "all leftover".
+#
+# Corner-cabinet wrinkle (verified on production design 108, a U-shape):
+# a corner cabinet physically bridges TWO walls (it sits IN the junction,
+# consuming real run length on both legs) but its `wall` field carries
+# only ONE presentational tag (kitchen_layout_engine.
+# _CORNER_RESOLVE_PRESENTATION — e.g. a back-left corner is tagged
+# wall="left" even though its footprint also occupies the back wall's
+# run). The engine itself already reserves BOTH adjoining walls' run
+# space for a corner via `corner_walls_by_name` / `wall_start_offsets`
+# (see `_place_lines_on_wall` below) — grouping strictly by the `wall`
+# field here would silently ignore that and misreport BOTH walls (design
+# 108's back wall — corner 0->36, cabinet 36->60, cabinet 60->84, corner
+# 84->120, a perfectly tessellated 0.0 leftover — would read as if 72"
+# were empty, because both corners are tagged wall='left'/'right' and
+# never wall='back'). Fixed with a hybrid membership test, NOT pure
+# geometric touch-testing of every line: an ORDINARY (non-corner) line
+# still counts only toward the wall named in its own `wall` field (a
+# straight run's first/last cabinet legitimately starting flush at
+# x=0/x=room_width must NOT also register as occupying the adjacent side
+# wall's run — there is no such run there); a CORNER line additionally
+# counts toward any OTHER wall whose plane its footprint actually touches
+# (within ~1" tolerance), bridging both legs the way the engine's own
+# offset reservation already does. `layout_role == 'derived'` / `run_seq
+# == -1` are provenance flags, not exclusion signals — corner footprints
+# are real occupied space and must count.
+#
+# When the design has NO placed base-elevation lines yet, remainder_in
+# keeps the LEGACY room-wide modulo estimate — a genuine "nothing laid
+# out yet" estimate, not a claim about real geometry — including the
+# n==0 guard controllers/main.py's /layout route has always had
+# (`remainder = (rw - n*module_w) if n > 0 else 0.0`): the MODEL field
+# was missing that guard (confirmed live on design 104: room_width_in=12
+# read remainder_in=12.00, the whole undersized room reported back as
+# "leftover" instead of 0), so both are now consistent.
+# test_filler_remainder_gate.py (the controller-side gate; unrelated code
+# path, untouched by this fix) keeps passing.
+_REMAINDER_WALL_TOL_IN = 1.0
+
+
+def _merge_intervals_covered_in(intervals, eps=0.05):
+    """Total covered length (inches) of a list of (lo, hi) intervals,
+    merging any that overlap or touch within `eps` (bridges float
+    rounding at exactly-touching boundaries — these fields are persisted
+    at 2-decimal precision). Pure — no `self`."""
+    ivs = sorted((lo, hi) for lo, hi in intervals if hi > lo)
+    if not ivs:
+        return 0.0
+    covered = 0.0
+    cur_lo, cur_hi = ivs[0]
+    for lo, hi in ivs[1:]:
+        if lo <= cur_hi + eps:
+            cur_hi = max(cur_hi, hi)
+        else:
+            covered += cur_hi - cur_lo
+            cur_lo, cur_hi = lo, hi
+    covered += cur_hi - cur_lo
+    return covered
+
+
 class SouthbrookKitchenDesign(models.Model):
     _name = "southbrook.kitchen.design"
     _description = "Southbrook Kitchen Design"
@@ -352,7 +432,14 @@ class SouthbrookKitchenDesign(models.Model):
         compute="_compute_totals",
         store=True,
         digits=(6, 2),
-        help="Unused wall space after filling with standard 24-in modules.",
+        help=(
+            "Real leftover wall space once cabinets are placed: the sum, "
+            "across every wall that carries a base-elevation run, of "
+            "(that wall's length minus the actual covered length of its "
+            "base/corner/appliance cabinet footprints). Before any "
+            "cabinets are placed, this falls back to an estimate: room "
+            "width vs. standard 24-in modules."
+        ),
     )
     currency_id = fields.Many2one(
         "res.currency",
@@ -844,12 +931,123 @@ class SouthbrookKitchenDesign(models.Model):
     # lines (southbrook_is_cabinet=True products only) so the summary is
     # never simply wrong. Does NOT touch cabinet_line_ids, Generate Layout,
     # or the drag-editor — this only affects the read-only summary fields.
+    # ── Remainder-occupancy fix (2026-07-31) ────────────────────────────
+    # See the module-level comment above `_REMAINDER_WALL_TOL_IN` for the
+    # full rationale. These two helpers are split out of `_compute_totals`
+    # so the geometry is independently testable.
+    _REMAINDER_WALLS = ("back", "front", "left", "right")
+
+    def _base_run_eligible_lines(self):
+        """Active lines that occupy BASE-ELEVATION wall-run space:
+        ordinary base_run-zoned cabinets, plus corner/appliance lines
+        that aren't tagged to the upper 'wall' zone. A wall-layer corner
+        (zone='wall') sits at a different elevation — see
+        `_footprint_layer` in `_check_production_ready` above for the
+        same base/wall split — and must not be mixed in here, or it
+        would double-count the same x/z cell against two elevations.
+        Filler/panel lines are deliberately excluded too: they represent
+        the leftover gap itself (or a decorative attach), not occupied
+        run length, so counting them would trivially zero out the very
+        thing this method measures.
+        """
+        self.ensure_one()
+        return self.cabinet_line_ids.filtered(
+            lambda l: l.active and (
+                l.zone == "base_run"
+                or (l.cabinet_type in ("corner", "appliance")
+                    and l.zone != "wall")
+            )
+        )
+
+    def _compute_remainder_from_occupancy_in(self, lines):
+        """Real remainder (inches): sum, across every wall that actually
+        carries a base run, of (that wall's along-wall extent - the
+        merged, covered length of the lines occupying it).
+
+        Membership per wall is a HYBRID (see the module-level comment):
+        an ordinary (non-corner) line counts only toward the wall named
+        by its own `wall` field; a corner line ALSO counts toward any
+        other wall whose plane its real footprint touches (within
+        `_REMAINDER_WALL_TOL_IN`), since a corner physically bridges two
+        legs but only ever carries one presentational `wall` tag.
+
+        Axis convention matches `kitchen_layout_engine.
+        footprint_from_anchor_mm` (COORDINATE_CONTRACT.md): back/front
+        walls run along X (extent = room_width_in), left/right walls run
+        along Z (extent = room_depth_in). A wall with no member lines
+        contributes nothing — only walls actually carrying a run are
+        summed.
+        """
+        self.ensure_one()
+        room_w = max(0.0, self.room_width_in or 0.0)
+        room_d = max(0.0, self.room_depth_in or 0.0)
+
+        def _footprint_in(line):
+            cab = {"width_mm": (line.width_in or 0) * _MM_PER_IN,
+                   "depth_mm": (line.depth_in or 0) * _MM_PER_IN}
+            place = {"x": (line.x_position_in or 0) * _MM_PER_IN,
+                     "z": (line.z_position_in or 0) * _MM_PER_IN,
+                     "rotation_deg": line.rotation_deg or 0}
+            x0, x1, z0, z1 = kitchen_layout_engine.footprint_from_anchor_mm(
+                cab, place)
+            return (x0 / _MM_PER_IN, x1 / _MM_PER_IN,
+                    z0 / _MM_PER_IN, z1 / _MM_PER_IN)
+
+        corner_lines = lines.filtered(lambda l: l.cabinet_type == "corner")
+        straight_lines = lines - corner_lines
+        corner_footprints = [(cl, _footprint_in(cl)) for cl in corner_lines]
+
+        total_leftover = 0.0
+        for wall in self._REMAINDER_WALLS:
+            axis_extent = room_w if wall in ("back", "front") else room_d
+            member_footprints = [
+                _footprint_in(m) for m in straight_lines
+                if m.wall == wall
+            ]
+            # Bridge corners onto every wall plane they actually touch,
+            # regardless of their own single `wall` field value — the
+            # engine's own run-offset reservation (`_place_lines_on_wall`
+            # / `corner_walls_by_name`) already treats a corner as
+            # belonging to BOTH adjoining walls; this mirrors that.
+            for _cl, (x0, x1, z0, z1) in corner_footprints:
+                touches = (
+                    (wall == "back" and abs(z0) <= _REMAINDER_WALL_TOL_IN)
+                    or (wall == "front" and abs(z1 - room_d) <= _REMAINDER_WALL_TOL_IN)
+                    or (wall == "left" and abs(x0) <= _REMAINDER_WALL_TOL_IN)
+                    or (wall == "right" and abs(x1 - room_w) <= _REMAINDER_WALL_TOL_IN)
+                )
+                if touches:
+                    member_footprints.append((x0, x1, z0, z1))
+
+            if not member_footprints:
+                continue
+
+            intervals = []
+            for (x0, x1, z0, z1) in member_footprints:
+                lo, hi = (x0, x1) if wall in ("back", "front") else (z0, z1)
+                lo = max(0.0, lo)
+                hi = min(axis_extent, hi)
+                if hi > lo:
+                    intervals.append((lo, hi))
+            covered_in = _merge_intervals_covered_in(intervals)
+            total_leftover += max(0.0, axis_extent - covered_in)
+        return total_leftover
+
     @api.depends(
         "cabinet_line_ids.quantity",
         "cabinet_line_ids.price_unit",
         "cabinet_line_ids.cabinet_type",
         "cabinet_line_ids.is_unresolved",
+        "cabinet_line_ids.active",
+        "cabinet_line_ids.zone",
+        "cabinet_line_ids.wall",
+        "cabinet_line_ids.x_position_in",
+        "cabinet_line_ids.z_position_in",
+        "cabinet_line_ids.rotation_deg",
+        "cabinet_line_ids.width_in",
+        "cabinet_line_ids.depth_in",
         "room_width_in",
+        "room_depth_in",
         "sale_order_id",
         "sale_order_id.order_line.product_uom_qty",
         "sale_order_id.order_line.price_subtotal",
@@ -934,15 +1132,32 @@ class SouthbrookKitchenDesign(models.Model):
                     + design.filler_count + design.panel_count
                     + design.appliance_count)
                 design.estimated_price = sum(order_lines.mapped("price_subtotal"))
-            # Remainder: width minus base cabinet modules
-            module_w = 24.0
-            bp = design._find_cabinet_product("base", raise_if_missing=False)
-            if bp:
-                # Task 11 (SBK-024) — the variant's own Width, not the
-                # template's shared nominal default.
-                module_w = placed_width_in(bp) or 24.0
-            n = max(0, int(math.floor(design.room_width_in / module_w)))
-            design.remainder_in = max(0.0, design.room_width_in - n * module_w)
+            # Remainder — real per-wall occupancy once the design has a
+            # placed base-elevation run; legacy room-wide modulo estimate
+            # otherwise. See the module-level comment above
+            # `_REMAINDER_WALL_TOL_IN` for the full rationale.
+            base_run_lines = design._base_run_eligible_lines()
+            if base_run_lines:
+                design.remainder_in = (
+                    design._compute_remainder_from_occupancy_in(base_run_lines))
+            else:
+                module_w = 24.0
+                bp = design._find_cabinet_product("base", raise_if_missing=False)
+                if bp:
+                    # Task 11 (SBK-024) — the variant's own Width, not the
+                    # template's shared nominal default.
+                    module_w = placed_width_in(bp) or 24.0
+                n = max(0, int(math.floor(design.room_width_in / module_w)))
+                # n==0 guard (2026-07-31) — matches controllers/main.py's
+                # /layout route (`remainder = (rw - n*module_w) if n > 0
+                # else 0.0`, Task 10/SBK-023): a room narrower than one
+                # module has no run to complete, so it must not report
+                # the whole room width back as "leftover". The model
+                # field was missing this guard (live evidence: design
+                # 104, room_width_in=12, read remainder_in=12.00 before
+                # this fix) — both entry points now agree.
+                design.remainder_in = (
+                    (design.room_width_in - n * module_w) if n > 0 else 0.0)
 
     # ── Task 7 (SBK-033) — the ONE summary object every surface renders ──
     def _get_counter_summary(self):
@@ -3876,8 +4091,10 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
     )
     cabinet_count = fields.Integer(
         string="Number of Cabinets", default=0,
-        help="0 = template default. Live-clamped to what fits the room "
-             "with the chosen module width and appliance sizes.")
+        help="Seeded to the template's default once a template is chosen "
+             "(0 only before then, and still read as 'template default' "
+             "by the generator). Live-clamped to what fits the room with "
+             "the chosen module width and appliance sizes.")
     module_width_in = fields.Selection(
         [("18", '18"'), ("21", '21"'), ("24", '24"'), ("30", '30"')],
         string="Cabinet Size", default="24", required=True)
@@ -3949,6 +4166,16 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
         for rec in self:
             if rec.template_id and rec.cabinet_count and \
                     rec.count_max and rec.cabinet_count > rec.count_max:
+                rec.cabinet_count = rec.count_max
+            # 2026-07-31 — the field only ever clamped DOWNWARD, so it
+            # sat at 0 in the UI while the helper text alongside it
+            # announced "N cabinet(s) ... (max N)". The 0 was never a
+            # lie to the generator (`_compute_fit` / `action_create`
+            # pass `cabinet_count or None`, which means "use the
+            # template's natural default"), but it read as one to the
+            # user. Seed the resolved default so the number shown IS
+            # the number used.
+            elif rec.template_id and not rec.cabinet_count and rec.count_max:
                 rec.cabinet_count = rec.count_max
 
     def action_create(self):

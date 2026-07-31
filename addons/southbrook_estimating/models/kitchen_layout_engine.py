@@ -531,7 +531,12 @@ def _layer_of(cab):
 # `corner_size_mm`; resolve_and_layout below re-exports/reuses the same
 # constant.
 _CORNER_FOOTPRINT_MM = 914.0            # 36"
-_CORNER_HEIGHT_MM = {"base": 876.0, "wall": 762.0}   # 34.5" / 30"
+# Task 4 (2026-07-31, height-drift) — base was 876.0mm, a round-metric
+# approximation that is actually 34.488" (rounds to 34.49", not 34.50"
+# like every other base cabinet in the catalogue). 876.3mm = 25.4 * 34.5
+# is inch-exact. wall's 762.0mm = 25.4 * 30 was already inch-exact —
+# left unchanged.
+_CORNER_HEIGHT_MM = {"base": 876.3, "wall": 762.0}   # 34.5" / 30"
 # M3 — a corner filler strip's depth matches its layer's run depth
 # (24" base / 12" upper), same convention as the corner heights above.
 _CORNER_FILLER_DEPTH_MM = {"base": 610.0, "wall": 305.0}

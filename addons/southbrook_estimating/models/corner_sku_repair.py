@@ -147,6 +147,21 @@ def repair_corner_sku(env):
     # never notice or fix this class of duplicate at all).
     archive_catalog_family_duplicate_templates(env)
 
+    # Prod-audit follow-up (2026-07-31) — the sweep above enumerates
+    # duplicates VIA VARIANTS (`Product.search` by default_code, then
+    # derives template ids from the matches), so a duplicate TEMPLATE
+    # with ZERO product.product variants of its own is structurally
+    # invisible to it, and it only ever looks at
+    # `_CORNER_FAMILY_BASE_CODES` in the first place. Verified against
+    # prod: four debris templates (SB-BASE-1DR, SB-BASE-2DR,
+    # SB-WALL-1DR, SB-WALL-CORNER) all carry a non-empty TEMPLATE-level
+    # default_code but zero variants — one of them (SB-WALL-CORNER) IS
+    # corner-family and was still missed for exactly this reason; the
+    # other three are out of scope for the sweep above entirely. This
+    # general, template-first sweep closes both gaps at once — see its
+    # own docstring for the full mechanism.
+    archive_zero_variant_duplicate_templates(env)
+
     # Task 23 (SBK-037, .superpowers/sdd/corner-remediation-2026-07-30/
     # task-23-brief.md) — same pattern again: its own independent
     # summary, called last so it sees the codes T4/T4a just settled
@@ -620,6 +635,188 @@ def archive_catalog_family_duplicate_templates(env):
         _logger.info(
             "[SBK-037 hotfix] archive_catalog_family_duplicate_"
             "templates: %s", summary)
+    return summary
+
+
+def archive_zero_variant_duplicate_templates(env):
+    """Prod-audit follow-up (2026-07-31) — archive catalog-family
+    duplicate TEMPLATES that `archive_catalog_family_duplicate_
+    templates()` above cannot see at all.
+
+    Root cause (verified against prod): that sweep enumerates
+    duplicates VIA VARIANTS — `Product.search([("default_code", "=",
+    base_code)])`, then derives `tmpl_ids` from those variants'
+    `product_tmpl_id`. A template with ZERO product.product variants
+    of its own never contributes a row to that search, so it is
+    structurally invisible to it — regardless of whether its code is
+    in `_CORNER_FAMILY_BASE_CODES` at all. Prod carries four such
+    debris templates: SB-BASE-1DR, SB-BASE-2DR, SB-WALL-1DR and
+    SB-WALL-CORNER, each with a non-empty TEMPLATE-level default_code
+    (an earlier buggy `catalog_expansion.build_catalog()` pass minted
+    them with `create_variant='dynamic'` attribute lines that were
+    never materialized into an actual product.product — see
+    `repair_corner_family_skus`'s own "config-enabled products can
+    report zero variants" note — so the default_code given at
+    `Template.create(vals)` time was never touched by the recompute
+    that blanks it on a REAL multi-variant template, and simply stuck)
+    but ZERO variants, so they never appear in `bare_variants` above.
+    SB-WALL-CORNER is corner-family and would have been in scope for
+    the sweep above by code alone, and was STILL missed for exactly
+    this reason; SB-BASE-1DR/-2DR/SB-WALL-1DR are additionally out of
+    that sweep's scope entirely, since it only iterates
+    `_CORNER_FAMILY_BASE_CODES`.
+
+    This sweep is template-first instead, and not restricted to any
+    fixed code list: it builds a `default_code -> {template ids that
+    carry it in ANY form}` map from BOTH `product.product.default_code`
+    (variant-level — covers a multi-variant "real" template whose OWN
+    template-level field correctly reads blank, per the same compute
+    trap documented throughout this file) AND
+    `product.template.default_code` (template-level — covers a
+    single-variant OR zero-variant template, including the debris
+    shape itself). Any code with more than one associated ACTIVE
+    template is a genuine cross-template duplicate.
+
+    Within a duplicate group, a candidate is archived ONLY when ALL of
+    the following hold simultaneously (deliberately conservative — the
+    same predicate as the sibling sweep above, minus the corner-code
+    restriction):
+
+      - it has ZERO active product.product variants;
+      - it has NO ir.model.data (xml_id) record;
+      - it is referenced by ZERO southbrook.kitchen.design.line rows,
+        ZERO sale.order.line rows, and ZERO mrp.bom rows (checked
+        including any INACTIVE variant it might still carry, so a
+        variant that was itself archived while still referenced can
+        never hide a real reference from this guard);
+      - `southbrook_is_cabinet` is not true (guarded — see
+        `_is_flagged_cabinet` below for the module-load-order
+        fallback);
+      - at least one OTHER template in the SAME duplicate group is a
+        BETTER record (has >=1 active variant and/or an xml_id). This
+        is what makes it safe to never archive the last remaining
+        holder of a code, and never archive both members of a pair:
+        if every template sharing a code is equally bare, none of
+        them looks more "real" than any other, so none is touched.
+
+    Archives (active=False), never unlinks. Idempotent: once a
+    duplicate is archived it drops out of the active-only Template
+    search this sweep starts from, so a second call finds nothing left
+    in its group to archive.
+    """
+    summary = {"duplicate_templates_archived": 0,
+               "skipped_has_references": 0, "skipped_no_better_twin": 0}
+    Product = env["product.product"]
+    Template = env["product.template"]
+    IMD = env["ir.model.data"]
+    SaleOrderLine = env["sale.order.line"]
+    has_design_line = "southbrook.kitchen.design.line" in env.registry.models
+    has_bom = "mrp.bom" in env.registry.models
+
+    # southbrook_is_cabinet module-load-order trap (same as
+    # repair_corner_family_skus's has_cabinet_fields, see that
+    # function's comment for the full explanation): southbrook_
+    # kitchen_3d_configurator, which owns this column via `_inherit`,
+    # can load AFTER southbrook_estimating in the module graph, so the
+    # ORM field may not be registered yet even though the DB column
+    # exists. Fall back to a raw, column-existence-checked read.
+    has_cabinet_field = "southbrook_is_cabinet" in Template._fields
+    cabinet_columns = (None if has_cabinet_field
+                        else _cabinet_flag_columns(env.cr))
+    has_is_cabinet_column = (
+        has_cabinet_field
+        or (cabinet_columns is not None
+            and "southbrook_is_cabinet" in cabinet_columns))
+
+    def _is_flagged_cabinet(tmpl_id):
+        if has_cabinet_field:
+            return bool(Template.browse(tmpl_id).southbrook_is_cabinet)
+        if not has_is_cabinet_column:
+            return False
+        env.cr.execute(
+            "SELECT southbrook_is_cabinet FROM product_template "
+            "WHERE id = %s", (tmpl_id,))
+        row = env.cr.fetchone()
+        return bool(row and row[0])
+
+    # code -> set of ACTIVE template ids that carry it, either on their
+    # own template-level default_code or on any of their variants'.
+    code_to_tmpl_ids = {}
+    for tmpl in Template.search([("default_code", "!=", False)]):
+        code_to_tmpl_ids.setdefault(tmpl.default_code, set()).add(tmpl.id)
+    for variant in Product.search([("default_code", "!=", False)]):
+        tmpl = variant.product_tmpl_id
+        if tmpl.active:
+            code_to_tmpl_ids.setdefault(variant.default_code, set()).add(
+                tmpl.id)
+
+    for code in sorted(c for c in code_to_tmpl_ids if c):
+        tmpl_ids = code_to_tmpl_ids[code]
+        if len(tmpl_ids) <= 1:
+            continue  # no cross-template duplicate for this code
+
+        variant_counts = {tid: Product.search_count(
+            [("product_tmpl_id", "=", tid)]) for tid in tmpl_ids}
+        xmlid_counts = {tid: IMD.search_count(
+            [("model", "=", "product.template"), ("res_id", "=", tid)])
+            for tid in tmpl_ids}
+
+        better_ids = {
+            tid for tid in tmpl_ids
+            if variant_counts[tid] >= 1 or xmlid_counts[tid] >= 1
+        }
+        dup_ids = tmpl_ids - better_ids
+        if not dup_ids:
+            continue  # every member already looks "real" — nothing to do
+        if not better_ids:
+            # Every member of this group is equally bare — no record
+            # looks more real than any other, so none is touched
+            # (never archive the last holder, never archive a pair).
+            summary["skipped_no_better_twin"] += len(dup_ids)
+            continue
+
+        for dup_id in sorted(dup_ids):
+            if _is_flagged_cabinet(dup_id):
+                continue
+
+            # active_test=False here on purpose: a variant that was
+            # itself archived while still carrying a real SOL/design-
+            # line reference must not be able to hide that reference
+            # from this guard just because it no longer shows up in
+            # the active-only counts used above.
+            variant_ids = Product.with_context(active_test=False).search(
+                [("product_tmpl_id", "=", dup_id)]).ids
+            has_references = bool(SaleOrderLine.search_count(
+                [("product_id", "in", variant_ids)]))
+            if not has_references and has_design_line:
+                has_references = bool(
+                    env["southbrook.kitchen.design.line"].search_count(
+                        [("product_id", "in", variant_ids)]))
+            if not has_references and has_bom:
+                has_references = bool(env["mrp.bom"].search_count(
+                    [("product_tmpl_id", "=", dup_id)]))
+            if has_references:
+                summary["skipped_has_references"] += 1
+                _logger.warning(
+                    "[zero-variant duplicate sweep] code %s: candidate "
+                    "duplicate template id=%s carries a real sale-order-"
+                    "line/design-line/BOM reference — skipped, NOT "
+                    "archived, needs human review.", code, dup_id)
+                continue
+
+            dup_tmpl = Template.browse(dup_id)
+            _logger.info(
+                "[zero-variant duplicate sweep] archiving zero-variant "
+                "duplicate template id=%s (%r) for code %s — %d better "
+                "twin(s) in the same group: %s.",
+                dup_id, dup_tmpl.name, code, len(better_ids),
+                sorted(better_ids))
+            dup_tmpl.active = False
+            summary["duplicate_templates_archived"] += 1
+
+    _logger.info(
+        "[zero-variant duplicate sweep] "
+        "archive_zero_variant_duplicate_templates: %s", summary)
     return summary
 
 
