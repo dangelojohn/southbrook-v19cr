@@ -3127,9 +3127,14 @@ SouthbrookKitchenConfigurator.template = xml`
         ↔ Drag any product into the scene to add it
       </div>
 
-      <!-- Column header -->
+      <!-- Column header.
+           Task 23 (SBK-037) — "Qty" -> "Availability": every row here
+           is southbrook_is_cabinet=True (the /products route filters
+           server-side), and Southbrook cabinets are built to order,
+           never held as stock, so a numeric on-hand count was always
+           a false signal (frequently 0, rendered in warning red). -->
       <div class="o_sbk_inv_header">
-        <span>Product</span><span>SKU</span><span>Width</span><span>Qty</span><span>Price</span>
+        <span>Product</span><span>SKU</span><span>Width</span><span>Availability</span><span>Price</span>
       </div>
 
       <!-- Product rows.
@@ -3174,8 +3179,18 @@ SouthbrookKitchenConfigurator.template = xml`
           </div>
           <span class="o_sbk_prod_sku"  t-esc="product.sku"/>
           <span class="o_sbk_prod_dim"  t-esc="product.width_in + '&quot;'"/>
-          <span t-att-class="'o_sbk_prod_qty' + (product.available_qty > 50 ? ' ok' : ' low')"
-                t-esc="product.available_qty"/>
+          <!-- Task 23 (SBK-037) — replaces the qty_available-driven
+               "0" (rendered in warning red on every zero-stock
+               cabinet, which is nearly all of them) with the accurate,
+               non-alarming "Made to order". This panel only ever
+               lists southbrook_is_cabinet=True products (server-side
+               filter), so the label applies unconditionally here —
+               no per-row cabinet check needed. product.available_qty
+               is left in the payload/state (harmless, may still be
+               used elsewhere) but is no longer rendered as a stock
+               signal. -->
+          <span class="o_sbk_prod_qty o_sbk_prod_madetoorder"
+                title="Southbrook cabinets are built to order — not held as stock.">Made to order</span>
           <span class="o_sbk_prod_price" t-esc="_money(product.price)"/>
         </button>
         <button type="button" class="o_sbk_prod_add_btn"
@@ -3267,9 +3282,10 @@ SouthbrookKitchenConfigurator.template = xml`
               <dd t-esc="state.selected.archetype_collection"/>
             </t>
           </t>
-          <dt>Available</dt><dd t-att-class="state.selected.available_qty > 0 ? 'ok' : 'low'">
-            <t t-esc="state.selected.available_qty"/> pcs
-          </dd>
+          <!-- Task 23 (SBK-037) — same "Made to order" swap as the
+               inventory list column above; every placeable/placed item
+               here is a southbrook_is_cabinet=True product. -->
+          <dt>Availability</dt><dd class="o_sbk_madetoorder">Made to order</dd>
           <dt>BoM</dt>      <dd><t t-if="state.selected.bom_available">✓ Available</t><t t-else="">—</t></dd>
           <dt>Price</dt>    <dd class="price"><t t-esc="_money(state.selected.price)"/></dd>
         </dl>

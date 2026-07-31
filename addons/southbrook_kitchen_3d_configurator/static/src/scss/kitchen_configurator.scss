@@ -1338,6 +1338,20 @@ $sbk-amber:      #B45309;
     &.low { color: $sbk-warn; }
 }
 
+// Task 23 (SBK-037) — neutral, non-alarming treatment for the
+// "Made to order" label that replaced the qty_available column/row
+// (built-to-order cabinets have no on-hand count to report; the old
+// ok/low coloring above is unused by this label on purpose — a made-
+// to-order product is neither a stock shortage nor a stock surplus).
+.o_sbk_prod_madetoorder {
+    font-size: 11px;
+    font-family: var(--sb-font-mono);
+    font-weight: 600;
+    color: $sbk-mid;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
 // ─── Selected cabinet detail ──────────────────────────────────────────────────
 .o_sbk_detail {
     border-top: 2px solid $sbk-border;
@@ -1486,6 +1500,8 @@ $sbk-amber:      #B45309;
         color: $sbk-dark;
         &.ok    { color: $sbk-success; }
         &.low   { color: $sbk-warn; }
+        // Task 23 (SBK-037) — see .o_sbk_prod_madetoorder above.
+        &.o_sbk_madetoorder { color: $sbk-mid; text-transform: uppercase; letter-spacing: 0.3px; }
         // Typo-spec item 2 — price numeral gets the mono data token.
         &.price { color: $sbk-accent; font-size: 13px; font-family: var(--sb-font-mono); font-weight: 600; }
     }
