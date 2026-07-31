@@ -156,9 +156,19 @@ class TestCabinetCollisionCheck(TransactionCase):
     def test_genuine_same_wall_same_zone_overlap_still_blocks(self):
         """Two base_run cabinets on the SAME wall with truly overlapping
         footprints (14" of real z-overlap, far past the 2mm tolerance)
-        must still produce exactly one blocking CABINET_COLLISION naming
-        both lines."""
+        must still block — and, per the brief's AC ("exactly ONE
+        targeted BLOCK"), exactly once. Task 1 code-review Finding 2:
+        check #3's (wall, zone) grouping is always a subset of check
+        #7's layer grouping, so this exact pair is ALSO same-layer and
+        would otherwise double-fire CABINET_COLLISION +
+        FOOTPRINT_COLLISION for one physical overlap; #3 now dedupes by
+        deferring to #7's richer (coordinate + rotation) message. BOMs
+        are seeded on both products so MISSING_BOM doesn't also block,
+        keeping the total blocking-issue count meaningful."""
         design = self._make_design()
+        Bom = self.env["mrp.bom"]
+        Bom.create({"product_tmpl_id": self.sink_prod.product_tmpl_id.id})
+        Bom.create({"product_tmpl_id": self.b24_prod.product_tmpl_id.id})
         Line = self.env["southbrook.kitchen.design.line"]
         a = Line.create({
             "design_id": design.id, "product_id": self.sink_prod.id,
@@ -179,11 +189,13 @@ class TestCabinetCollisionCheck(TransactionCase):
             "layout_key": "vr-overlap-b",
         })
         issues = design._check_production_ready()
-        collisions = [i for i in issues if i["code"] == "CABINET_COLLISION"]
-        self.assertEqual(len(collisions), 1, issues)
-        self.assertEqual(collisions[0]["severity"], "blocking")
-        self.assertIn("(line #%d)" % a.id, collisions[0]["message"])
-        self.assertIn("(line #%d)" % b.id, collisions[0]["message"])
+        blocking = [i for i in issues if i["severity"] == "blocking"]
+        self.assertEqual(len(blocking), 1, issues)
+        self.assertEqual(blocking[0]["code"], "FOOTPRINT_COLLISION", issues)
+        codes = [i["code"] for i in issues]
+        self.assertNotIn("CABINET_COLLISION", codes, issues)
+        self.assertIn("(line #%d)" % a.id, blocking[0]["message"])
+        self.assertIn("(line #%d)" % b.id, blocking[0]["message"])
 
 
 @tagged("post_install", "-at_install", "southbrook",

@@ -391,6 +391,158 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
         codes = [i["code"] for i in issues]
         self.assertIn("MOTION_ENVELOPE_COLLISION", codes, issues)
 
+    def test_motion_envelope_excludes_legitimate_adjoining_run_neighbor(self):
+        """Task 1 code-review Finding 1, direction (a) — keep the
+        false-positive fix: the corner's own immediately-adjoining run
+        neighbour (the cabinet the corner's leg reservation made room
+        for, flush at zero standoff) must NOT trip
+        MOTION_ENVELOPE_COLLISION. Unlike
+        test_motion_envelope_collision_flags_intruding_cabinet (whose
+        planted cabinet floats with a real standoff gap inside the
+        envelope), this needs a SURVIVING same-wall neighbour after
+        corner resolution — _make_corner_design's single-cabinet-per-
+        wall shape has no survivor (both get consumed by the corner),
+        so this uses two back-wall cabinets.
+        """
+        Design = self.env["southbrook.kitchen.design"]
+        if not _validator_source_has(Design, "MOTION_ENVELOPE_COLLISION"):
+            self.skipTest(
+                "validator check #10 (MOTION_ENVELOPE_COLLISION) not yet "
+                "present")
+
+        self.env["southbrook.placement.rule"].create({
+            "name": "CM motion-envelope neighbor-exclusion rule",
+            "product_tmpl_id": self.corner_tmpl.id,
+            "corner_type_id": "cm-test-motion-envelope-neighbor",
+            "anchor_class": "junction", "tier": "base", "sequence": 1,
+            "payload": {
+                "leg_x_mm": 914.0, "leg_z_mm": 914.0, "height_mm": 876.0,
+                "min_leg_x_mm": 914.0, "min_leg_z_mm": 914.0,
+                "clearance_front_mm": 254.0,   # 10in — well under a 24in bay
+            },
+        })
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "Collision matrix motion — legit neighbor",
+            "partner_id": self.partner.id,
+            "room_width_in": 200.0, "room_depth_in": 200.0,
+            "room_height_in": 96.0, "state": "draft",
+        })
+        Line = self.env["southbrook.kitchen.design.line"]
+        # TWO back-wall cabinets: run_seq 0 is absorbed by the corner
+        # (host_wall="back" for back-left), run_seq 1 SURVIVES and
+        # becomes the real, engine-placed, flush-against-the-corner
+        # neighbour this test exercises.
+        Line.create({
+            "design_id": design.id, "product_id": self.base_prod.id,
+            "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "wall": "back", "run_seq": 0, "origin": "configurator",
+            "layout_key": "cm-neighbor-back-0",
+        })
+        Line.create({
+            "design_id": design.id, "product_id": self.base_prod.id,
+            "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "wall": "back", "run_seq": 1, "origin": "configurator",
+            "layout_key": "cm-neighbor-back-1",
+        })
+        Line.create({
+            "design_id": design.id, "product_id": self.base_prod.id,
+            "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "wall": "left", "run_seq": 0, "origin": "configurator",
+            "layout_key": "cm-neighbor-left-0",
+        })
+        design.action_auto_arrange()
+
+        corner_line = design.cabinet_line_ids.filtered(
+            lambda l: l.cabinet_type == "corner")
+        self.assertEqual(len(corner_line), 1, corner_line)
+        survivor = design.cabinet_line_ids.filtered(
+            lambda l: l.layout_key == "cm-neighbor-back-1")
+        self.assertTrue(survivor, "back run_seq=1 must survive corner "
+                                   "substitution and be repositioned "
+                                   "flush after it")
+        self.assertAlmostEqual(survivor.x_position_in,
+                                corner_line.x_position_in
+                                + corner_line.width_in, delta=0.1)
+
+        issues = design._check_production_ready()
+        codes = [i["code"] for i in issues]
+        self.assertNotIn("MOTION_ENVELOPE_COLLISION", codes, issues)
+
+    def test_motion_envelope_flags_zero_standoff_intruder_on_wrong_wall(self):
+        """Task 1 code-review Finding 1, direction (b) — a candidate at
+        ZERO standoff, sitting in the exact same touch pattern a
+        legitimate adjoining-run neighbour would (flush at the corner's
+        own edge, cross-axis span overlapping), must still fire
+        MOTION_ENVELOPE_COLLISION when it does NOT carry the corner's
+        facing-axis wall tag — i.e. it is provably not the cabinet the
+        corner's leg reservation made room for, so pure touch-geometry
+        alone must not exclude it. This is the worst-case violation
+        (zero clearance at all) and no other check backstops it (flush
+        footprints don't overlap, so #7 FOOTPRINT_COLLISION can't catch
+        it either).
+        """
+        Design = self.env["southbrook.kitchen.design"]
+        if not _validator_source_has(Design, "MOTION_ENVELOPE_COLLISION"):
+            self.skipTest(
+                "validator check #10 (MOTION_ENVELOPE_COLLISION) not yet "
+                "present")
+
+        self.env["southbrook.placement.rule"].create({
+            "name": "CM motion-envelope zero-standoff rule",
+            "product_tmpl_id": self.corner_tmpl.id,
+            "corner_type_id": "cm-test-motion-envelope-zero-standoff",
+            "anchor_class": "junction", "tier": "base", "sequence": 1,
+            "payload": {
+                "leg_x_mm": 914.0, "leg_z_mm": 914.0, "height_mm": 876.0,
+                "min_leg_x_mm": 914.0, "min_leg_z_mm": 914.0,
+                "clearance_front_mm": 254.0,
+            },
+        })
+        # Single cabinet per wall: both back0/left0 are consumed by the
+        # corner, so NO real adjoining-run neighbour survives here — any
+        # hit below is unambiguously the planted candidate, not a
+        # legitimate engine-placed cabinet.
+        design = self._make_corner_design()
+        design.action_auto_arrange()
+        corner_line = design.cabinet_line_ids.filtered(
+            lambda l: l.cabinet_type == "corner")
+        self.assertEqual(len(corner_line), 1, corner_line)
+        self.assertEqual(corner_line.rotation_deg, 90)
+
+        cab = {"width_mm": corner_line.width_in * MM,
+               "depth_mm": corner_line.depth_in * MM}
+        place = {"x": corner_line.x_position_in * MM,
+                 "z": corner_line.z_position_in * MM,
+                 "rotation_deg": corner_line.rotation_deg}
+        fx0, fx1, fz0, fz1 = E.footprint_from_anchor_mm(cab, place)
+
+        # Plant a cabinet FLUSH at the corner's own edge (zero standoff
+        # — fx1 is exactly where the envelope starts, the SAME boundary
+        # a legitimate back-wall neighbour would touch) with its z-span
+        # inside the corner's cross extent — geometrically identical
+        # touch pattern to test (a)'s legitimate survivor. Tag it
+        # wall="left" (the corner's OWN presentation wall, i.e. NOT the
+        # facing-axis wall "back") so only the wall-identity check can
+        # tell it apart from a legitimate neighbour.
+        plant_w_mm = 200.0
+        plant_d_mm = 300.0
+        self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id, "product_id": self.base_prod.id,
+            "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+            "width_in": plant_w_mm / MM, "height_in": 34.5,
+            "depth_in": plant_d_mm / MM,
+            "x_position_in": fx1 / MM, "z_position_in": fz0 / MM,
+            "rotation_deg": 0, "wall": "left", "run_seq": -1,
+            "origin": "configurator", "layout_key": "cm-zero-standoff-plant",
+        })
+
+        issues = design._check_production_ready()
+        codes = [i["code"] for i in issues]
+        self.assertIn("MOTION_ENVELOPE_COLLISION", codes, issues)
+
     def test_corner_filler_missing_flags_deleted_derived_filler_line(self):
         """validator check #11/#13 (CORNER_FILLER_MISSING) — a
         blind-corner rule's filler_x_mm demands a real derived filler

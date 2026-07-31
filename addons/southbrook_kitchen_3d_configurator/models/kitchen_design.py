@@ -1096,6 +1096,26 @@ class SouthbrookKitchenDesign(models.Model):
         for line in self.cabinet_line_ids:
             by_type.setdefault(line.cabinet_type, []).append(line)
 
+        # Shared with check #7 below — a line's vertical placement PLANE
+        # (base-elevation vs wall-elevation; a corner line's plane comes
+        # from its zone, C8, since the upper corner shares the base
+        # corner's x/z cell at a different elevation). Code-review fix
+        # (Finding 2, corner-remediation 2026-07-30): check #3's
+        # (wall, zone) grouping is, by construction, always a SUBSET of
+        # this layer grouping (every zone maps to exactly one layer via
+        # this function) — so any pair check #3 finds overlapping is
+        # ALSO a same-layer pair that check #7 independently re-detects
+        # below with a richer message (exact x/z/rotation for both
+        # cabinets, OBB-aware). Extracted once so both checks derive
+        # "layer" identically instead of two copies silently drifting
+        # apart, and so #3 can dedupe against #7 by construction rather
+        # than by hoping the two stay in sync.
+        def _footprint_layer(line):
+            if line.cabinet_type == "wall" or (
+                    line.cabinet_type == "corner" and line.zone == "wall"):
+                return "wall"
+            return "base"
+
         _CHECK3_MM = _MM_PER_IN
         by_wall_zone = {}
         for line in self.cabinet_line_ids:
@@ -1123,6 +1143,22 @@ class SouthbrookKitchenDesign(models.Model):
                         cab_b, place_b)
                     if not kitchen_layout_engine.footprints_overlap(
                             fp_a, fp_b, eps=2.0):
+                        continue
+                    # Finding 2 dedupe — a same-layer overlap is, by
+                    # construction (see _footprint_layer above), ALSO
+                    # independently caught by check #7 below (same
+                    # solid_overlap_from_anchor_mm primitive, OBB-aware,
+                    # richer message: exact x/z/rotation for both
+                    # cabinets). Skip here so one physical overlap never
+                    # double-blocks under two codes. A same-(wall,zone)
+                    # pair with DIFFERENT layers (e.g. a base line with
+                    # zone manually overridden to "wall" — the field
+                    # allows it) isn't covered by #7's layer grouping and
+                    # still blocks here.
+                    if (_footprint_layer(a) == _footprint_layer(b)
+                            and kitchen_layout_engine.
+                            solid_overlap_from_anchor_mm(
+                                cab_a, place_a, cab_b, place_b)):
                         continue
                     issues.append({
                         "code":     "CABINET_COLLISION",
@@ -1323,12 +1359,10 @@ class SouthbrookKitchenDesign(models.Model):
             # wall-layer corner zone='wall'): the upper corner shares
             # the base corner's x/z cell at a different ELEVATION, so
             # classifying both as "base" would false-flag the pair as
-            # a blocking collision.
-            if line.cabinet_type == "wall" or (
-                    line.cabinet_type == "corner" and line.zone == "wall"):
-                layer = "wall"
-            else:
-                layer = "base"
+            # a blocking collision. (_footprint_layer, defined above
+            # check #3, is the SAME classification — shared so #3's
+            # Finding-2 dedupe can never silently drift from this.)
+            layer = _footprint_layer(line)
             by_layer.setdefault(layer, []).append(line)
         for layer, lines in by_layer.items():
             for i in range(len(lines)):
@@ -1535,19 +1569,58 @@ class SouthbrookKitchenDesign(models.Model):
             # corner's OWN other-leg reservation legitimately placed
             # flush next to it (wall_start_offsets in
             # kitchen_layout_engine.resolve_and_layout — contiguous,
-            # zero-gap, by construction; verified against the live
-            # U-10X8X10 template's back-left junction, design 102,
-            # V1-geometry.md). That is a validator-side modeling defect,
-            # not a real clearance violation: the engine's own placement
-            # is correct (zero overlaps, zero gaps, well inside the
-            # room — V1-geometry.md §3). Fix: a candidate flush-touching
-            # (within 2mm) the corner's OWN footprint, with its extent
-            # overlapping the corner's on the OTHER axis, is "the next
-            # cabinet in the run the corner made room for" — excluded
-            # from this check. A candidate with genuine standoff (a real
-            # intrusion, e.g. the collision-matrix suite's planted
-            # mid-envelope cabinet) is still flagged.
-            def _flush_with_corner(fp_corner, fp_other, tol_mm=2.0):
+            # zero-gap, by construction; verified LIVE against the
+            # U-10X8X10 template's four real corners, design ids
+            # matching V1-geometry.md's design-102 shape — every hit was
+            # a same-wall cabinet flush against the corner's own edge).
+            # That is a validator-side modeling defect, not a real
+            # clearance violation: the engine's own placement is correct
+            # (zero overlaps, zero gaps, well inside the room —
+            # V1-geometry.md §3).
+            #
+            # Code-review fix (Finding 1) — pure geometric touch/overlap
+            # is NOT sufficient to identify "the run the corner made
+            # room for": for rot=90, the corner's own edge (fp x1) is
+            # numerically identical to the envelope's start (env x0), so
+            # a genuine zero-standoff intruder sitting directly in the
+            # swing path touches in EXACTLY the same pattern as the
+            # legitimate neighbour — a pure-geometry exclusion would
+            # silently swallow the worst-case violation (no other check
+            # backstops it: flush footprints don't overlap, so check #7
+            # can't catch it either). The identity that actually
+            # distinguishes them is WHICH WALL the candidate belongs to.
+            # `_CORNER_RESOLVE[cname]` gives the corner's two legs
+            # (host_wall, other_wall); by construction one of the two
+            # always equals the corner's own persisted `wall` (its
+            # presentation) and the other is the wall whose run
+            # continues in the envelope's facing direction (confirmed
+            # live: back-left's facing neighbour is on "back" —
+            # host_wall, since presentation="left"=other_wall;
+            # back-right's facing neighbour is ALSO on "back" — there
+            # other_wall, since presentation="right"=host_wall — i.e.
+            # it's always "whichever leg isn't the presentation wall",
+            # never a fixed host/other choice). A candidate qualifies
+            # for exclusion ONLY when it is BOTH (a) tagged with that
+            # specific facing wall AND (b) flush-touching (within 2mm)
+            # the corner's own footprint with its extent overlapping on
+            # the cross axis — i.e. provably the run cabinet the corner
+            # reserved that wall's cursor for, not merely something
+            # coincidentally positioned at the same coordinates.
+            def _facing_neighbor_wall(corner_wall, cname):
+                spec = kitchen_layout_engine._CORNER_RESOLVE.get(cname)
+                if spec is None:
+                    return None   # standalone (front-right) — no exclusion
+                host_w, other_w, _end, _hand = spec
+                if corner_wall == host_w:
+                    return other_w
+                if corner_wall == other_w:
+                    return host_w
+                return None
+
+            def _is_corner_run_neighbor(fp_corner, fp_other, other_wall,
+                                         facing_wall, tol_mm=2.0):
+                if facing_wall is None or other_wall != facing_wall:
+                    return False
                 ax0, ax1, az0, az1 = fp_corner
                 bx0, bx1, bz0, bz1 = fp_other
                 x_touch = (abs(ax1 - bx0) <= tol_mm
@@ -1572,6 +1645,13 @@ class SouthbrookKitchenDesign(models.Model):
                     continue
                 payload = rr.payload or {}
                 layer = _line_layer(cl)
+                # cname (the corner's name, e.g. "back-left") is shared by
+                # checks #12 and #13 below — only derivable for a DERIVED
+                # corner line whose layout_key carries it.
+                cname = None
+                if (cl.layout_key or "").startswith(key_prefix12):
+                    cname = (cl.layout_key[len(key_prefix12):]
+                             .rsplit("-", 1)[0])
                 # -- 12: motion envelope --
                 # M6 — the envelope box math is orthogonal-only; a
                 # manually rotated corner line (non-90° wall) skips THIS
@@ -1583,6 +1663,8 @@ class SouthbrookKitchenDesign(models.Model):
                               for a in (0, 90, 180, 270, 360)) <= 1.0
                 clearance = payload.get("clearance_front_mm") or 0
                 if clearance > 0 and ortho12:
+                    facing_wall = (_facing_neighbor_wall(cl.wall, cname)
+                                   if cname else None)
                     fp_corner = kitchen_layout_engine.footprint_from_anchor_mm(
                         _cab(cl), _anchor_place(cl))
                     env_box = kitchen_layout_engine.\
@@ -1597,7 +1679,8 @@ class SouthbrookKitchenDesign(models.Model):
                             continue
                         fp = kitchen_layout_engine.footprint_from_anchor_mm(
                             _cab(other), _anchor_place(other))
-                        if _flush_with_corner(fp_corner, fp):
+                        if _is_corner_run_neighbor(
+                                fp_corner, fp, other.wall, facing_wall):
                             continue
                         if kitchen_layout_engine.footprints_overlap(
                                 env_box, fp):
@@ -1622,11 +1705,8 @@ class SouthbrookKitchenDesign(models.Model):
                 # -- 13: demanded fillers present --
                 fx = payload.get("filler_x_mm") or 0
                 fz = payload.get("filler_z_mm") or 0
-                if (fx <= 0 and fz <= 0) or not (
-                        cl.layout_key or "").startswith(key_prefix12):
+                if (fx <= 0 and fz <= 0) or cname is None:
                     continue
-                cname = (cl.layout_key[len(key_prefix12):]
-                         .rsplit("-", 1)[0])
                 spec12 = kitchen_layout_engine._CORNER_RESOLVE.get(cname)
                 if spec12 is None:
                     continue   # standalone corner — engine emits none
