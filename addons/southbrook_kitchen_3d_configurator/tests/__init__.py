@@ -174,3 +174,14 @@ from . import test_counter_summary
 # non-silent warning.
 from . import test_room_bounds_constraint
 from . import test_room_bounds_save_and_autofill_cap
+
+# Task 14, corner-remediation (2026-07-30, SBK-026) — the Wall Cabinet
+# Top selector (fixed_gap/to_ceiling/to_soffit) now feeds the
+# persisted arrange path (action_auto_arrange / _place_lines_on_wall)
+# via a per-design zone_layout override, instead of the hardcoded
+# 1400mm/55.12in sale.order._ZONE_LAYOUT["wall"] constant. Covers the
+# three selector states end-to-end, the to_soffit gate, the new
+# counter_thickness_in setting, the no-position-migration guarantee,
+# and that run-axis (X) placement is unaffected.
+from . import test_wall_cab_top_selector
+from . import test_wall_cab_top_controller

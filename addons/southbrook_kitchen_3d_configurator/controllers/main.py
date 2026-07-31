@@ -130,7 +130,8 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
     )
     def layout(self, room_width_in=12, room_depth_in=24, room_height_in=96,
                partner_id=False, filler_strategy="split",
-               wall_cab_top_alignment="fixed_gap", soffit_height_in=84.0):
+               wall_cab_top_alignment="fixed_gap", soffit_height_in=0.0,
+               counter_thickness_in=1.5):
         """
         Compute the cabinet fill for the given room dimensions.
 
@@ -240,7 +241,12 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # Cabinet dimensions for placement
         base_h = base.product_tmpl_id.southbrook_height_in or 34.5
         wall_h = wall.product_tmpl_id.southbrook_height_in or 30.0
-        ctr_t  = 1.5    # countertop thickness (in)
+        # SBK-026 — was a bare local constant; now the caller-supplied
+        # design-level setting (kitchen.design.counter_thickness_in),
+        # same formula southbrook.kitchen.design._wall_cab_top_geometry
+        # uses for the persisted arrange path, so a new-design preview
+        # here and a later regenerate never disagree.
+        ctr_t  = float(counter_thickness_in or 1.5)  # countertop thickness (in)
         gap    = 18.0   # clearance between counter surface and wall cab bottom
         min_z  = base_h + ctr_t + gap   # bottom of wall cabinet (industry minimum)
 
@@ -450,7 +456,9 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         "/southbrook_kitchen/configurator/save",
         type="jsonrpc", auth="user", methods=["POST"],
     )
-    def save_design(self, name, room, items, partner_id=False, design_id=False):
+    def save_design(self, name, room, items, partner_id=False, design_id=False,
+                     filler_strategy=None, wall_cab_top_alignment=None,
+                     soffit_height_in=None, counter_thickness_in=None):
         """
         Persist (or update) a KitchenDesign and its layout lines.
 
@@ -459,6 +467,18 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         D4 — auto-names new designs (no design_id, no real name) using
         the customer + room dims + date so the design tree view doesn't
         fill with "New Kitchen Design" collisions.
+
+        SBK-026 — filler_strategy / wall_cab_top_alignment /
+        soffit_height_in / counter_thickness_in are the Room panel's
+        settings the OWL client mutates live (kitchen_configurator.js
+        state.fillerStrategy etc.) but, before this fix, never sent
+        here — so they were never persisted onto the design record,
+        meaning the NEXT auto-arrange/resize (which reads these fields
+        off the record, not off any client session) silently reverted
+        to the model defaults. `None` (the default) means "field not
+        sent" — leaves the persisted value untouched, so a caller that
+        only cares about room/items (e.g. an older client build, or a
+        test) never clobbers these.
         """
         # PR2 — validate every incoming item's `wall` BEFORE any
         # create/write happens, so a bad payload never partially
@@ -607,6 +627,34 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             vals["room_width_in"]  = room_w
             vals["room_depth_in"]  = room_d
             vals["room_height_in"] = room_h
+
+        # SBK-026 — round-trip the Room panel's Wall Cabinet Top
+        # settings. Same "None = not sent, leave alone" contract as the
+        # grandfathered room dims above: only write a key the caller
+        # actually supplied, so a partial/older payload never resets an
+        # already-configured design back to defaults. Validated the
+        # same way /layout's own params are (unknown selection ->
+        # fixed_gap; non-finite/negative numbers dropped) so a bad
+        # client payload degrades safely instead of raising.
+        if filler_strategy is not None:
+            fs = str(filler_strategy or "split").lower()
+            vals["filler_strategy"] = (
+                fs if fs in ("split", "left", "right", "scribe") else "split")
+        if wall_cab_top_alignment is not None:
+            wcta = str(wall_cab_top_alignment or "fixed_gap").lower()
+            vals["wall_cab_top_alignment"] = (
+                wcta if wcta in ("fixed_gap", "to_ceiling", "to_soffit")
+                else "fixed_gap")
+        if soffit_height_in is not None:
+            try:
+                vals["soffit_height_in"] = max(0.0, float(soffit_height_in))
+            except (TypeError, ValueError):
+                pass
+        if counter_thickness_in is not None:
+            try:
+                vals["counter_thickness_in"] = max(0.0, float(counter_thickness_in))
+            except (TypeError, ValueError):
+                pass
 
         # D9 — Non-destructive save. Update existing lines by
         # layout_key, create only new ones, unlink only those that

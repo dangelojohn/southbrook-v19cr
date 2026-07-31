@@ -330,15 +330,18 @@ class SouthbrookKitchenDesign(models.Model):
         required=True,
     )
 
-    # ── D8 — Wall-cabinet Z alignment + soffit ─────────────────────────────────
+    # ── D8 / SBK-026 — Wall-cabinet Z alignment + soffit ────────────────────────
     soffit_height_in = fields.Float(
         string="Soffit Height (in)",
-        default=84.0,
+        default=0.0,
         digits=(6, 2),
         help=(
             "Bottom-of-soffit height (typical: 84\" for an 8' ceiling with a "
             "12\" soffit drop). Only consulted when wall_cab_top_alignment is "
-            "'to_soffit'."
+            "'to_soffit'. 0 = unset — 'Up to soffit' is GATED until this is "
+            "set to a positive value (SBK-026); it falls back to the fixed-"
+            "gap height in the meantime rather than silently mispositioning "
+            "the wall run."
         ),
     )
     wall_cab_top_alignment = fields.Selection(
@@ -350,12 +353,153 @@ class SouthbrookKitchenDesign(models.Model):
         string="Wall Cabinet Top",
         default="fixed_gap",
         help=(
-            "Drives the wall cabinet's Z position (bottom-of-cab).\n"
+            "Drives the wall cabinet's Y position (bottom-of-cab elevation).\n"
             "Fixed gap: industry standard 18\" between counter and wall-cab bottom.\n"
             "Up to ceiling: wall cab top touches ceiling (tall uppers).\n"
-            "Up to soffit: wall cab top touches the soffit drop (8' ceiling specials)."
+            "Up to soffit: wall cab top touches the soffit drop (8' ceiling "
+            "specials) — requires Soffit Height to be set above 0."
         ),
     )
+    # SBK-026 — countertop thickness feeding the fixed-gap formula
+    # (base carcass + counter thickness + 18" gap). Previously a bare
+    # local constant (1.5) in both controllers/main.py's /layout route
+    # and this model's production-readiness check; now a real
+    # design-level setting so a non-standard counter material (thicker
+    # butcher block, thinner laminate) actually moves the wall run.
+    counter_thickness_in = fields.Float(
+        string="Counter Thickness (in)",
+        default=1.5,
+        digits=(6, 2),
+        help=(
+            "Countertop thickness used by the Fixed-gap Wall Cabinet Top "
+            "formula: base carcass height + counter thickness + 18\" gap = "
+            "wall cabinet bottom. Standard laminate/quartz is 1.5\"."
+        ),
+    )
+    # SBK-026 — live helper text next to the Wall Cabinet Top selector,
+    # read-only, always in sync with the SAME geometry
+    # (_wall_cab_top_geometry) the auto-arrange feed and the
+    # production-readiness check consult, so the form can never show a
+    # number that disagrees with what a regenerate would actually write.
+    wall_cab_bottom_in = fields.Float(
+        string="Wall Cabinet Bottom (in)",
+        compute="_compute_wall_cab_bottom_in",
+        digits=(6, 2),
+        help="Resulting bottom-of-wall-cabinet height for the current "
+             "Wall Cabinet Top selection. Applies on the next "
+             "Auto-arrange / regenerate — existing saved positions are "
+             "not migrated in place.",
+    )
+    wall_cab_bottom_helper = fields.Char(
+        string="Wall Cabinet Top Preview",
+        compute="_compute_wall_cab_bottom_in",
+        help="Human-readable preview of _compute_wall_cab_bottom_in, for "
+             "display next to the Wall Cabinet Top selector.",
+    )
+
+    @api.depends("wall_cab_top_alignment", "soffit_height_in",
+                 "counter_thickness_in", "room_height_in",
+                 "cabinet_line_ids.cabinet_type", "cabinet_line_ids.height_in")
+    def _compute_wall_cab_bottom_in(self):
+        for design in self:
+            geo = design._wall_cab_top_geometry()
+            design.wall_cab_bottom_in = round(geo["y_in"], 2)
+            top_in = geo["y_in"] + geo["wall_h"]
+            if geo["alignment"] == "to_ceiling":
+                mode_label = "up to ceiling"
+            elif geo["alignment"] == "to_soffit":
+                mode_label = "up to soffit"
+            else:
+                mode_label = "%.1f\" gap above counter" % geo["gap"]
+            gated_note = (
+                " (soffit height not set — using fixed-gap height)"
+                if geo["soffit_gated_off"] else ""
+            )
+            design.wall_cab_bottom_helper = (
+                "Bottom of cabinet: %.2f\" · Top: %.2f\" (%s)%s"
+                % (geo["y_in"], top_in, mode_label, gated_note)
+            )
+
+    def _wall_cab_top_geometry(self):
+        """Shared SBK-026 geometry: the Wall Cabinet Top selector resolved
+        into an actual bottom-of-wall-cabinet elevation (inches), plus the
+        inputs that produced it.
+
+        Single source of truth for THREE consumers that must never
+        disagree: `_wall_cab_zone_layout` (feeds the engine's zone table
+        for action_auto_arrange / _place_lines_on_wall), the D12
+        production-readiness soffit/ceiling check, and the live helper
+        text on the Room panel.
+
+        base_h / wall_h default to the standard 34.5"/30" carcass —
+        matching kitchen_layout_engine._CORNER_HEIGHT_MM and the
+        controller's /layout route — but widen to the tallest ACTUAL
+        base/wall cabinet already on this design, same convention the
+        pre-existing soffit/ceiling check used.
+
+        `to_soffit` is GATED (SBK-026 item 3): with soffit_height_in <= 0
+        it silently resolves as `fixed_gap` instead of collapsing the
+        wall run to the industry-minimum clearance at Y=0-ish, which
+        would read as a broken layout rather than an unset setting.
+        """
+        self.ensure_one()
+        base_h, wall_h = 34.5, 30.0
+        for dl in self.cabinet_line_ids:
+            if dl.cabinet_type == "base":
+                base_h = max(base_h, dl.height_in or base_h)
+            elif dl.cabinet_type == "wall":
+                wall_h = max(wall_h, dl.height_in or wall_h)
+
+        ctr_t = self.counter_thickness_in or 1.5
+        gap = 18.0
+        min_in = base_h + ctr_t + gap
+        soffit_in = self.soffit_height_in or 0.0
+        requested = self.wall_cab_top_alignment or "fixed_gap"
+        soffit_gated_off = requested == "to_soffit" and soffit_in <= 0
+
+        if requested == "to_ceiling":
+            alignment = "to_ceiling"
+            eff_ceiling = self.room_height_in or 0.0
+            y_in = max(min_in, eff_ceiling - wall_h)
+        elif requested == "to_soffit" and soffit_in > 0:
+            alignment = "to_soffit"
+            eff_ceiling = soffit_in
+            y_in = max(min_in, soffit_in - wall_h)
+        else:
+            # fixed_gap, or to_soffit gated off for lack of a soffit height.
+            alignment = "fixed_gap"
+            eff_ceiling = self.room_height_in or 0.0
+            y_in = min_in
+
+        return {
+            "base_h": base_h, "wall_h": wall_h, "ctr_t": ctr_t, "gap": gap,
+            "alignment": alignment, "y_in": y_in,
+            "eff_ceiling": eff_ceiling, "soffit_gated_off": soffit_gated_off,
+        }
+
+    def _wall_cab_zone_layout(self):
+        """Zone-layout override honouring this design's Wall Cabinet Top
+        selector (SBK-026).
+
+        `sale.order._ZONE_LAYOUT` is the single class-level source of
+        truth for every OTHER zone (base_run/tall/island/accessory/
+        other) and stays untouched — its "wall" entry (1400mm) is left
+        in place as the module-level FALLBACK default for any caller
+        that doesn't go through a `kitchen.design` (e.g. a bare
+        `kitchen_layout_engine` unit test, or `sale.order`'s own
+        line-based 3D payload, neither of which has a Wall Cabinet Top
+        setting to honour). This method returns a COPY with only the
+        "wall" entry's y_floor replaced by the resolved value, computed
+        at the CALLER per the corner-remediation brief — the engine
+        itself (kitchen_layout_engine.py) is unmodified.
+        """
+        self.ensure_one()
+        SaleOrder = self.env["sale.order"]
+        zone_layout = dict(SaleOrder._ZONE_LAYOUT)
+        cursor_name, _default_y_mm, z_offset = zone_layout["wall"]
+        y_in = self._wall_cab_top_geometry()["y_in"]
+        zone_layout["wall"] = (cursor_name, y_in * _MM_PER_IN, z_offset)
+        return zone_layout
 
     # ── D7 — Filler strategy ────────────────────────────────────────────────────
     filler_strategy = fields.Selection(
@@ -949,7 +1093,14 @@ class SouthbrookKitchenDesign(models.Model):
                 cabs, room,
                 auto_assign=not manual,
                 corner_rules=corner_rules,
-                zone_layout=SaleOrder._ZONE_LAYOUT,
+                # SBK-026 — was the bare class constant (wall always at
+                # 1400mm/55.12in regardless of the Wall Cabinet Top
+                # selector). A per-design COPY with only "wall"'s
+                # y_floor overridden honours wall_cab_top_alignment /
+                # soffit_height_in / counter_thickness_in; every other
+                # zone (base_run/tall/island/accessory/other) is
+                # untouched, straight from the same class constant.
+                zone_layout=design._wall_cab_zone_layout(),
                 worktop_cursor=SaleOrder._WORKTOP_CURSOR,
                 worktop_y=SaleOrder._WORKTOP_Y_FLOOR,
             )
@@ -1321,7 +1472,9 @@ class SouthbrookKitchenDesign(models.Model):
         places = {p["id"]: p for p in kitchen_layout_engine.layout(
             cabs, room,
             wall_start_offsets=wall_start_offsets,
-            zone_layout=SaleOrder._ZONE_LAYOUT,
+            # SBK-026 — same per-design override as action_auto_arrange
+            # above; see _wall_cab_zone_layout's docstring.
+            zone_layout=design._wall_cab_zone_layout(),
             worktop_cursor=SaleOrder._WORKTOP_CURSOR,
             worktop_y=SaleOrder._WORKTOP_Y_FLOOR)}
         cabs_by_id = {c["id"]: c for c in cabs}
@@ -1390,8 +1543,12 @@ class SouthbrookKitchenDesign(models.Model):
                 "room_height_in":         self.room_height_in,
                 "partner_id":             self.partner_id.id if self.partner_id else False,
                 "filler_strategy":        self.filler_strategy or "split",
-                "soffit_height_in":       self.soffit_height_in or 84.0,
+                # SBK-026 — 0 means "unset" (to_soffit gated); do NOT
+                # substitute a truthy fallback here or the client can
+                # never tell an unset soffit from a genuinely-84in one.
+                "soffit_height_in":       self.soffit_height_in or 0.0,
                 "wall_cab_top_alignment": self.wall_cab_top_alignment or "fixed_gap",
+                "counter_thickness_in":   self.counter_thickness_in or 1.5,
             },
         }
 
@@ -1785,28 +1942,22 @@ class SouthbrookKitchenDesign(models.Model):
 
         # 6) Soffit/ceiling clearance — replicates the controller check
         #    so the form-level validate button matches the configurator.
-        base_h, wall_h, ctr_t, gap = 34.5, 30.0, 1.5, 18.0
+        #    SBK-026 — geometry now comes from the SAME
+        #    `_wall_cab_top_geometry` helper the auto-arrange feed
+        #    (`_wall_cab_zone_layout`) and the Room panel's live helper
+        #    text consult, so this check can never disagree with what a
+        #    regenerate actually writes. `_line_ref` still wants the
+        #    SPECIFIC line responsible for the tallest base/wall cabinet
+        #    (presentation only), so that lookup stays local.
         base_h_line = wall_h_line = None
+        _tallest_base = _tallest_wall = 0.0
         for line in self.cabinet_line_ids:
-            if line.cabinet_type == "base":
-                cand = line.height_in or base_h
-                if cand > base_h:
-                    base_h, base_h_line = cand, line
-            elif line.cabinet_type == "wall":
-                cand = line.height_in or wall_h
-                if cand > wall_h:
-                    wall_h, wall_h_line = cand, line
-        if (self.wall_cab_top_alignment or "fixed_gap") == "to_soffit":
-            eff_top = self.soffit_height_in or 0
-        else:
-            eff_top = self.room_height_in or 0
-        # Use current wall-cab Z model for the check
-        if self.wall_cab_top_alignment == "to_ceiling":
-            wz = max(base_h + ctr_t + gap, (self.room_height_in or 0) - wall_h)
-        elif self.wall_cab_top_alignment == "to_soffit":
-            wz = max(base_h + ctr_t + gap, (self.soffit_height_in or 0) - wall_h)
-        else:
-            wz = base_h + ctr_t + gap
+            if line.cabinet_type == "base" and (line.height_in or 0) > _tallest_base:
+                _tallest_base, base_h_line = line.height_in, line
+            elif line.cabinet_type == "wall" and (line.height_in or 0) > _tallest_wall:
+                _tallest_wall, wall_h_line = line.height_in, line
+        geo = self._wall_cab_top_geometry()
+        wz, wall_h, eff_top = geo["y_in"], geo["wall_h"], geo["eff_ceiling"]
         if wz + wall_h > eff_top + 0.01 and eff_top > 0:
             issues.append({
                 "code":     "WALL_CAB_EXCEEDS_CEILING",
@@ -1814,7 +1965,7 @@ class SouthbrookKitchenDesign(models.Model):
                 "message":  (
                     "Wall cabinet top reaches %.1f\" but %s sits at %.1f\""
                 ) % (wz + wall_h,
-                     "soffit" if self.wall_cab_top_alignment == "to_soffit" else "ceiling",
+                     "soffit" if geo["alignment"] == "to_soffit" else "ceiling",
                      eff_top) + _line_ref(wall_h_line, base_h_line),
             })
 

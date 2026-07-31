@@ -329,6 +329,30 @@
                             <field name="room_height_in" string="Height (in)"/>
                         </group>
                     </group>
+                    <!-- SBK-026 — Wall Cabinet Top selector + its inputs,
+                         moved onto the Room panel itself (previously
+                         only reachable inside the JS 3D Configurator's
+                         own controls, and those are dead once a design
+                         is hydrated/saved — see kitchen_configurator.js
+                         F12). Editing here and re-running Auto-arrange /
+                         Generate Layout / a room resize is the
+                         authoritative path: action_auto_arrange and
+                         _place_lines_on_wall (kitchen_design.py) read
+                         these fields directly via _wall_cab_zone_layout.
+                         wall_cab_bottom_helper is the live "item 4"
+                         helper text next to the selector; it always
+                         reflects the CURRENT field values (read-only,
+                         no regenerate needed to preview the number). -->
+                    <group>
+                        <group string="Wall Cabinet Top">
+                            <field name="wall_cab_top_alignment"/>
+                            <field name="counter_thickness_in"/>
+                            <field name="soffit_height_in"
+                                   invisible="wall_cab_top_alignment != 'to_soffit'"/>
+                            <field name="wall_cab_bottom_helper"
+                                   string="Preview" readonly="1"/>
+                        </group>
+                    </group>
                     <!-- Task 7 (SBK-033) — the backend form is one of the
                          three surfaces (3D header, 3D sidebar, this form)
                          that must render the SAME server-computed summary

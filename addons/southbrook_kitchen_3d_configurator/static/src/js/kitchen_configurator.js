@@ -283,7 +283,16 @@ class SouthbrookKitchenConfigurator extends Component {
             // the model defaults so an unsaved design still computes
             // sensible wall-cab positions.
             wallCabTopAlignment: params.wall_cab_top_alignment || "fixed_gap",
-            soffitHeightIn:      params.soffit_height_in       || 84.0,
+            // SBK-026 — 0 is the deliberate "unset" sentinel gating
+            // 'to_soffit' (see kitchen_design.py's
+            // _wall_cab_top_geometry). Previously defaulted to 84.0,
+            // which meant 'to_soffit' silently worked even when nobody
+            // had ever set a soffit height; falling back to 0 here
+            // (same as a missing/blank param) keeps that gate honest.
+            soffitHeightIn:      params.soffit_height_in || 0.0,
+            // SBK-026 — counter thickness feeding the fixed-gap formula
+            // (base carcass + counter thickness + 18" gap).
+            counterThicknessIn:  params.counter_thickness_in || 1.5,
             // F12 — reactive mirror of `this._hydratedFromDesign` (a
             // plain, non-reactive flag `_refreshLayout()` already uses
             // internally to stop regenerating a reopened design's
@@ -909,7 +918,10 @@ class SouthbrookKitchenConfigurator extends Component {
                 partner_id:              this.state.partnerId || false,
                 filler_strategy:         this.state.fillerStrategy || "split",
                 wall_cab_top_alignment:  this.state.wallCabTopAlignment || "fixed_gap",
-                soffit_height_in:        this.state.soffitHeightIn || 84.0,
+                // SBK-026 — 0 is "unset"; must not `|| 84.0` this back up
+                // (see state-init comment above for why).
+                soffit_height_in:        this.state.soffitHeightIn || 0.0,
+                counter_thickness_in:    this.state.counterThicknessIn || 1.5,
             });
             this.state.error      = result.error || "";
             this.state.errorCode  = result.error_code || "";
@@ -1236,6 +1248,64 @@ class SouthbrookKitchenConfigurator extends Component {
             await this._refreshLayout();
         }
         this._queueAutoSave();
+    }
+
+    // SBK-026 — countertop thickness feeding the fixed_gap formula.
+    // Same dead-post-hydration / re-emit-only-if-consulted pattern as
+    // _changeSoffit; fixed_gap and the industry-minimum floor under
+    // to_ceiling/to_soffit both consult it (see _wallCabBottomIn),
+    // so unlike soffit it re-emits for every alignment mode.
+    async _changeCounterThickness(rawValue) {
+        if (this._hydratedFromDesign) return;
+        const v = parseFloat(rawValue);
+        if (!Number.isFinite(v) || v < 0.25 || v > 6) return;
+        this._markUserAction();   // T7 gate
+        this.state.counterThicknessIn = v;
+        await this._refreshLayout();
+        this._queueAutoSave();
+    }
+
+    // SBK-026 — live geometry backing the Wall Cabinet Top helper text.
+    // Mirrors southbrook.kitchen.design._wall_cab_top_geometry exactly
+    // (base 34.5"/wall 30" standard carcass, fixed 18" gap) so the
+    // client-side preview never disagrees with what the next
+    // Auto-arrange/regenerate on the server will actually write. Pure
+    // getter — the template calls it directly, no state duplication.
+    _wallCabBottomGeometry() {
+        const baseH = 34.5;
+        const wallH = 30.0;
+        const ctrT = this.state.counterThicknessIn || 1.5;
+        const gap = 18.0;
+        const minIn = baseH + ctrT + gap;
+        const soffitIn = this.state.soffitHeightIn || 0;
+        const requested = this.state.wallCabTopAlignment || "fixed_gap";
+        const gated = requested === "to_soffit" && soffitIn <= 0;
+        let alignment = "fixed_gap";
+        let yIn = minIn;
+        if (requested === "to_ceiling") {
+            alignment = "to_ceiling";
+            yIn = Math.max(minIn, (this.state.room.height_in || 0) - wallH);
+        } else if (requested === "to_soffit" && soffitIn > 0) {
+            alignment = "to_soffit";
+            yIn = Math.max(minIn, soffitIn - wallH);
+        }
+        return { yIn, topIn: yIn + wallH, alignment, gated, gap };
+    }
+
+    // SBK-026 — the actual helper-text sentence rendered next to the
+    // Wall Cabinet Top selector (item 4 of the brief): live
+    // bottom-of-cabinet height, so fixed_gap/to_ceiling/to_soffit read
+    // as visibly different the moment the selector changes.
+    _wallCabBottomText() {
+        const g = this._wallCabBottomGeometry();
+        const modeLabel = g.alignment === "to_ceiling" ? "up to ceiling"
+            : g.alignment === "to_soffit" ? "up to soffit"
+            : g.gap.toFixed(1) + "\" gap above counter";
+        const gatedNote = g.gated
+            ? " (soffit height not set — using fixed-gap height)" : "";
+        return "Bottom of cabinet: " + g.yIn.toFixed(2)
+            + "\" · Top: " + g.topIn.toFixed(2) + "\" (" + modeLabel + ")"
+            + gatedNote;
     }
 
     // D7 — Apply the server's snap hint: round room width to the
@@ -2429,6 +2499,15 @@ class SouthbrookKitchenConfigurator extends Component {
                 items:      this.state.items,
                 design_id:  this.state.designId || false,
                 partner_id: this.state.partnerId || false,
+                // SBK-026 — round-trip the Wall Cabinet Top selector +
+                // its inputs onto the design record so the NEXT
+                // Auto-arrange/resize (which reads these fields off the
+                // record, not off this client session) honours the same
+                // choice — previously never persisted at all.
+                filler_strategy:         this.state.fillerStrategy || "split",
+                wall_cab_top_alignment:  this.state.wallCabTopAlignment || "fixed_gap",
+                soffit_height_in:        this.state.soffitHeightIn || 0.0,
+                counter_thickness_in:    this.state.counterThicknessIn || 1.5,
             });
             // Fix-round — a structured rejection (see _saveErrorMessage)
             // must never fall through to the success path below.
@@ -2613,6 +2692,13 @@ class SouthbrookKitchenConfigurator extends Component {
                 items:      this.state.items,
                 design_id:  this.state.designId || false,
                 partner_id: this.state.partnerId || false,
+                // SBK-026 — same round-trip as the manual _saveDesign
+                // path above; auto-save must not silently drop the
+                // Wall Cabinet Top selection on its next debounce.
+                filler_strategy:         this.state.fillerStrategy || "split",
+                wall_cab_top_alignment:  this.state.wallCabTopAlignment || "fixed_gap",
+                soffit_height_in:        this.state.soffitHeightIn || 0.0,
+                counter_thickness_in:    this.state.counterThicknessIn || 1.5,
             });
             // Fix-round (coordinator review) — a structured rejection
             // (see _saveErrorMessage) used to fall straight through to
@@ -3036,6 +3122,20 @@ SouthbrookKitchenConfigurator.template = xml`
           <option value="to_soffit"  t-att-selected="state.wallCabTopAlignment === 'to_soffit'  ? 'selected' : ''">Up to soffit</option>
         </select>
       </label>
+      <!-- SBK-026 — countertop thickness feeding the fixed_gap formula
+           (base carcass + counter thickness + 18" gap) AND the
+           industry-minimum floor under to_ceiling/to_soffit. Always
+           visible (not gated to fixed_gap only) since every mode
+           consults it as the floor. -->
+      <label class="o_sbk_field"
+             t-att-title="state.hydratedFromDesign ? 'Reopen-safe mode — layout regeneration is disabled for a reopened design' : 'Countertop thickness'">
+        <span>Counter thickness (in)</span>
+        <input type="number" min="0.25" max="6" step="0.25"
+               class="o_sbk_edit_input"
+               t-att-value="state.counterThicknessIn"
+               t-att-disabled="state.hydratedFromDesign"
+               t-on-change="(ev) => this._changeCounterThickness(ev.target.value)"/>
+      </label>
       <label t-if="state.wallCabTopAlignment === 'to_soffit'" class="o_sbk_field"
              t-att-title="state.hydratedFromDesign ? 'Reopen-safe mode — layout regeneration is disabled for a reopened design' : 'Soffit height'">
         <span>Soffit height (in)</span>
@@ -3045,6 +3145,14 @@ SouthbrookKitchenConfigurator.template = xml`
                t-att-disabled="state.hydratedFromDesign"
                t-on-change="(ev) => this._changeSoffit(ev.target.value)"/>
       </label>
+      <!-- SBK-026 item 4 — live helper text: the resulting
+           bottom-of-cabinet height, right next to the selector, so
+           fixed_gap / to_ceiling / to_soffit read as visibly different
+           the moment the selection changes (Front-view AC). Not gated
+           by hydration — it is read-only and always reflects the
+           design's CURRENT (last-regenerated) setting, same as any
+           other display-only field. -->
+      <div class="o_sbk_field o_sbk_wall_cab_helper" t-esc="_wallCabBottomText()"/>
 
       <!-- Summary metrics — Task 7 (SBK-033): base/wall/corner are
            always-visible (the V4-counters-templates.md AC: a U-shape
