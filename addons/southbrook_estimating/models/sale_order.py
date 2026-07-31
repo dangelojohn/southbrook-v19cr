@@ -233,11 +233,40 @@ class SaleOrder(models.Model):
     # This does not touch line price_unit logic (design-time snapshot
     # architecture, T5-adjudicated) or the order.state != 'draft' guard
     # stock's own compute already applies — both preserved unchanged.
+    #
+    # Review fix-round finding (IMPORTANT): website_sale ALSO overrides
+    # this exact compute (GeoIP pricelist resolution for website_id-
+    # bearing carts — website_sale/models/sale_order.py). res.partner.
+    # channel defaults to "retail" for EVERY partner (see res_partner.py),
+    # so without a gate, every storefront checkout address write (which
+    # writes partner_id on the cart order) would have Southbrook's
+    # channel resolution silently discard website_sale's GeoIP pricelist
+    # selection — a surface the old @api.onchange-only resolver never
+    # reached (onchange never fires on a website controller's ORM write
+    # either). Q1's "channel pricelists auto-apply" architecture was
+    # written for BACKEND/Order-Builder/kitchen-quote orders, which never
+    # carry a website_id; storefront carts are website_sale's domain and
+    # must keep ITS pricing resolution untouched. Conservative fix
+    # (matches pre-fix reality for storefront carts exactly): skip the
+    # channel override entirely when order.website_id is set. super()
+    # above still runs unconditionally first, so website_sale's own
+    # override — wherever it sits in the MRO super() chain relative to
+    # this one — still gets to compute (and this method never clobbers)
+    # whatever pricelist_id it produces for those orders.
+    #
+    # getattr(..., False), not order.website_id directly: website_id is
+    # a website_sale field, and southbrook_estimating must stay
+    # installable standalone for the backend-only sales-rep persona
+    # (CLAUDE.md section 2 -- "it can run without the website addon").
+    # Same guarded-optional-dependency pattern this file already uses
+    # for southbrook_is_cabinet above (get_kitchen_3d_payload).
     @api.depends("partner_id", "company_id")
     def _compute_pricelist_id(self):
         super()._compute_pricelist_id()
         for order in self:
             if order.state != "draft":
+                continue
+            if getattr(order, "website_id", False):
                 continue
             partner = order.partner_id
             if not partner or not partner.channel:

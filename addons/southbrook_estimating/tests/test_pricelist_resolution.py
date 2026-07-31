@@ -274,3 +274,153 @@ class TestPricelistResolution(SouthbrookTestCase):
             "Task 31 — Form-driven partner switch still resolves the "
             "channel pricelist correctly after the write-path fix",
         )
+
+    # --- Task 31 fix-round: review findings -----------------------------
+    #
+    # FINDING 1 (Important) — website_sale ALSO overrides
+    # _compute_pricelist_id (GeoIP pricelist resolution for website_id-
+    # bearing carts). Since res.partner.channel defaults to "retail" for
+    # EVERY partner, the original fix's unconditional loop would have had
+    # Southbrook's channel resolution silently discard website_sale's
+    # GeoIP pricelist selection on every storefront checkout address
+    # write — a surface the old onchange-only resolver never reached.
+    # Fixed with an `if getattr(order, "website_id", False): continue`
+    # gate in the compute loop: channel resolution governs BACKEND/
+    # Order-Builder/kitchen-quote orders only; storefront carts keep
+    # website_sale's own pricing.
+
+    def test_16_website_order_channel_partner_write_keeps_website_pricing(self):
+        """A website_id-bearing draft order must NOT have its pricelist
+        overridden by the Southbrook channel resolver on a partner
+        write, even when the new partner carries a channel (which is
+        every partner, by default). Without a live GeoIP context (no
+        real HTTP request in a unit test), website_sale's own override
+        falls straight through to stock's plain behaviour
+        (partner.property_product_pricelist) for website orders — so
+        this test also doubles as proof the channel override was
+        skipped, not merely coincidentally equal to it."""
+        Website = self.env["website"].sudo()
+        website = Website.search([], limit=1)
+        if not website:
+            self.skipTest(
+                "no website record on this DB — website_sale not fully "
+                "seeded, cannot exercise the website_id gate"
+            )
+        origin = self._make_retail("T31F1 Origin Retail")
+        order = self.Order.create({
+            "partner_id": origin.id,
+            "website_id": website.id,
+        })
+        self.assertTrue(order.website_id, "sanity — website order")
+
+        trades = self._make_tradesperson("T31F1 Tier3 Website", tier="3")
+        order.write({"partner_id": trades.id})
+        order.invalidate_recordset()
+        trades.invalidate_recordset()
+
+        self.assertNotEqual(
+            order.pricelist_id,
+            self._ref("pricelist_tradesperson_tier_3"),
+            "Task 31 fix-round FINDING 1 — a website_id-bearing order "
+            "must NOT have the Southbrook channel resolver override its "
+            "pricelist; website_sale governs pricing for storefront "
+            "carts, not the channel resolver",
+        )
+        self.assertEqual(
+            order.pricelist_id,
+            trades.property_product_pricelist,
+            "a website order without a live GeoIP context falls through "
+            "website_sale's own super() chain to stock's plain "
+            "property_product_pricelist behaviour, never the channel "
+            "resolver",
+        )
+
+    def test_17_backend_order_still_resolves_channel_alongside_website_gate(self):
+        """Companion to test_16 — the new website_id gate must not
+        regress the ordinary backend write-path fix: an order with NO
+        website_id still resolves the channel pricelist on a plain
+        write()."""
+        origin = self._make_retail("T31F1 Origin Retail Backend")
+        order = self.Order.create({"partner_id": origin.id})
+        self.assertFalse(
+            getattr(order, "website_id", False),
+            "sanity — backend order, no website",
+        )
+
+        trades = self._make_tradesperson("T31F1 Tier3 Backend", tier="3")
+        order.write({"partner_id": trades.id})
+        order.invalidate_recordset()
+
+        self.assertEqual(
+            order.pricelist_id,
+            self._ref("pricelist_tradesperson_tier_3"),
+            "Task 31 fix-round — a backend (non-website) order must "
+            "still resolve the channel pricelist on a write(), "
+            "unaffected by the new website_id gate",
+        )
+
+    # FINDING 2 (Minor) — named-risk scenarios the review traced but
+    # nothing asserted: a manually-picked pricelist surviving an
+    # unrelated write, and a partner A->B->A round-trip re-resolving
+    # the channel over that manual pick. Both are inherent Odoo
+    # compute-with-dependency semantics (store=True, readonly=False,
+    # precompute=True — the field is "assisted", not "locked" — see
+    # stock's pricelist_id field definition), not new behaviour
+    # introduced by this fix; documented here as regression coverage.
+
+    def test_18_manual_pricelist_survives_writes_not_touching_dependencies(self):
+        """A manually-set pricelist_id (e.g. picked ad hoc by a rep,
+        deliberately NOT the channel-resolved one) must survive an
+        ordinary write that touches neither partner_id nor company_id
+        (_compute_pricelist_id's only dependencies)."""
+        partner = self._make_dealer("T31F2 Dealer")
+        order = self.Order.create({"partner_id": partner.id})
+        self.assertEqual(order.pricelist_id, self._ref("pricelist_dealer"))
+
+        manual = self._ref("pricelist_retail")  # deliberately not dealer's
+        order.write({"pricelist_id": manual.id})
+        order.invalidate_recordset()
+        self.assertEqual(order.pricelist_id, manual)
+
+        order.write({"note": "T31F2 unrelated write"})
+        order.invalidate_recordset()
+        self.assertEqual(
+            order.pricelist_id,
+            manual,
+            "Task 31 fix-round FINDING 2(a) — a write that touches "
+            "neither partner_id nor company_id must never disturb a "
+            "manually-picked pricelist_id",
+        )
+
+    def test_19_partner_roundtrip_reresolves_channel_over_manual_pick(self):
+        """A manually-picked pricelist_id does NOT survive a partner_id
+        round-trip (A -> B -> A): each write to partner_id is a
+        dependency change for _compute_pricelist_id, so the compute
+        re-fires and channel-resolves fresh every time. This is
+        inherent to Odoo's compute-with-dependency semantics — it
+        matches the Form/onchange path's existing behaviour (NF13
+        test_10 above) — not a regression introduced by this fix."""
+        partner_a = self._make_dealer("T31F2 Partner A Dealer")
+        partner_b = self._make_retail("T31F2 Partner B Retail")
+        order = self.Order.create({"partner_id": partner_a.id})
+        self.assertEqual(order.pricelist_id, self._ref("pricelist_dealer"))
+
+        manual = self._ref("pricelist_tradesperson")  # arbitrary manual pick
+        order.write({"pricelist_id": manual.id})
+        order.invalidate_recordset()
+        self.assertEqual(order.pricelist_id, manual)
+
+        order.write({"partner_id": partner_b.id})
+        order.invalidate_recordset()
+        self.assertEqual(order.pricelist_id, self._ref("pricelist_retail"))
+
+        order.write({"partner_id": partner_a.id})
+        order.invalidate_recordset()
+        self.assertEqual(
+            order.pricelist_id,
+            self._ref("pricelist_dealer"),
+            "Task 31 fix-round FINDING 2(b) — a partner A->B->A "
+            "round-trip re-resolves the channel pricelist fresh each "
+            "time, overriding any manual pick made in between; inherent "
+            "compute-dependency semantics, documented not fixed",
+        )
