@@ -73,17 +73,6 @@ def _footprint(line):
     return E.footprint_from_anchor_mm(_cab_mm(line), _place_mm(line))
 
 
-def _layer_of_line(line):
-    """Base vs. wall(upper) vertical layer — mirrors kitchen_design.py's
-    own nested `_footprint_layer`/`_line_layer` helpers (a corner line's
-    layer comes from its zone, since the upper corner shares the base
-    corner's x/z cell at a different elevation)."""
-    if line.cabinet_type == "wall" or (
-            line.cabinet_type == "corner" and line.zone == "wall"):
-        return "wall"
-    return "base"
-
-
 def _merge_intervals(intervals):
     """Union length (mm) covered by a list of (lo, hi) intervals. Generic
     interval-merge arithmetic over footprints the engine itself already
