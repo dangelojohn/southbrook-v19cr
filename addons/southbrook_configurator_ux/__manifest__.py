@@ -78,6 +78,11 @@ Phase 5 — Tests + a11y
         # The Southbrook estimating addon — owns the 12 cabinet
         # templates with their attribute_lines that this UX renders.
         "southbrook_estimating",
+        # Phase 0 design-system consolidation (2026-07-31) —
+        # configurator.scss already reads var(--sb-*) tokens;
+        # southbrook_ui is the new canonical, dependency-light token
+        # layer those names should resolve through going forward.
+        "southbrook_ui",
     ],
     "external_dependencies": {
         # Phase 4 import pipeline (controllers/main.py

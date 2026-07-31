@@ -113,6 +113,43 @@ class TestTemplatePicker(TransactionCase):
         self.assertTrue(svg.startswith("<svg"))
         self.assertIn("<rect", svg)
 
+    def test_thumbnail_svg_is_well_formed_and_escapes_the_template_name(self):
+        """The field renders with sanitize=False, and the template NAME
+        is user-authored — the one place user text enters this markup.
+        An unescaped quote or angle bracket would break out of the
+        aria-label attribute."""
+        import xml.etree.ElementTree as ET
+        hostile = self.env["southbrook.kitchen.template"].create({
+            "name": 'Bad " <script>x</script> & name',
+            "code": "T3-ESCAPE", "layout_shape": "straight",
+            "default_room_width_in": 120.0, "default_room_depth_in": 96.0,
+            "default_room_height_in": 96.0, "default_module_width_in": 24.0,
+        })
+        svg = hostile._generate_thumbnail_svg()
+        ET.fromstring(svg)                      # raises if malformed
+        self.assertNotIn("<script>", svg)
+
+    def test_thumbnail_svg_is_labelled_for_screen_readers(self):
+        # The plan is informational, not decorative: it must say what it
+        # shows rather than presenting as an unlabelled blob.
+        svg = self.tpl._generate_thumbnail_svg()
+        self.assertIn('role="img"', svg.split(">", 1)[0])
+        self.assertIn("aria-label=", svg.split(">", 1)[0])
+        self.assertIn("<title>", svg)
+
+    def test_thumbnail_svg_shows_wall_cabinets_instead_of_dropping_them(self):
+        """Wall cabinets used to be skipped entirely, so the plan
+        silently omitted part of the kitchen. They now read as dashed
+        outlines — above the floor run on a top view, but present."""
+        self.env["southbrook.kitchen.template.line"].create({
+            "template_id": self.tpl.id, "slot_code": "W1",
+            "cabinet_type": "wall", "wall": "back", "run_seq": 40,
+            "nominal_width_in": 24.0,
+        })
+        self.tpl.invalidate_recordset()
+        svg = self.tpl._generate_thumbnail_svg()
+        self.assertIn("stroke-dasharray", svg)
+
     def test_thumbnail_svg_root_carries_intrinsic_size(self):
         """2026-07-31 — the PREVIEW panel showed a heading and no body.
 

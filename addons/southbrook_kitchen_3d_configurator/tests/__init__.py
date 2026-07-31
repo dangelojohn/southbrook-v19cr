@@ -212,6 +212,15 @@ from . import test_design_naming
 # alter, test_filler_remainder_gate.py's controller-side /layout gate.
 from . import test_remainder_occupancy
 
+# Copy review (2026-07-31) — `_check_production_ready` message rewrite
+# and the `kitchen.design.template.picker.fit_summary` happy-path fix:
+# no leaked internal vocabulary (raw enum values, field names, key=value
+# coordinate dumps) in any generated issue message, MOTION_ENVELOPE_
+# COLLISION prefers the placement rule's human name over its taxonomy
+# slug, UNRESOLVED_SLOT names the wall, CABINET_COLLISION shows the
+# Zone field's own label, and fit_summary's happy path renders nothing.
+from . import test_validator_copy
+
 # 2026-07-31 — `_resolve_slot()`'s last-resort fallback rung (cabinet_type
 # + template nominal width) took `.product_variant_id` — Odoo's arbitrary
 # "first" variant of the matched template — blind to that variant's own

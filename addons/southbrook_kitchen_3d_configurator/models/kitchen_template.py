@@ -13,6 +13,8 @@ contract; the kitchen_layout_engine (via action_auto_arrange) owns poses.
 """
 import logging
 
+from markupsafe import escape
+
 from odoo import api, fields, models
 
 # Reuse — never fork — the room lexicon and the design-line zone lexicon.
@@ -586,16 +588,42 @@ class SouthbrookKitchenTemplateThumbnail(models.Model):
         # ONLY a viewBox. An inline <svg> with no intrinsic width/height
         # has no natural size in the form's container and collapses to
         # zero height. Explicit dimensions + a viewBox still scale.
+        # The width/height give the element an intrinsic size AND an
+        # aspect ratio; the inline `width:100%;height:auto` then lets it
+        # fill (and scale down inside) its panel rather than sitting as a
+        # rigid ~200px box. `max-width` alone only CAPS growth, so the
+        # preview stayed tiny in a wide panel. Both halves are needed —
+        # dimensions alone render a rigid box, a viewBox alone renders
+        # nothing at all.
+        #
+        # Colours are keyed to cabinet type and each clears 3:1 contrast
+        # against the #F4EFE7 floor (the WCAG floor for non-text
+        # graphics). The previous single blue + `opacity="0.85"` did
+        # neither: five of six slot types shared one fill, and the
+        # opacity pushed it to roughly 2.4:1.
+        legend_h = 0.0
+        present = []
+        for slot in self.line_ids:
+            key = slot.cabinet_type if (
+                slot.cabinet_type in self._THUMB_FILLS) else "base"
+            if key not in present:
+                present.append(key)
+        present.sort(key=lambda k: list(self._THUMB_FILLS).index(k))
+        if present:
+            legend_h = 16.0
+        vb_h = D * s + legend_h
         out = ['<svg xmlns="http://www.w3.org/2000/svg" '
                'width="%.0f" height="%.0f" '
-               'viewBox="0 0 %.0f %.0f">' % (W * s, D * s, W * s, D * s),
+               'style="width:100%%;height:auto" role="img" '
+               'aria-label="%s" '
+               'viewBox="0 0 %.0f %.0f">' % (
+                   W * s, vb_h, self._thumbnail_alt_text(), W * s, vb_h),
+               '<title>%s</title>' % self._thumbnail_alt_text(),
                '<rect width="%.0f" height="%.0f" fill="#F4EFE7" '
                'stroke="#5E5346"/>' % (W * s, D * s)]
         cursors = {"back": 0.0, "front": 0.0, "left": 0.0, "right": 0.0}
         dpx = 24.0 * s
         for slot in self.line_ids.sorted(lambda l: (l.wall, l.run_seq)):
-            if slot.cabinet_type == "wall":
-                continue
             w = (slot.nominal_width_in
                  or self.default_module_width_in or 24.0) * s
             c = cursors[slot.wall]
@@ -608,9 +636,71 @@ class SouthbrookKitchenTemplateThumbnail(models.Model):
                 x, y, rw, rh = 0.0, c, dpx, w
             else:
                 x, y, rw, rh = W * s - dpx, c, dpx, w
-            fill = ("#C28840" if slot.cabinet_type == "appliance"
-                    else "#5E8FBE")
+            # A wall cabinet hangs ABOVE the floor run, so on a top view
+            # it reads as an outline, not a solid. It used to be dropped
+            # from the drawing with no indication it existed at all —
+            # a plan that silently omits half the kitchen misinforms.
+            if slot.cabinet_type == "wall":
+                out.append(
+                    '<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" '
+                    'fill="none" stroke="#5E5346" stroke-width="1" '
+                    'stroke-dasharray="3 2"/>' % (x, y, rw, rh))
+                continue
+            fill = self._THUMB_FILLS.get(slot.cabinet_type,
+                                         self._THUMB_FILLS["base"])
             out.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" '
-                       'fill="%s" opacity="0.85"/>' % (x, y, rw, rh, fill))
+                       'fill="%s"/>' % (x, y, rw, rh, fill))
+        if present:
+            lx = 0.0
+            ly = D * s + 5.0
+            for key in present:
+                out.append('<rect x="%.1f" y="%.1f" width="7" height="7" '
+                           'fill="%s"/>' % (lx, ly, self._THUMB_FILLS[key]))
+                out.append('<text x="%.1f" y="%.1f" font-size="7" '
+                           'fill="#3A342C" font-family="sans-serif">%s</text>'
+                           % (lx + 9.0, ly + 6.5, self._THUMB_LABELS[key]))
+                lx += 10.0 + len(self._THUMB_LABELS[key]) * 3.9 + 6.0
         out.append("</svg>")
         return "".join(out)
+
+    # Slot-type fills for the plan thumbnail. Every value clears 3:1
+    # against the #F4EFE7 floor. Dict ORDER is the legend order.
+    _THUMB_FILLS = {
+        "base":      "#2F5C8A",   # deep blue    — 6.1:1
+        "tall":      "#4A3B6B",   # deep violet  — 7.4:1
+        "corner":    "#1F6B5A",   # deep teal    — 5.2:1
+        "appliance": "#9A5B14",   # burnt amber  — 4.7:1
+        "filler":    "#6B6257",   # warm grey    — 4.6:1
+        "panel":     "#6B6257",
+    }
+    _THUMB_LABELS = {
+        "base": "Base", "tall": "Tall", "corner": "Corner",
+        "appliance": "Appliance", "filler": "Filler", "panel": "Panel",
+    }
+
+    def _thumbnail_alt_text(self):
+        """Describes the plan for screen readers and as the SVG title.
+        The drawing is informational, not decorative, so it must say
+        what it shows rather than presenting as an unlabelled blob.
+
+        ESCAPED: this is the one place user-authored text (the template
+        NAME) enters the thumbnail markup, and the field it lands in is
+        rendered with sanitize=False. Without escaping, a name
+        containing a quote or angle bracket would break out of the
+        attribute — so the generator's "no user input ever enters this
+        markup" premise has to be re-established here, not assumed.
+        """
+        self.ensure_one()
+        floor = len(self.line_ids.filtered(
+            lambda l: l.cabinet_type != "wall"))
+        wall = len(self.line_ids.filtered(
+            lambda l: l.cabinet_type == "wall"))
+        bits = ["%s: top view of a %g by %g inch room" % (
+            self.name or "Kitchen template",
+            self.default_room_width_in or 0.0,
+            self.default_room_depth_in or 0.0)]
+        bits.append("%d floor cabinet%s" % (floor, "" if floor == 1 else "s"))
+        if wall:
+            bits.append("%d wall cabinet%s shown as dashed outlines"
+                        % (wall, "" if wall == 1 else "s"))
+        return escape(", ".join(bits) + ".")

@@ -1,0 +1,90 @@
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:29:#1f7a3d
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:30:#e6f4ea
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:31:#fff8e1
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:321:#6fcf87
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:322:#163821
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:323:#2a2418
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:340:#1f7a3d
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:341:#e6f4ea
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:342:#fff8e1
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:49:#6fcf87
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:50:#163821
+addons/sb_materials_hardware/static/src/catalog/catalog.scss:51:#2a2418
+addons/southbrook_configurator_ux/static/src/scss/configurator.scss:50:#1f9d6b
+addons/southbrook_configurator_ux/static/src/scss/configurator.scss:51:#e6f7ef
+addons/southbrook_configurator_ux/static/src/scss/configurator.scss:55:#b07d2a
+addons/southbrook_configurator_ux/static/src/scss/configurator.scss:56:#fff7e8
+addons/southbrook_configurator_ux/static/src/scss/configurator.scss:57:#f0dca8
+addons/southbrook_estimating_website/static/src/scss/design_tab.scss:411:#a83a2b
+addons/southbrook_estimating_website/static/src/scss/design_tab.scss:425:#a83a2b
+addons/southbrook_estimating_website/static/src/scss/planner.scss:283:#a83a2b
+addons/southbrook_estimating_website/static/src/scss/planner.scss:289:#a83a2b
+addons/southbrook_estimating_website/static/src/scss/planner.scss:774:#a83a2b
+addons/southbrook_estimating_website/static/src/scss/planner.scss:778:#a83a2b
+addons/southbrook_estimating_website/static/src/scss/planner.scss:793:#b35a1a
+addons/southbrook_estimating_website/static/src/scss/planner.scss:794:#fff
+addons/southbrook_estimating_website/static/src/scss/portal_root.scss:101:rgba(168, 58, 43, 0.06)
+addons/southbrook_estimating_website/static/src/scss/portal_root.scss:1897:#16a34a
+addons/southbrook_estimating_website/static/src/scss/portal_root.scss:3100:#2f7d32
+addons/southbrook_estimating_website/static/src/scss/portal_root.scss:3110:#2f7d32
+addons/southbrook_estimating_website/static/src/scss/portal_root.scss:3111:#a83a2b
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1235:#d9a85f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1238:#6fb8d6
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:127:#fbf7ef
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1546:#2f7a3d
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1550:#2f7a3d
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1554:#2f7a3d
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1555:rgba(47, 122, 61, 0.25)
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1558:#d9a85f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1559:rgba(217, 168, 95, 0.30)
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1562:#d94e3a
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1563:rgba(217, 78, 58, 0.30)
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1566:#d94e3a
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1570:#d94e3a
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1574:#d9a85f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1578:#d9a85f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1612:#2f7a3d
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1613:rgba(47, 122, 61, 0.08)
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1618:#d9a85f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1619:rgba(217, 168, 95, 0.08)
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1642:#d94e3a
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1660:#d94e3a
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:2051:rgba(220, 80, 80, 0.08)
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:2218:#2f7d4f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:2221:#2f7d4f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:2223:#2f7d4f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:2296:#2f7d4f
+addons/southbrook_estimating_website/static/src/scss/room_layout.scss:2307:#2f7d4f
+addons/southbrook_exec_dashboard/static/src/scss/morning_briefing.scss:10:#2b8a3e
+addons/southbrook_exec_dashboard/static/src/scss/morning_briefing.scss:11:#d97706
+addons/southbrook_exec_dashboard/static/src/scss/morning_briefing.scss:12:#c0392b
+addons/southbrook_installer/static/src/css/installer_dashboard.css:128:#d32f2f
+addons/southbrook_installer/static/src/css/installer_dashboard.css:137:#29c46f
+addons/southbrook_installer/static/src/css/installer_dashboard.css:82:#d32f2f
+addons/southbrook_installer/static/src/css/installer_dashboard.css:83:#f7b500
+addons/southbrook_installer/static/src/css/installer_dashboard.css:84:#29c46f
+addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:1148:rgba(21, 128, 61, 0.06)
+addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:1156:#FEF2F2
+addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:18:#15803D
+addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:19:#C2410C
+addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:20:#B45309
+addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:964:#1e9e6a
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:396:#e5f1ea
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:40:#f7dcd7
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:41:#bc2f1c
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:42:#fbe0d1
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:43:#b04319
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:44:#b3261e
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:45:#2f8f4f
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:46:#a7a7b2
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:47:#f7e9c8
+addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:48:#7a5a12
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:24:#666
+addons/southbrook_qr_kit/static/src/scss/operator_pin_modal.scss:136:#2b8a3e
+addons/southbrook_qr_kit/static/src/scss/operator_pin_modal.scss:19:#c92a2a
+addons/southbrook_qr_kit/static/src/scss/operator_pin_modal.scss:26:#2b8a3e
+addons/southbrook_room_capture/static/src/scss/qr_scan.scss:154:rgba(220, 80, 80, 0.08)
+addons/southbrook_room_capture/static/src/scss/qr_scan.scss:208:rgba(200, 150, 40, 0.12)
+addons/southbrook_room_capture/static/src/scss/qr_scan.scss:342:#3c8c5a
+addons/southbrook_room_capture/static/src/scss/qr_scan.scss:343:#3c8c5a
+addons/southbrook_room_capture/static/src/scss/staff_scan.scss:91:#ff9a8a

@@ -433,12 +433,11 @@ class SouthbrookKitchenDesign(models.Model):
         store=True,
         digits=(6, 2),
         help=(
-            "Real leftover wall space once cabinets are placed: the sum, "
-            "across every wall that carries a base-elevation run, of "
-            "(that wall's length minus the actual covered length of its "
-            "base/corner/appliance cabinet footprints). Before any "
-            "cabinets are placed, this falls back to an estimate: room "
-            "width vs. standard 24-in modules."
+            "Wall space left over once the cabinets are placed — the gap "
+            "a filler strip would need to cover, added up across every "
+            "wall that has a run of base cabinets. Before any cabinets "
+            "are placed this is an estimate, based on standard 24-inch "
+            "cabinets."
         ),
     )
     currency_id = fields.Many2one(
@@ -1899,6 +1898,16 @@ class SouthbrookKitchenDesign(models.Model):
         self.ensure_one()
         issues = []
 
+        # ── Copy convention for every message below (copy review, 2026-07-31) ──
+        # "wall" is ambiguous in this file: a room boundary (back/front/
+        # left/right) and a cabinet_type == "wall" unit are BOTH called
+        # "wall" internally. To keep every message below unambiguous
+        # without the reader having to know the code:
+        #   - A ROOM boundary is always spelled out with its direction —
+        #     "the back/front/left/right wall" — never a bare "wall".
+        #   - A cabinet_type == "wall" unit is always "wall cabinet" (noun
+        #     phrase), never a bare "wall" standing in for the product.
+
         # 1) Empty design = blocking
         if not self.cabinet_line_ids:
             issues.append({
@@ -1911,15 +1920,31 @@ class SouthbrookKitchenDesign(models.Model):
         # 1b) Task 2 (kitchen templates) — unresolved template slots block
         # quoting: the honesty contract keeps them VISIBLE, and this check
         # keeps them un-quotable until a real product is chosen.
+        #
+        # Copy review 2026-07-31 (precedence fix) — this used to read
+        # `line.template_slot_code or line.display_name`, which ALWAYS
+        # printed the raw catalog slot code ("M1", "SINK") because
+        # template_slot_code is always set on a template-instantiated
+        # line; display_name never won. Neither value actually helps a
+        # salesperson locate the item: the slot code appears nowhere else
+        # in the UI (grepped views/ and static/src/), and display_name is
+        # the SAME generic "Unresolved Template Slot" placeholder name for
+        # every unresolved line (data/template_support_products.xml), so
+        # it can't even tell two unresolved lines apart. What DOES locate
+        # the item is the wall it's on — lead with that; keep the slot
+        # code as a small trailing reference for anyone cross-checking the
+        # template definition, instead of leading with it.
         for line in self.cabinet_line_ids.filtered("is_unresolved"):
+            slot_ref = (" (%s)" % line.template_slot_code
+                        if line.template_slot_code else "")
             issues.append({
                 "code":     "UNRESOLVED_SLOT",
                 "severity": "blocking",
-                "message":  ("Template slot '%s' has no matching product yet. "
-                             "Swap the placeholder for a real cabinet before "
-                             "quoting." % (line.template_slot_code
-                                           or line.display_name))
-                            + _line_ref(line),
+                "message":  (
+                    "This spot on the %s wall doesn't have a cabinet "
+                    "chosen yet. Pick one to replace the placeholder "
+                    "before you can quote."
+                ) % (line.wall or "back") + slot_ref + _line_ref(line),
             })
 
         # 2) Customer required — message polished 2026-07-01 task #48
@@ -1936,7 +1961,11 @@ class SouthbrookKitchenDesign(models.Model):
             issues.append({
                 "code":     "MISSING_CUSTOMER",
                 "severity": "blocking",
-                "message":  "This design needs a customer before it can become a quote. "
+                # Copy review 2026-07-31 (vocabulary) — "before quoting" is
+                # the phrase every other quote-readiness message in this
+                # method uses; this one previously said "before it can
+                # become a quote", the same gate under a different name.
+                "message":  "This design needs a customer before quoting. "
                             "Assign a Customer at the top of the form (or click the "
                             "'Walk-in' button to one-click assign a walk-in customer).",
             })
@@ -2035,14 +2064,23 @@ class SouthbrookKitchenDesign(models.Model):
                             solid_overlap_from_anchor_mm(
                                 cab_a, place_a, cab_b, place_b)):
                         continue
+                    # Copy review 2026-07-31 — `zone` is the raw stored
+                    # Selection VALUE ("base_run"), not the label the Zone
+                    # field itself displays ("Base Run"). Resolve through
+                    # ZONE_SELECTION (module-level, below this class) the
+                    # same way cabinet_type is resolved to a label
+                    # elsewhere in this file (_quote_line_name).
+                    zone_label = dict(ZONE_SELECTION).get(zone, zone)
                     issues.append({
                         "code":     "CABINET_COLLISION",
                         "severity": "blocking",
                         "message":  (
-                            "Cabinets overlap on the %s wall (%s zone): "
-                            "%s and %s occupy the same space"
-                        ) % (wall, zone, a.product_id.display_name,
-                             b.product_id.display_name) + _line_ref(a, b),
+                            "%s and %s occupy the same space on the %s "
+                            "wall (%s zone). Move one so they don't "
+                            "overlap."
+                        ) % (a.product_id.display_name,
+                             b.product_id.display_name, wall, zone_label)
+                            + _line_ref(a, b),
                     })
 
         # 3b) NEW — out-of-room bounds (V2 §4b). `obb_within_room` is the
@@ -2069,11 +2107,10 @@ class SouthbrookKitchenDesign(models.Model):
                 "code":     "OUT_OF_ROOM_BOUNDS",
                 "severity": "blocking",
                 "message":  (
-                    "%s sits outside the room (%.0f\" x %.0f\") at "
-                    "x=%.1f\", z=%.1f\""
+                    "%s is placed outside the room (room is %.0f\" x "
+                    "%.0f\"). Drag it back inside the room before quoting."
                 ) % (line.product_id.display_name, self.room_width_in or 0,
-                     self.room_depth_in or 0, line.x_position_in or 0,
-                     line.z_position_in or 0) + _line_ref(line),
+                     self.room_depth_in or 0) + _line_ref(line),
             })
 
         # 3c) NEW — corner hand vs. junction mismatch (V2 §4d). The corner
@@ -2121,9 +2158,11 @@ class SouthbrookKitchenDesign(models.Model):
                 "code":     "CORNER_HAND_MISMATCH",
                 "severity": "blocking",
                 "message":  (
-                    "%s is the wrong hand for its %s junction (needs "
-                    "%s) — the corner mechanism will not clear"
-                ) % (cl.product_id.display_name, cname, prefix)
+                    "%s is the wrong hand for the %s corner — it needs a "
+                    "%s cabinet, or the door won't clear. Swap it for the "
+                    "correct hand before quoting."
+                ) % (cl.product_id.display_name, cname,
+                     "left-hand" if prefix == "LH" else "right-hand")
                             + _line_ref(cl),
             })
 
@@ -2171,7 +2210,9 @@ class SouthbrookKitchenDesign(models.Model):
             issues.append({
                 "code":     "MISSING_BOM",
                 "severity": "blocking",
-                "message":  "No BOM defined: %s" % ", ".join(parts),
+                "message":  ("Can't quote yet — no parts list (BOM) is "
+                             "set up for: %s. Ask an estimator to add one."
+                             % ", ".join(parts)),
             })
         if missing_warn:
             parts = [name + _line_ref(missing_warn[name])
@@ -2179,7 +2220,8 @@ class SouthbrookKitchenDesign(models.Model):
             issues.append({
                 "code":     "BOM_WILL_AUTOSEED",
                 "severity": "warning",
-                "message":  ("BOM will be auto-created at quotation: %s"
+                "message":  ("A parts list (BOM) will be created "
+                             "automatically when you quote: %s"
                              % ", ".join(parts)),
             })
 
@@ -2197,7 +2239,9 @@ class SouthbrookKitchenDesign(models.Model):
                     "code":     "NON_STANDARD_WIDTH",
                     "severity": "warning",
                     "message":  (
-                        "%s is %d\" wide (non-standard; nesting/cutting may waste material)"
+                        "%s is %d\" wide, which isn't a standard size — "
+                        "cutting it may waste material. Confirm this "
+                        "isn't a typo."
                     ) % (line.product_id.display_name, int(wr)) + _line_ref(line),
                 })
 
@@ -2229,14 +2273,17 @@ class SouthbrookKitchenDesign(models.Model):
         geo = self._wall_cab_top_geometry()
         wz, wall_h, eff_top = geo["y_in"], geo["wall_h"], geo["eff_ceiling"]
         if wz + wall_h > eff_top + 0.01 and eff_top > 0:
+            ceiling_word = ("soffit" if geo["alignment"] == "to_soffit"
+                             else "ceiling")
             issues.append({
                 "code":     "WALL_CAB_EXCEEDS_CEILING",
                 "severity": "blocking",
                 "message":  (
-                    "Wall cabinet top reaches %.1f\" but %s sits at %.1f\""
-                ) % (wz + wall_h,
-                     "soffit" if geo["alignment"] == "to_soffit" else "ceiling",
-                     eff_top) + _line_ref(wall_h_line, base_h_line),
+                    "Wall cabinets would reach %.1f\" high, but the %s "
+                    "is only %.1f\" up. Lower the wall cabinets or raise "
+                    "the %s."
+                ) % (wz + wall_h, ceiling_word, eff_top, ceiling_word)
+                            + _line_ref(wall_h_line, base_h_line),
             })
 
         # ── v19.0.4.22.0 audit P2#7 — extended production checks ──────
@@ -2302,17 +2349,13 @@ class SouthbrookKitchenDesign(models.Model):
                         "code":     "FOOTPRINT_COLLISION",
                         "severity": "blocking",
                         "message":  (
-                            "%s cabinets overlap: %s (wall=%s, x=%.1f\", "
-                            "z=%.1f\", rot=%d°) vs %s (wall=%s, "
-                            "x=%.1f\", z=%.1f\", rot=%d°)"
+                            "%s cabinets overlap: %s (on the %s wall) "
+                            "and %s (on the %s wall) occupy the same "
+                            "space. Move one so they don't overlap."
                         ) % (
                             layer.title(),
                             a.product_id.display_name, a.wall or "back",
-                            a.x_position_in or 0, a.z_position_in or 0,
-                            a.rotation_deg or 0,
                             b.product_id.display_name, b.wall or "back",
-                            b.x_position_in or 0, b.z_position_in or 0,
-                            b.rotation_deg or 0,
                         ) + _line_ref(a, b),
                     })
 
@@ -2352,12 +2395,12 @@ class SouthbrookKitchenDesign(models.Model):
                     "code":     "VERTICAL_COLLISION",
                     "severity": "blocking",
                     "message":  (
-                        "Wall %s (bottom %.1f\") intrudes into tall "
-                        "%s (top %.1f\") at x=%.1f\""
+                        "The wall cabinet %s (starts at %.1f\" high) "
+                        "overlaps the tall cabinet %s (which reaches "
+                        "%.1f\" high). Move one so they don't overlap."
                     ) % (
                         wall.product_id.display_name, wy0,
                         tall.product_id.display_name, ty1,
-                        tall.x_position_in,
                     ) + _line_ref(wall, tall),
                 })
 
@@ -2383,9 +2426,10 @@ class SouthbrookKitchenDesign(models.Model):
                     "code":     "ORPHAN_FILLER",
                     "severity": "blocking",
                     "message":  (
-                        "Filler %s at x=%.1f\" has no adjacent cabinet; "
-                        "fillers must bridge two cabinets."
-                    ) % (f.product_id.display_name, fx0) + _line_ref(f),
+                        "The filler %s doesn't have a cabinet next to it "
+                        "on either side. Move it next to a cabinet, or "
+                        "remove it."
+                    ) % f.product_id.display_name + _line_ref(f),
                 })
 
         # 10) End-cap panel adjacency — twin of the controller-side
@@ -2413,10 +2457,10 @@ class SouthbrookKitchenDesign(models.Model):
                         "code":     "PANEL_WALL_ATTACH",
                         "severity": "blocking",
                         "message":  (
-                            "End-cap panel %s at x=%.1f\" isn't adjacent "
-                            "to any base/wall side face; panels can't "
-                            "attach to room walls."
-                        ) % (p.product_id.display_name, px) + _line_ref(p),
+                            "The end-cap panel %s isn't against the side "
+                            "of a base or wall cabinet. Move it flush "
+                            "against a cabinet's side before quoting."
+                        ) % p.product_id.display_name + _line_ref(p),
                     })
 
         # 11) Unrealistic single-base width — warning (custom 60"+
@@ -2431,7 +2475,7 @@ class SouthbrookKitchenDesign(models.Model):
                     "severity": "warning",
                     "message":  (
                         "%s is %.1f\" wide — over 60\" on a single base "
-                        "is unusual; confirm not a typo."
+                        "cabinet is unusual. Confirm this isn't a typo."
                     ) % (line.product_id.display_name, line.width_in) + _line_ref(line),
                 })
 
@@ -2602,12 +2646,25 @@ class SouthbrookKitchenDesign(models.Model):
                                 # neighbour named second (was: neighbour
                                 # first, biasing any downstream consumer
                                 # toward "blame the neighbour").
+                                #
+                                # Copy review 2026-07-31 (precedence fix)
+                                # — this used to read
+                                # `rr.corner_type_id or rr.name`, which
+                                # ALWAYS printed the internal taxonomy
+                                # slug ("diagonal-corner-lazy-susan")
+                                # because every seeded rule sets
+                                # corner_type_id; the rule's own
+                                # human-authored name ("Diagonal susan
+                                # base corner 36x36") never won. Swapped
+                                # so the human name is preferred and the
+                                # slug is only a last-resort fallback.
                                 "message":  (
-                                    "Corner cabinet %s (%s) cannot open: "
-                                    "%s sits inside its %.1f\" door/"
-                                    "mechanism clearance."
+                                    "Corner cabinet %s (%s) can't open — "
+                                    "%s is inside the %.1f\" clearance "
+                                    "its door or mechanism needs. Move "
+                                    "it before quoting."
                                 ) % (cl.product_id.display_name,
-                                     rr.corner_type_id or rr.name,
+                                     rr.name or rr.corner_type_id,
                                      other.product_id.display_name,
                                      clearance / _MM12)
                                             + _line_ref(cl, other),
@@ -2634,11 +2691,20 @@ class SouthbrookKitchenDesign(models.Model):
                         issues.append({
                             "code":     "CORNER_FILLER_MISSING",
                             "severity": "warning",
+                            # Copy review 2026-07-31 — the old copy told
+                            # the person to "re-run auto-arrange", but no
+                            # button, menu item, or on-screen text in this
+                            # addon says "auto-arrange" (grepped views/
+                            # and static/src/ — confirmed). The only
+                            # labeled control that regenerates the layout
+                            # is the form's "Generate Layout" button
+                            # (views/kitchen_design_views.xml,
+                            # name="action_generate_layout").
                             "message":  (
-                                "The %s corner (%s) requires a %.1f\" "
-                                "filler on the %s wall but the strip is "
-                                "missing — re-run auto-arrange or plan "
-                                "to scribe on site."
+                                "The %s corner (%s) needs a %.1f\" "
+                                "filler on the %s wall, and it's "
+                                "missing. Click Generate Layout to add "
+                                "it, or plan to scribe it on site."
                             ) % (cname, cl.product_id.display_name,
                                  fw / _MM12, w) + _line_ref(cl),
                         })
@@ -4091,10 +4157,9 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
     )
     cabinet_count = fields.Integer(
         string="Number of Cabinets", default=0,
-        help="Seeded to the template's default once a template is chosen "
-             "(0 only before then, and still read as 'template default' "
-             "by the generator). Live-clamped to what fits the room with "
-             "the chosen module width and appliance sizes.")
+        help="How many repeating cabinets to place. Starts at the "
+             "template's own default and never goes above what fits the "
+             "room at the chosen cabinet size.")
     module_width_in = fields.Selection(
         [("18", '18"'), ("21", '21"'), ("24", '24"'), ("30", '30"')],
         string="Cabinet Size", default="24", required=True)
@@ -4151,10 +4216,13 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
                 float(rec.module_width_in or "24"),
                 rec._appliance_widths())
             rec.count_max = fit.get("n_max", 0)
-            rec.fit_summary = fit["message"] if not fit["ok"] else (
-                "%d cabinet(s) at %g\" fit this %g\" room (max %d)." % (
-                    fit["count"], fit["module_width_in"],
-                    rec.template_id.default_room_width_in, fit["n_max"]))
+            # Copy review 2026-07-31 — on success this used to restate
+            # cabinet_count and count_max, both already shown a few
+            # fields above this one on the same form and already in
+            # agreement. Nothing left to say the fields don't already
+            # say, so render nothing; the failure message (real, useful
+            # information: why it doesn't fit) is unchanged.
+            rec.fit_summary = fit["message"] if not fit["ok"] else False
             rec.template_preview = Markup(
                 rec.template_id._generate_thumbnail_svg())
 

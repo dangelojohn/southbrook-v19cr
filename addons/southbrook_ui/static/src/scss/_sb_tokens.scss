@@ -1,0 +1,362 @@
+// =====================================================================
+// _sb_tokens.scss — Southbrook UI Foundation, canonical token layer
+//
+// Phase 0 of the design-system consolidation described in
+// scratchpad/retest/ux-designsystem.md. That audit found the same
+// semantic role ("ok"/"success", "warn", "danger"/"alert"/"critical"/
+// "late") resolving to 11+ greens, 8+ reds, 6+ ambers across the
+// codebase — including inside the one file that already claims to be
+// canonical (southbrook_estimating's _southbrook_design_tokens.scss,
+// which itself carries two unreconciled generations: §1 "Signature
+// Series" legacy and §6 "2026-06-26 Trade Portal").
+//
+// This file does NOT replace that file and does NOT edit it — it is
+// a new, additive, dependency-light layer (southbrook_ui depends on
+// nothing but `web`) that:
+//
+//   1. Defines ONE status scale — ok / warn / late / blocked / info /
+//      neutral — as the semantics every Southbrook surface should
+//      converge on (§1 below).
+//   2. Defines the spacing, type, radius and elevation scales that
+//      today don't exist anywhere in the codebase at all (§2-§5).
+//   3. Re-declares the five most-referenced LEGACY custom-property
+//      names (--sb-ok, --sb-success, --sb-alert, --sb-danger,
+//      --sb-warn) as aliases pointing at the new §1 tokens, so any
+//      addon that already writes `var(--sb-ok)` etc. keeps resolving
+//      to a real, contrast-checked colour even if it never adopts the
+//      new names (§6).
+//
+// ---------------------------------------------------------------------
+// A NOTE ON LOAD ORDER (read before assuming this "just works")
+// ---------------------------------------------------------------------
+// southbrook_estimating's _southbrook_design_tokens.scss ALSO declares
+// --sb-ok / --sb-success / --sb-alert / --sb-danger / --sb-warn at
+// :root, with different values. Every one of the five addons wired to
+// depend on southbrook_ui in this Phase-0 pass ALSO depends
+// (transitively or directly) on southbrook_estimating already — so
+// for those five, BOTH files end up in the same asset bundle. Where
+// two :root rules of equal specificity declare the same custom
+// property, the LAST one in the concatenated bundle wins, and Odoo's
+// bundle order between two addons with no dependency edge between
+// them (southbrook_ui and southbrook_estimating do not depend on each
+// other) is not something this file can guarantee. This is a known,
+// documented Phase-0 limitation, not an oversight — see
+// scratchpad/retest/p0-tokens.md. The fix is Phase 1: retire the
+// overlapping §1/§6 semantic-colour block from
+// _southbrook_design_tokens.scss once every consumer has migrated to
+// southbrook_ui, which removes the duplicate declaration entirely
+// rather than trying to win a cascade race against it.
+//
+// Deliberately NOT touched by this file: the legacy --sb-sky/-walnut/
+// -linen/-ink/-paper/-rule palette, --sb-font-*, --sb-radius*,
+// --sb-shadow*, and the whole §6-8 Trade Portal component-class layer.
+// Those keep working exactly as shipped; this file only adds new
+// names (§1-§5) plus the five required aliases (§6).
+//
+// ---------------------------------------------------------------------
+// CONTRAST METHOD (WCAG 2.x relative luminance / contrast ratio)
+// ---------------------------------------------------------------------
+// For each sRGB channel c (0-255), c' = c/255; linear channel:
+//   c_lin = c'/12.92                      if c' <= 0.03928
+//   c_lin = ((c' + 0.055) / 1.055)^2.4    otherwise
+// L = 0.2126*R_lin + 0.7152*G_lin + 0.0722*B_lin
+// ratio = (L_lighter + 0.05) / (L_darker + 0.05)
+//
+// Every foreground token below is checked at >= 4.5:1 against the
+// background tint it is paired with (the "intended background" per
+// the brief). Every border token is checked at >= 3:1 against BOTH
+// (a) its own tint background and (b) the page canvas (white #FFFFFF
+// light / #14181F dark, matching the legacy file's dark --sb-bg) —
+// the tint comparison is the binding one in both themes (it is
+// numerically closer, so passing it means the page-canvas comparison
+// passes too; both ratios are recorded below for the record). Values
+// were computed with a small Python/HSL sweep script, not eyeballed;
+// ratios are pasted next to each hex as computed, not estimated.
+// Elevation (box-shadow) tokens are decorative depth cues, not text
+// or UI-component boundaries, and are exempt from the WCAG 1.4.11
+// non-text contrast requirement — no ratio is computed for them.
+// =====================================================================
+
+:root {
+  // -------------------------------------------------------------------
+  // 1 · Status scale — the headline deliverable
+  //
+  // Six semantics, one definition each, fg/bg/border. Hue family kept
+  // inside the existing Southbrook material world (a cool green for
+  // growth/completion, warm gold/amber/rust for the warn->late escal-
+  // ation, a crimson red for hard stops, the Sky blue already used for
+  // "tradesperson" badges for informational states, and a warm neutral
+  // grey pulled toward Ink/Walnut rather than a cold SaaS grey).
+  //
+  // Pattern per state: -bg is a pale tint (badge/pill fill), -fg is a
+  // saturated/dark(light in dark mode) version of the same hue used as
+  // TEXT on top of -bg, -border is a mid-tone version of the same hue
+  // used as a 1px outline. This mirrors the pattern southbrook_estim-
+  // ating's own .sb-badge--live already uses (bg tint + fg text) —
+  // formalized here and actually made to pass AA (see §1.1 "ok", the
+  // legacy pairing it replaces fails at 3.07:1).
+  // -------------------------------------------------------------------
+
+  // 1.1 · ok — success / complete / on-track
+  //   fg vs bg   : #1E8053 on #EBF9F3 = 4.54:1  (>= 4.5 target, PASS)
+  //   border     : #2BA16A vs bg #EBF9F3 = 3.02:1, vs white page = 3.28:1 (PASS both)
+  --sb-status-ok-fg:      #1E8053;
+  --sb-status-ok-bg:      #EBF9F3;
+  --sb-status-ok-border:  #2BA16A;
+
+  // 1.2 · warn — needs attention soon, not yet overdue
+  //   fg vs bg   : #926B10 on #FCF6E9 = 4.50:1  (PASS)
+  //   border     : #B6871A vs bg #FCF6E9 = 3.01:1, vs white page = 3.25:1 (PASS both)
+  --sb-status-warn-fg:      #926B10;
+  --sb-status-warn-bg:      #FCF6E9;
+  --sb-status-warn-border:  #B6871A;
+
+  // 1.3 · late — overdue, escalated past "warn" but not yet a hard stop
+  //   fg vs bg   : #AC5819 on #FBF1E9 = 4.53:1  (PASS)
+  //   border     : #D57226 vs bg #FBF1E9 = 3.01:1, vs white page = 3.35:1 (PASS both)
+  --sb-status-late-fg:      #AC5819;
+  --sb-status-late-bg:      #FBF1E9;
+  --sb-status-late-border:  #D57226;
+
+  // 1.4 · blocked — hard stop / critical / rule violation
+  //   fg vs bg   : #CB3227 on #FAEBEA = 4.51:1  (PASS)
+  //   border     : #D9665E vs bg #FAEBEA = 3.02:1, vs white page = 3.49:1 (PASS both)
+  --sb-status-blocked-fg:      #CB3227;
+  --sb-status-blocked-bg:      #FAEBEA;
+  --sb-status-blocked-border:  #D9665E;
+
+  // 1.5 · info — neutral informational (new; no legacy equivalent —
+  //   the codebase had no dedicated "info" role, using --sb-sky ad hoc)
+  //   fg vs bg   : #3272AB on #EDF3F8 = 4.55:1  (PASS)
+  //   border     : #5591C6 vs bg #EDF3F8 = 3.00:1, vs white page = 3.36:1 (PASS both)
+  --sb-status-info-fg:      #3272AB;
+  --sb-status-info-bg:      #EDF3F8;
+  --sb-status-info-border:  #5591C6;
+
+  // 1.6 · neutral — no status / unassessed / not applicable
+  //   fg vs bg   : #786D62 on #F4F2F1 = 4.52:1  (PASS)
+  //   border     : #988A7C vs bg #F4F2F1 = 3.01:1, vs white page = 3.35:1 (PASS both)
+  --sb-status-neutral-fg:      #786D62;
+  --sb-status-neutral-bg:      #F4F2F1;
+  --sb-status-neutral-border:  #988A7C;
+
+  // -------------------------------------------------------------------
+  // 2 · Spacing scale — did not exist anywhere in the codebase before
+  //     this file (grep for --sb-space / --space- returned 0 matches).
+  //     4px base, growth ratio after step 4 (matches Bootstrap 5's own
+  //     $spacers progression: 0/.25rem/.5rem/1rem/1.5rem/3rem, extended
+  //     to 9 steps). The audit's 32 ad-hoc spacing values cluster
+  //     heavily on exactly this rhythm: 10px x134, 8px x107, 12px x91,
+  //     6px x86, 16px x74, 4px x68, 14px x55, 2px x48, 24px x36 uses.
+  // -------------------------------------------------------------------
+  --sb-space-0: 0;
+  --sb-space-1: 4px;
+  --sb-space-2: 8px;
+  --sb-space-3: 12px;
+  --sb-space-4: 16px;
+  --sb-space-5: 24px;
+  --sb-space-6: 32px;
+  --sb-space-7: 48px;
+  --sb-space-8: 64px;
+
+  // -------------------------------------------------------------------
+  // 3 · Type scale — 63 distinct ad-hoc font-size values exist today
+  //     with no named scale. Six steps, each carrying size + weight +
+  //     line-height + family. Sizes were chosen to land on the actual
+  //     most-common historical values found by the audit (11px x135,
+  //     12px x103, 14px x32 uses) rather than an arbitrary scale, so
+  //     adopting these tokens is a small visual diff for most existing
+  //     markup. Font-family references the LEGACY --sb-font-* stacks
+  //     via var() with a literal fallback, so type sizing works
+  //     correctly whether or not southbrook_estimating's token file is
+  //     also loaded in the bundle (no hard dependency either way).
+  // -------------------------------------------------------------------
+  --sb-type-display-family: var(--sb-font-display, 'Roboto Flex', 'Inter', system-ui, sans-serif);
+  --sb-type-display-size:   28px;
+  --sb-type-display-weight: 600;
+  --sb-type-display-line:   1.2;
+
+  --sb-type-heading-family: var(--sb-font-display, 'Roboto Flex', 'Inter', system-ui, sans-serif);
+  --sb-type-heading-size:   20px;
+  --sb-type-heading-weight: 600;
+  --sb-type-heading-line:   1.25;
+
+  --sb-type-body-family: var(--sb-font-sans, 'Roboto Flex', 'Inter', system-ui, sans-serif);
+  --sb-type-body-size:   14px;
+  --sb-type-body-weight: 400;
+  --sb-type-body-line:   1.5;
+
+  --sb-type-label-family: var(--sb-font-sans, 'Roboto Flex', 'Inter', system-ui, sans-serif);
+  --sb-type-label-size:   12px;
+  --sb-type-label-weight: 500;
+  --sb-type-label-line:   1.4;
+
+  --sb-type-caption-family: var(--sb-font-sans, 'Roboto Flex', 'Inter', system-ui, sans-serif);
+  --sb-type-caption-size:   11px;
+  --sb-type-caption-weight: 500;
+  --sb-type-caption-line:   1.35;
+
+  --sb-type-mono-family: var(--sb-font-mono, 'JetBrains Mono', ui-monospace, monospace);
+  --sb-type-mono-size:   13px;
+  --sb-type-mono-weight: 500;
+  --sb-type-mono-line:   1.4;
+
+  // -------------------------------------------------------------------
+  // 4 · Radius scale — namespaced --sb-corner-* (NOT --sb-radius*)
+  //     deliberately, because southbrook_estimating's token file
+  //     already declares --sb-radius, --sb-radius-sm, --sb-radius-card,
+  //     --sb-radius-btn and --sb-radius-pill with THEIR OWN values —
+  //     reusing those names here would create the exact same silent
+  //     cascade-order collision described above, for zero benefit,
+  //     since a genuinely new scale needs new names anyway. 16 distinct
+  //     border-radius values exist in the wild today; this is not an
+  //     attempt to name all 16, just to give new/adopting SCSS a scale.
+  // -------------------------------------------------------------------
+  --sb-corner-xs:    2px;
+  --sb-corner-sm:    4px;
+  --sb-corner-md:    8px;
+  --sb-corner-lg:    12px;
+  --sb-corner-xl:    16px;
+  --sb-corner-pill:  999px;
+  --sb-corner-round: 50%;
+
+  // -------------------------------------------------------------------
+  // 5 · Elevation scale — --sb-elevation-* (not --sb-shadow*, same
+  //     collision-avoidance reasoning as §4: --sb-shadow-sm/-md and
+  //     --sb-shadow-card already exist in the legacy file). Shadow
+  //     colour is ink-tinted (rgba of the Signature Series --sb-ink
+  //     hex #1A1814) rather than pure black, to stay inside the
+  //     existing material palette. Not a contrast-checked category —
+  //     see header note.
+  // -------------------------------------------------------------------
+  --sb-elevation-0: none;
+  --sb-elevation-1: 0 1px 2px rgba(26, 24, 20, 0.08);
+  --sb-elevation-2: 0 4px 12px rgba(26, 24, 20, 0.12);
+  --sb-elevation-3: 0 12px 32px rgba(26, 24, 20, 0.18);
+
+  // -------------------------------------------------------------------
+  // 6 · Back-compat aliases (MANDATORY — do not remove)
+  //
+  // These five names are declared independently, ELSEWHERE, by
+  // southbrook_estimating/static/src/scss/_southbrook_design_tokens.scss
+  // — see the file-header "load order" note above for what happens
+  // when both files are in the same bundle. Declared here so that any
+  // addon depending on southbrook_ui ALONE (no southbrook_estimating)
+  // still gets a correct, contrast-checked value for these names.
+  //
+  // Each is declared ONCE, referencing the §1 custom property (not a
+  // copied literal) — CSS custom properties resolve at used-value
+  // time, so when --sb-status-ok-fg is rebound under
+  // [data-theme="dark"] below, --sb-ok automatically tracks it. No
+  // need to (and this file deliberately does NOT) redeclare the
+  // aliases a second time inside the dark-mode block.
+  //
+  //   --sb-ok      -> --sb-status-ok-fg
+  //     was #4a6f3e (§1 Signature Series, static — legacy never gave
+  //     this a dark-mode rebind at all). As used for white-on-fill
+  //     pills (.sb-pill-ok) #4a6f3e already passed AA (5.78:1 vs white
+  //     text) — the replacement is not a contrast fix, it's a
+  //     reconciliation so "ok" means the same hex everywhere.
+  //
+  //   --sb-success -> --sb-status-ok-fg
+  //     was #1E9E6A (§6 Trade Portal, light) / #34C98B (dark). REAL
+  //     CONTRAST BUG FOUND: legacy pairs --sb-success as fg TEXT on
+  //     its own --sb-success-bg (#E6F7EE) in .sb-badge--live — that
+  //     pairing measures 3.07:1, below the 4.5:1 AA text minimum. The
+  //     new --sb-status-ok-fg on --sb-status-ok-bg pairing (4.54:1)
+  //     fixes this same-shape bug at the alias level. Same green hue
+  //     family kept, lightness lowered to close the gap.
+  //
+  //   --sb-warn    -> --sb-status-warn-fg
+  //     was #b35a1a (§1, static, no dark rebind — measured 3.72:1
+  //     against the dark-mode page canvas, below the 4.5:1 text
+  //     minimum if ever used as text in dark mode). New value passes
+  //     4.50:1 against its own tint in both themes.
+  //
+  //   --sb-alert   -> --sb-status-blocked-fg
+  //     was #a83a2b (§1). "Alert" in the legacy escalation ladder
+  //     (ok -> warn -> alert) reads as the terminal/most-severe state,
+  //     which is what "blocked" represents in the new 6-state model,
+  //     so it is aliased there rather than to "late".
+  //
+  //   --sb-danger  -> --sb-status-blocked-fg
+  //     was #C0492F (§6, light) / #E06B52 (dark). §6 has no
+  //     --sb-danger-bg tint at all (only --sb-success-bg / --sb-warn-bg
+  //     exist) — another gap this file closes for new consumers via
+  //     --sb-status-blocked-bg. "Danger" and "Alert" are the same
+  //     severity across the two generations per the audit (§2.3), so
+  //     both alias to the same new token.
+  // -------------------------------------------------------------------
+  --sb-ok:      var(--sb-status-ok-fg);
+  --sb-success: var(--sb-status-ok-fg);
+  --sb-warn:    var(--sb-status-warn-fg);
+  --sb-alert:   var(--sb-status-blocked-fg);
+  --sb-danger:  var(--sb-status-blocked-fg);
+}
+
+// =====================================================================
+// 7 · Dark-mode rebind — same dual trigger as southbrook_estimating's
+//     token file ([data-theme="dark"] explicit toggle OR OS-level
+//     prefers-color-scheme, with a light-mode escape hatch), kept as a
+//     mixin for the same reason legacy does it: one definition, two
+//     selectors, impossible for them to drift apart.
+//
+//     Only §1 (status) and §5 (elevation) are theme-dependent; spacing,
+//     type and radius scales are identical in both themes and are not
+//     redeclared here.
+// =====================================================================
+@mixin sb-ui-dark-vars {
+  // 1.1 · ok (dark)
+  //   fg vs bg   : #28AC6E on #1C352A = 4.53:1  (PASS)
+  //   border     : #24895A vs bg #1C352A = 3.02:1, vs dark page #14181F = 4.07:1 (PASS both)
+  --sb-status-ok-fg:      #28AC6E;
+  --sb-status-ok-bg:      #1C352A;
+  --sb-status-ok-border:  #24895A;
+
+  // 1.2 · warn (dark)
+  //   fg vs bg   : #C48F16 on #3A3018 = 4.51:1  (PASS)
+  //   border     : #9B7316 vs bg #3A3018 = 3.01:1, vs dark page #14181F = 4.12:1 (PASS both)
+  --sb-status-warn-fg:      #C48F16;
+  --sb-status-warn-bg:      #3A3018;
+  --sb-status-warn-border:  #9B7316;
+
+  // 1.3 · late (dark)
+  //   fg vs bg   : #DF7421 on #392719 = 4.50:1  (PASS)
+  //   border     : #B05E1F vs bg #392719 = 3.02:1, vs dark page #14181F = 3.78:1 (PASS both)
+  --sb-status-late-fg:      #DF7421;
+  --sb-status-late-bg:      #392719;
+  --sb-status-late-border:  #B05E1F;
+
+  // 1.4 · blocked (dark)
+  //   fg vs bg   : #E0635A on #371D1B = 4.51:1  (PASS)
+  //   border     : #C8392F vs bg #371D1B = 3.01:1, vs dark page #14181F = 3.46:1 (PASS both)
+  --sb-status-blocked-fg:      #E0635A;
+  --sb-status-blocked-bg:      #371D1B;
+  --sb-status-blocked-border:  #C8392F;
+
+  // 1.5 · info (dark)
+  //   fg vs bg   : #5193CD on #1F2933 = 4.50:1  (PASS)
+  //   border     : #3875A9 vs bg #1F2933 = 3.01:1, vs dark page #14181F = 3.63:1 (PASS both)
+  --sb-status-info-fg:      #5193CD;
+  --sb-status-info-bg:      #1F2933;
+  --sb-status-info-border:  #3875A9;
+
+  // 1.6 · neutral (dark)
+  //   fg vs bg   : #998E82 on #2B2927 = 4.52:1  (PASS)
+  //   border     : #7D7062 vs bg #2B2927 = 3.01:1, vs dark page #14181F = 3.70:1 (PASS both)
+  --sb-status-neutral-fg:      #998E82;
+  --sb-status-neutral-bg:      #2B2927;
+  --sb-status-neutral-border:  #7D7062;
+
+  // 5 · Elevation (dark) — same ink-family shadow, higher opacity/
+  //     spread so depth still reads against a dark surface. Not a
+  //     contrast-checked category (see header note).
+  --sb-elevation-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --sb-elevation-2: 0 4px 14px rgba(0, 0, 0, 0.50);
+  --sb-elevation-3: 0 14px 36px rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="dark"] { @include sb-ui-dark-vars; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { @include sb-ui-dark-vars; }
+}

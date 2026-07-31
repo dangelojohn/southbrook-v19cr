@@ -23,6 +23,11 @@
         # the CDN three@0.128 and unblocks dealer/contractor pricing
         # on the configurator's "Create Quotation" action.
         "southbrook_estimating",
+        # Phase 0 design-system consolidation (2026-07-31) —
+        # kitchen_configurator.scss already reads var(--sb-*) tokens;
+        # southbrook_ui is the new canonical, dependency-light token
+        # layer those names should resolve through going forward.
+        "southbrook_ui",
     ],
     "data": [
         "data/template_support_products.xml",

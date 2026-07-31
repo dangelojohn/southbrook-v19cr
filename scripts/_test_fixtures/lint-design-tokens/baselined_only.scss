@@ -1,0 +1,5 @@
+// baselined_only.scss — a single, fully-baselined violation. Default run must PASS.
+
+.badge-critical {
+  border-color: #c62828;   // OLD02: baselined, must not fail (or print) by default
+}

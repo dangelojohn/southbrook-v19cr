@@ -1,0 +1,14 @@
+// bad.scss — status-context hardcoded colors that MUST be flagged.
+
+.badge-late {
+  color: #b3261e;   // B01: hardcoded red in a "late" selector, same line
+}
+
+.status-ok-icon {
+  fill: rgba(43, 138, 63, 0.9);   // B02: hardcoded rgba in an "ok" selector
+}
+
+// warn state background
+.tile {
+  background: #b35a1a;   // B03: preceding-line comment supplies "warn" context
+}
