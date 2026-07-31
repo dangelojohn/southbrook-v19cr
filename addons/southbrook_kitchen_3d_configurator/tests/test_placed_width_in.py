@@ -93,6 +93,32 @@ class TestPlacedWidthIn(TransactionCase):
         })
         cls.variant_no_width = cls.tmpl_no_width.product_variant_id
 
+    def setUp(self):
+        super().setUp()
+        # Order-independence guard (found at the combined-gate run,
+        # 860 tests) — `_WIDTH_FALLBACK_LOGGED_IDS` is a module-level
+        # Python set, PROCESS-lifetime, not DB-transaction-scoped, so
+        # it is NEVER rolled back between TransactionCase classes the
+        # way ordinary DB state is. In a big combined run, some earlier
+        # test (in this class or another) can have already logged/
+        # deduped a product id before this test's assertion runs,
+        # making the "logs exactly once" check see zero NEW records
+        # depending purely on test execution order. Snapshot + clear
+        # here, restore in tearDown, so every test in this class starts
+        # from a known-empty dedup set regardless of what ran before it
+        # in this process, and doesn't leak state to whatever runs
+        # after it either. Production dedup behaviour (the module
+        # global itself) is untouched — this is test-only isolation.
+        self._saved_width_fallback_logged_ids = set(
+            _kd._WIDTH_FALLBACK_LOGGED_IDS)
+        _kd._WIDTH_FALLBACK_LOGGED_IDS.clear()
+
+    def tearDown(self):
+        _kd._WIDTH_FALLBACK_LOGGED_IDS.clear()
+        _kd._WIDTH_FALLBACK_LOGGED_IDS.update(
+            self._saved_width_fallback_logged_ids)
+        super().tearDown()
+
     def test_variant_with_width_ptav_resolves_to_its_own_width(self):
         self.assertEqual(placed_width_in(self.variant_18), 18.0)
         self.assertEqual(placed_width_in(self.variant_24), 24.0)
