@@ -4,7 +4,7 @@
         "Isometric Three.js kitchen room configurator backed by "
         "live Odoo cabinet inventory — design, save, and quote."
     ),
-    "version": "19.0.5.35.3",
+    "version": "19.0.5.36.0",
     "category": "Manufacturing/Product Configurator",
     "author": "OdooIQ / REAL Partners Ltd.",
     "website": "https://odooiq.com",
@@ -143,6 +143,13 @@
             # dependency; imported by kitchen_configurator.js, so it
             # must load before it, like every other ES module here.
             "southbrook_kitchen_3d_configurator/static/src/js/toast/toast_store.esm.js",
+            # Panel P2 (catalog redesign) — inventory-panel pure data
+            # layer (name parsing / L-R handing / width recovery /
+            # search / grouping) and its thumbnail SVG renderer, both
+            # imported by kitchen_configurator.js, so — like every
+            # other ES module above — they must load before it.
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/catalog_list.esm.js",
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/cabinet_thumb.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/kitchen_configurator.js",
         ],
     },

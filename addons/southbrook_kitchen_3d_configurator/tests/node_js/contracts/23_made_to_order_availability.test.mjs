@@ -9,12 +9,18 @@
  * not real inventory data.
  *
  * Both places the old signal rendered are exercised here:
- *   1. the catalog row's Qty column (now "Availability" / "Made to
- *      order"), and
+ *   1. the catalog row's Qty column (originally swapped for a per-row
+ *      "Availability" / "Made to order" cell here; Panel P2, the
+ *      catalog redesign, later found that cell carried the IDENTICAL
+ *      value on all ~48 rows — zero discriminating information — and
+ *      removed the per-row cell entirely in favour of a single static
+ *      note under the panel header, .o_sbk_inv_madetoorder_note; the
+ *      tests below were re-targeted at that point, not deleted), and
  *   2. the selected-cabinet detail drawer's "Available ... pcs" row
- *      (now "Availability" / "Made to order"), reached via the F15
- *      "+ Add" button (see contracts/13_add_button_and_corner_
- *      category.test.mjs for the button contract itself).
+ *      (now "Availability" / "Made to order", UNCHANGED by Panel P2 —
+ *      that drawer is a separate section this pass didn't touch),
+ *      reached via the F15 "+ Add" button (see contracts/13_add_button_
+ *      and_corner_category.test.mjs for the button contract itself).
  *
  * available_qty: 0 is used deliberately in both fixtures — the exact
  * value that used to render in warning red — to prove no numeric
@@ -41,32 +47,49 @@ async function mountWithProducts(products) {
     });
 }
 
-test("inventory header no longer reads 'Qty' — reads 'Availability'", async () => {
+test("Panel P2: inventory panel carries no 'Qty' column at all — a single made-to-order note instead", async () => {
     const h = await mountWithProducts([ZERO_QTY_PRODUCT]);
     await tick();
 
-    const headerSpans = [...h.root.querySelectorAll(".o_sbk_inv_header span")]
-        .map((s) => s.textContent.trim());
-    assert.ok(!headerSpans.includes("Qty"), "the old 'Qty' header label must be gone");
-    assert.ok(headerSpans.includes("Availability"), "header now reads 'Availability'");
+    // Panel P2 (catalog redesign) removed the old 5-column
+    // .o_sbk_inv_header row entirely — the grouped/card list replaced
+    // the flat table, so there's no longer a column-header element to
+    // carry a "Qty"/"Availability" label at all. Assert its complete
+    // absence rather than its text.
+    assert.equal(h.root.querySelector(".o_sbk_inv_header"), null,
+        "the old column-header row is gone");
+    const bareQty = [...h.root.querySelectorAll(".o_sbk_inventory *")]
+        .some((el) => el.children.length === 0 && el.textContent.trim() === "Qty");
+    assert.equal(bareQty, false, "no element anywhere in the panel reads the bare old 'Qty' label");
+
+    const note = h.root.querySelector(".o_sbk_inv_madetoorder_note");
+    assert.ok(note, "the panel-level made-to-order note renders");
+    assert.equal(note.textContent.trim(), "All Southbrook cabinets are made to order.");
 });
 
-test("catalog row: a zero-available cabinet shows 'Made to order', not a red '0'", async () => {
+test("Panel P2: catalog row carries no per-row availability cell — no numeric quantity, no red '0'", async () => {
     const h = await mountWithProducts([ZERO_QTY_PRODUCT]);
     await tick();
 
     const row = h.root.querySelector(".o_sbk_product_row");
     assert.ok(row, "product row rendered");
 
-    const qtyCell = row.querySelector(".o_sbk_prod_qty");
-    assert.ok(qtyCell, "the qty-column element still renders (same column slot)");
-    assert.equal(qtyCell.textContent.trim(), "Made to order",
-        "no numeric quantity (e.g. '0') may render in this column");
-    assert.ok(qtyCell.classList.contains("o_sbk_prod_madetoorder"),
-        "carries the new neutral made-to-order class");
-    assert.equal(qtyCell.classList.contains("ok"), false,
-        "must never carry the old stock-level 'ok' class");
-    assert.equal(qtyCell.classList.contains("low"), false,
+    // Panel P2 (catalog redesign) — the per-row "Made to order" cell
+    // (.o_sbk_prod_qty / .o_sbk_prod_madetoorder) is gone entirely: all
+    // ~48 rows carried the identical value, so it was zero
+    // discriminating information (see the panel-level note assertion
+    // above). Assert absence directly rather than the now-nonexistent
+    // element's text.
+    assert.equal(row.querySelector(".o_sbk_prod_qty"), null,
+        "the old per-row qty-column element no longer renders");
+    assert.equal(row.querySelector(".o_sbk_prod_madetoorder"), null,
+        "the old per-row made-to-order class no longer renders");
+    const bareZero = [...row.querySelectorAll("*")]
+        .some((el) => el.children.length === 0 && el.textContent.trim() === "0");
+    assert.equal(bareZero, false,
+        "no leaf element renders a bare numeric '0' (the old warning-red quantity) anywhere on the row");
+    assert.equal(row.querySelector(".ok"), null, "must never carry the old stock-level 'ok' class");
+    assert.equal(row.querySelector(".low"), null,
         "must never carry the old stock-level 'low' (warning-red) class");
 });
 

@@ -502,6 +502,28 @@ $sbk-amber:      #B45309;
     &.o_sbk_metric_price strong { color: $sbk-accent; }
 }
 
+// P2 icons-everywhere — counter-strip family icon (base/wall/corner/
+// tall/panel only — see METRIC_ICON_SVG / _metricIcon() in
+// kitchen_configurator.js). aria-hidden in the markup: the icon sits
+// right next to the label it illustrates, so it's decorative, not a
+// second source of the same information.
+.o_sbk_metric_label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.o_sbk_metric_icon {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    svg { width: 100%; height: 100%; display: block; }
+}
+
 .o_sbk_remainder {
     margin-top: 12px;
     padding: 9px 10px;
@@ -614,21 +636,12 @@ $sbk-amber:      #B45309;
     border: 1px solid rgba(26, 102, 212, 0.3);
 }
 
-// D17 — Archetype taxonomy badge in inventory rows
-.o_sbk_arch_badge {
-    display: inline-block;
-    margin-left: 6px;
-    padding: 1px 6px;
-    font-size: 9px;
-    font-weight: 600;
-    background: rgba(200, 155, 90, 0.15);
-    border: 1px solid rgba(200, 155, 90, 0.50);
-    color: #8a6b52;
-    border-radius: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    line-height: 1.3;
-}
+// D17 — Archetype taxonomy. Panel P2 (catalog redesign) moved this from
+// a visible per-row badge into the row's title tooltip (_rowTitle() in
+// kitchen_configurator.js) — the list is tighter now, so the data still
+// flows to anyone who hovers/focuses the row, just without the extra
+// visual weight of a badge on every row. No dedicated class needed;
+// the tooltip rides the row's own t-att-title.
 
 // D13 — Searchable inventory + drag-and-drop
 .o_sbk_inv_head {
@@ -643,15 +656,116 @@ $sbk-amber:      #B45309;
     font-variant-numeric: tabular-nums;
 }
 
-// Category filter dropdown — compact row above the search box.
-.o_sbk_inv_cat_field {
+// P2 icons-everywhere — catalog preview/detail, shown under the panel
+// header when a row is clicked (state.catalogPreview). Compact by
+// design — fixed 88px icon, name/attrs/meta capped to a few short
+// lines — so it never pushes the grouped inventory list below the
+// fold. Mirrors .o_sbk_prod_thumb's own icon-box treatment at a larger
+// size (same border/radius idiom).
+.o_sbk_catalog_preview {
+    position: relative;
     display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 8px 0 4px;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 8px 0;
+    padding: 10px 30px 10px 10px;
+    background: $sbk-accent-bg;
+    border: 1px solid var(--sb-border);
+    border-radius: var(--sb-radius);
 }
 
-.o_sbk_inv_cat_label {
+.o_sbk_catalog_preview_thumb {
+    flex: 0 0 auto;
+    width: 88px;
+    height: 88px;
+    background: $sbk-white;
+    border: 1px solid #D8D2C8;
+    border-radius: var(--sb-corner-sm, 4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+
+    svg { width: 100%; height: 100%; display: block; }
+}
+
+.o_sbk_catalog_preview_info {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+
+    // Typo-spec item 4 idiom — same 12-13px/600 product-name scale as
+    // .o_sbk_prod_title_line strong, one notch up for the larger card.
+    strong {
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.3;
+        color: $sbk-dark;
+    }
+}
+
+.o_sbk_catalog_preview_attrs {
+    font-size: 11px;
+    color: $sbk-mid;
+    line-height: 1.35;
+}
+
+.o_sbk_catalog_preview_meta {
+    font-size: 11px;
+    font-family: var(--sb-font-mono);
+    color: $sbk-muted;
+    font-variant-numeric: tabular-nums;
+}
+
+.o_sbk_catalog_preview_dismiss {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    min-width: 24px;
+    min-height: 24px;
+    width: 24px;
+    height: 24px;
+    border: 0;
+    background: transparent;
+    color: $sbk-muted;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--sb-radius);
+    transition: var(--sb-transition);
+
+    &:hover { background: rgba(0,0,0,0.06); color: $sbk-ink; }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
+}
+
+// Task 23 (SBK-037) follow-up (Panel P2) — one static line replacing the
+// per-row "Made to order" cell every one of the ~48 rows repeated.
+.o_sbk_inv_madetoorder_note {
+    margin: 0 0 var(--sb-space-2, 8px);
+    font-size: 11px;
+    color: $sbk-muted;
+}
+
+// Panel P2 (catalog redesign) — always-visible filter chips, replacing
+// the old "Filter by type" <select>. Two rows share this base: category
+// (.o_sbk_inv_chiprow) and width (.o_sbk_inv_chiprow_width).
+.o_sbk_inv_chiprow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sb-space-1, 4px);
+    margin: var(--sb-space-2, 8px) 0 var(--sb-space-1, 4px);
+}
+
+.o_sbk_inv_chiprow_label {
     // Typo-spec item 4 — field-label scale: 12px/600/uppercase/0.5px.
     font-size: 12px;
     font-weight: 600;
@@ -659,27 +773,50 @@ $sbk-amber:      #B45309;
     text-transform: uppercase;
     color: $sbk-muted;
     white-space: nowrap;
+    margin-right: 2px;
 }
 
-.o_sbk_inv_cat_select {
-    flex: 1;
-    padding: 5px 8px;
+.o_sbk_chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px var(--sb-space-2, 8px);
     border: 1px solid var(--sb-border);
-    border-radius: var(--sb-radius);
+    border-radius: var(--sb-corner-pill, 999px);
     background: $sbk-white;
-    color: $sbk-dark;
+    color: $sbk-mid;
     font-family: inherit;
-    // Typo-spec item 4 — body/control-text scale (13px/500).
-    font-size: 13px;
-    font-weight: 500;
-    line-height: 1.2;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.3;
+    white-space: nowrap;
     cursor: pointer;
+    transition: var(--sb-transition);
+
+    &:hover { background: #FAFAF7; border-color: #C8C1B5; }
+
+    &.is-active {
+        background: $sbk-accent-bg;
+        border-color: $sbk-accent;
+        color: $sbk-accent;
+    }
 
     &:focus-visible {
         outline: 2px solid var(--sb-blue);
         outline-offset: 2px;
-        border-color: $sbk-accent;
     }
+}
+
+.o_sbk_chip_count {
+    font-family: var(--sb-font-mono);
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
+}
+
+// Width chips are numeral-only (no count) — mono data token, no pill
+// padding beyond the shared .o_sbk_chip base.
+.o_sbk_chip_width {
+    font-family: var(--sb-font-mono);
 }
 
 .o_sbk_inv_search {
@@ -1284,43 +1421,50 @@ $sbk-amber:      #B45309;
     }
 }
 
-.o_sbk_inv_header {
-    display: grid;
-    // Typo-spec item 7 — minmax floor on the name column so it can't be
-    // squeezed to near-zero by the fixed data columns to its right.
-    grid-template-columns: minmax(60px, 1fr) 38px 36px 34px 52px;
-    padding: 5px 10px;
-    background: #F8F5F1;
-    // Typo-spec item 4 — section-header (eyebrow) scale: 11px/700/1px.
+.o_sbk_product_list {
+    overflow-y: auto;
+    flex: 1;
+}
+
+// Panel P2 (catalog redesign) — sticky per-category section header
+// ("BASE CABINETS (23)" style), in groupCatalog()'s fixed order.
+// Solid background (a real token, not transparent) is required here —
+// without it, rows scrolling underneath would show through and the
+// pinned label would become unreadable.
+.o_sbk_cat_header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 4px 10px;
+    background: $sbk-bg;
+    // Typo-spec item 4 — section-header (eyebrow) scale: 11px/700/1px,
+    // matching the old .o_sbk_inv_header this replaces.
     font-size: 11px;
     font-weight: 700;
     color: $sbk-muted;
     letter-spacing: 1px;
     border-bottom: 1px solid $sbk-border;
     text-transform: uppercase;
-    flex-shrink: 0;
 }
 
-.o_sbk_product_list {
-    overflow-y: auto;
-    flex: 1;
-}
-
+// Panel P2 — the row is now a 46px-thumb, two-line card (was a single-
+// line, 5-column grid with a separate full-width "+ Add" row beneath
+// every product — the two-row-per-product structure was the single
+// biggest cost to density). role="button" (kitchen_configurator.js)
+// replaces the old <button> element — the row now hosts nested
+// interactive controls (L/R handing toggle, "+ Add") a literal
+// <button> could never legally contain.
 .o_sbk_product_row {
-    display: grid;
-    // Typo-spec item 7 — same minmax floor as .o_sbk_inv_header so the
-    // name/material column keeps enough room to avoid mid-word clipping.
-    grid-template-columns: 36px minmax(60px, 1fr) 38px 36px 34px 52px;
+    position: relative;   // anchors .o_sbk_prod_add_btn's reveal-on-hover
+    display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 10px;
+    gap: var(--sb-space-2, 8px);
+    padding: 6px var(--sb-space-2, 8px);
     border: none;
     border-bottom: 1px solid #F5F0EA;
     border-left: 3px solid transparent;
     background: $sbk-white;
-    text-align: left;
     cursor: pointer;
-    width: 100%;
     transition: var(--sb-transition);
 
     &:hover  { background: #FAFAF7; }
@@ -1331,7 +1475,9 @@ $sbk-amber:      #B45309;
     }
 
     // Typo-spec item 5/acceptance — every interactive element needs a
-    // visible focus ring; this row is a <button> with no prior :focus style.
+    // visible focus ring. A role="button" div gets no native :focus
+    // style, unlike the <button> it replaces, so this is now load-
+    // bearing rather than a nice-to-have.
     &:focus-visible {
         outline: 2px solid var(--sb-blue);
         outline-offset: -2px;
@@ -1339,79 +1485,177 @@ $sbk-amber:      #B45309;
 }
 
 .o_sbk_prod_thumb {
-    width: 30px;
-    height: 26px;
+    flex: 0 0 auto;
+    width: 46px;
+    height: 46px;
     background: #EAE5DC;
     border: 1px solid #D8D2C8;
+    border-radius: var(--sb-corner-sm, 4px);
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: hidden;
 
-    img {
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-    }
+    // Panel P2 — inline <svg> from cabinetThumbSVG() (cabinet_thumb.esm.js),
+    // replacing the old <img src=image_url>.
+    svg { width: 100%; height: 100%; display: block; }
 }
 
 .o_sbk_prod_info {
+    flex: 1 1 auto;
     min-width: 0;
-    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    // Reserves room on the right so line text never underlaps the
+    // absolutely-positioned "+ Add" button (.o_sbk_prod_add_btn).
+    padding-right: 52px;
+}
 
-    strong, small { display: block; }
-    // Typo-spec item 4 — product names are body/control text: 13px/500.
+.o_sbk_prod_title_line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+
+    // Typo-spec item 4 — product names are body/control text; 12px/600
+    // per the P2 mockup (was 13px/500 on the single-line grid row).
     strong {
-        font-size: 13px;
-        font-weight: 500;
-        line-height: 1.4;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.3;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        min-width: 0;
         color: $sbk-dark;
     }
-    // Typo-spec item 7 — the cabinet_type | material caption had no
-    // overflow handling of its own, so long values (e.g. a material name)
-    // were hard-clipped mid-word by the parent's `overflow: hidden`
-    // instead of ellipsizing. Give it the same single-line ellipsis
-    // treatment as `strong`; the JS side adds a title= with the full text.
-    small {
-        font-size: 9px;
-        color: $sbk-muted;
-        line-height: 1.4;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+}
+
+// Panel P2 — L/R handing segmented toggle, inline after the title, for
+// "pair" rows only (a same-family cabinet merged from its L and R
+// variants by groupCatalog()). Toggling swaps which product the row's
+// preview/drag/Add resolve to (_resolveRowProduct in kitchen_
+// configurator.js) — this does not touch a placed layout item.
+.o_sbk_handing_toggle {
+    flex: 0 0 auto;
+    display: inline-flex;
+    border: 1px solid var(--sb-border);
+    border-radius: var(--sb-corner-sm, 4px);
+    overflow: hidden;
+}
+
+.o_sbk_handing_btn {
+    padding: 0 6px;
+    height: 18px;
+    line-height: 16px;
+    border: none;
+    background: $sbk-white;
+    color: $sbk-mid;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--sb-font-mono);
+    cursor: pointer;
+
+    & + & { border-left: 1px solid var(--sb-border); }
+
+    &.is-active {
+        background: $sbk-accent;
+        color: $sbk-white;
+    }
+
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 1px;
     }
 }
 
-// Typo-spec item 4 — data (mono) scale: bump 9/10px to the 12px minimum.
-.o_sbk_prod_sku   { font-size: 12px; font-weight: 600; color: $sbk-mid; font-family: var(--sb-font-mono); }
-.o_sbk_prod_dim   { font-size: 12px; font-weight: 600; font-family: var(--sb-font-mono); color: $sbk-mid; }
-// Price is a numeral too (item 2's "price/metric numerals"); it previously
-// relied on inheriting the root's mono stack, which item 1 removes.
-.o_sbk_prod_price { font-size: 12px; font-weight: 600; font-family: var(--sb-font-mono); text-align: right; color: $sbk-dark; }
-
-.o_sbk_prod_qty {
-    font-size: 12px;
-    font-family: var(--sb-font-mono);
-    font-weight: 600;
-    &.ok  { color: $sbk-success; }
-    &.low { color: $sbk-warn; }
+// Panel P2 — line 2: width + price emphasised, SKU muted, 10.5px base.
+// missing_sku / missing_width (groupCatalog() dataFlags) replace the
+// SKU or width figure in place with an amber .o_sbk_data_flag chip —
+// flagged, never silently hidden.
+.o_sbk_prod_meta_line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 10.5px;
+    min-width: 0;
 }
 
-// Task 23 (SBK-037) — neutral, non-alarming treatment for the
-// "Made to order" label that replaced the qty_available column/row
-// (built-to-order cabinets have no on-hand count to report; the old
-// ok/low coloring above is unused by this label on purpose — a made-
-// to-order product is neither a stock shortage nor a stock surplus).
-.o_sbk_prod_madetoorder {
-    font-size: 11px;
+.o_sbk_prod_dim   { font-weight: 600; font-family: var(--sb-font-mono); color: $sbk-dark; flex: 0 0 auto; }
+// Price is the other emphasised numeral on this line (item 2's "price/
+// metric numerals" convention carried over from the old single-line row).
+.o_sbk_prod_price { font-weight: 700; font-family: var(--sb-font-mono); color: $sbk-dark; flex: 0 0 auto; }
+.o_sbk_prod_sku {
     font-family: var(--sb-font-mono);
-    font-weight: 600;
-    color: $sbk-mid;
+    color: $sbk-muted;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+// Amber "no SKU" / "no width" data-hygiene flag. Southbrook design
+// system rule: never hardcode a status colour — this is the shared
+// --sb-status-warn-* token triple (the existing warning idiom), not a
+// new amber.
+.o_sbk_data_flag {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    border-radius: var(--sb-corner-sm, 4px);
+    font-size: 9.5px;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.3px;
+    color: var(--sb-status-warn-fg);
+    background: var(--sb-status-warn-bg);
+    border: 1px solid var(--sb-status-warn-border);
+}
+
+// Panel P2 — "+ Add" now lives ON the row (right-aligned), not as a
+// separate full-width row underneath every product (the old layout's
+// single biggest density cost). Hover-only reveal is banned (see the
+// southbrook-design-system skill's shop-floor persona constraint) —
+// :focus-within covers keyboard users tabbing onto the row, and
+// (pointer: coarse) below covers touch, which has no hover state to
+// reveal it with at all.
+.o_sbk_prod_add_btn {
+    position: absolute;
+    top: 50%;
+    right: var(--sb-space-2, 8px);
+    transform: translateY(-50%);
+    padding: 4px 10px;
+    border: 1px solid $sbk-accent;
+    border-radius: var(--sb-radius);
+    background: $sbk-white;
+    color: $sbk-accent;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    opacity: 0;
+    transition: var(--sb-transition);
+
+    .o_sbk_product_row:hover &,
+    .o_sbk_product_row:focus-within & {
+        opacity: 1;
+    }
+
+    &:hover { background: $sbk-accent; color: $sbk-white; }
+
+    &:focus-visible {
+        opacity: 1;
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
+}
+
+// Shop-floor / touch persona (southbrook-design-system skill) — no
+// hover state exists on a touch device, so the reveal-on-hover above
+// would make "+ Add" permanently unreachable there. Always visible.
+@media (pointer: coarse) {
+    .o_sbk_prod_add_btn { opacity: 1; }
 }
 
 // ─── Selected cabinet detail ──────────────────────────────────────────────────
@@ -1571,7 +1815,14 @@ $sbk-amber:      #B45309;
         color: $sbk-dark;
         &.ok    { color: $sbk-success; }
         &.low   { color: $sbk-warn; }
-        // Task 23 (SBK-037) — see .o_sbk_prod_madetoorder above.
+        // Task 23 (SBK-037) — neutral, non-alarming treatment for the
+        // "Made to order" label that replaced the qty_available row
+        // (built-to-order cabinets have no on-hand count to report).
+        // Panel P2 (catalog redesign) carried the same non-alarming
+        // idiom into the inventory list's own header note
+        // (.o_sbk_inv_madetoorder_note) once the per-row "Made to
+        // order" cell was removed as zero-discriminating information;
+        // this detail-drawer row is unrelated to that change.
         &.o_sbk_madetoorder { color: $sbk-mid; text-transform: uppercase; letter-spacing: 0.3px; }
         // Typo-spec item 2 — price numeral gets the mono data token.
         &.price { color: $sbk-accent; font-size: 13px; font-family: var(--sb-font-mono); font-weight: 600; }

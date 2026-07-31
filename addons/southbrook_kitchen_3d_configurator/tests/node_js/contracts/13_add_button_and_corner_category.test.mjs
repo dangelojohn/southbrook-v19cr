@@ -8,15 +8,34 @@
  * (`_addCabinetFromProduct` even documented a "future click to add
  * button" that was never built) — an accessibility + testability gap.
  * Each catalog row now renders a real, keyboard-reachable "+ Add"
- * <button> (a SIBLING of the row's own button, not nested inside it —
- * buttons cannot legally nest) that calls
- * `_addCabinetFromProduct(product, null, null)` directly.
+ * <button> that calls `_addCabinetFromProduct(product, null, null)`
+ * directly.
+ *   Panel P2 (catalog redesign) amendment — F15 originally built Add
+ *   as a SIBLING of a literal row <button> ("buttons cannot legally
+ *   nest"). P2's row now also hosts an L/R handing toggle for merged
+ *   pair rows, so the row itself became a role="button" + tabindex="0"
+ *   container (kitchen_configurator.js's _onRowKeydown gives it the
+ *   same Enter/Space activation a native <button> gets for free) that
+ *   Add and the toggle nest INSIDE, each with a stopped click so
+ *   activating them never also fires the row's own preview click. The
+ *   structural "not nested" assertion below was re-targeted to match;
+ *   the behavioural guarantee it protected (Add is independently
+ *   operable and never also triggers row preview) is unchanged and
+ *   still covered by the second test below.
  *
  * F1 — `_inventoryCategoryTypes` used to map `tall -> ["tall",
  * "corner"]`, so a corner unit had no way to surface under its own
  * filter; it only ever showed up (mislabeled, uncounted as its own
  * category) buried inside the Tall tab. Corner now gets its own
  * key/tab.
+ *   Panel P2 amendment — `_inventoryCategoryTypes` / the "Filter by
+ *   type" <select> it drove are both gone; category membership now
+ *   comes straight from groupCatalog()'s own fixed category order
+ *   (catalog_list.esm.js), rendered as always-visible chips. The third
+ *   test's DOM query was re-targeted from `<select><option>` to the
+ *   chip buttons; `_categoryCount("tall"/"corner")` / `_setInventory
+ *   Category` / `_filteredProducts` keep their exact old signatures
+ *   and behaviour, so those assertions are unchanged.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -44,19 +63,26 @@ async function mountWithProducts(products) {
     });
 }
 
-test("F15: each catalog row renders a keyboard-reachable + Add button distinct from the row itself", async () => {
+test("F15/P2: row exposes button semantics (role+tabindex) and + Add is a real, independently keyboard-reachable <button>", async () => {
     const h = await mountWithProducts([BASE_PRODUCT]);
     await tick();
 
     const row = h.root.querySelector(".o_sbk_product_row");
     assert.ok(row, "product row rendered");
-    assert.equal(row.tagName, "BUTTON", "the row itself stays a real, natively keyboard-operable <button>");
+    // Panel P2 (catalog redesign) — see the file header amendment: the
+    // row can no longer be a literal <button> (it now nests the "+ Add"
+    // button, and for pair rows the L/R toggle too), so it's a
+    // role="button" + tabindex="0" container instead, with its own
+    // keydown handler standing in for the native Enter/Space activation
+    // a real <button> gets for free.
+    assert.equal(row.getAttribute("role"), "button",
+        "row exposes button semantics via role for assistive tech");
+    assert.equal(row.tabIndex, 0, "row stays natively keyboard-reachable (Tab order)");
 
     const addBtn = h.root.querySelector(".o_sbk_prod_add_btn");
     assert.ok(addBtn, "+ Add button rendered");
     assert.equal(addBtn.tagName, "BUTTON", "+ Add must be a real <button> element (keyboard-reachable)");
-    assert.notEqual(addBtn, row, "+ Add is a sibling, not the row itself");
-    assert.equal(row.contains(addBtn), false, "+ Add must not be nested inside the row <button> (invalid HTML)");
+    assert.notEqual(addBtn, row, "+ Add is a distinct control from the row");
 });
 
 test("F15: clicking + Add calls _addCabinetFromProduct(product, null, null) and does not also fire the row preview", async () => {
@@ -84,9 +110,15 @@ test("F1: a corner product gets its own 'Corner' filter tab (not folded into Tal
     assert.equal(h.component._categoryCount("tall"), 0, "corner must not be counted under Tall");
     assert.equal(h.component._categoryCount("corner"), 1, "corner has its own count");
 
-    const options = [...h.root.querySelectorAll(".o_sbk_inv_cat_select option")]
-        .map((o) => o.value);
-    assert.ok(options.includes("corner"), "a Corner <option> renders in the category filter select");
+    // Panel P2 (catalog redesign) — the "Filter by type" <select> is
+    // gone; category membership is now always-visible chips rendered
+    // straight off groupCatalog()'s own categories (catalog_list.esm.js),
+    // clicked via _setInventoryCategory exactly like the old <option>s
+    // were selected via that same method.
+    const chipLabels = [...h.root.querySelectorAll(".o_sbk_inv_chiprow .o_sbk_chip")]
+        .map((btn) => btn.textContent.trim());
+    assert.ok(chipLabels.some((label) => label.startsWith("Corner Cabinets")),
+        "a Corner Cabinets chip renders in the category filter row");
 
     h.component._setInventoryCategory("corner");
     await tick();

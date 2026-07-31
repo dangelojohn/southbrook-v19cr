@@ -10,7 +10,9 @@
  *  - Scene rebuilds whenever room dimensions or product list change
  */
 
-import { Component, onMounted, onWillStart, onWillUnmount, useState, xml } from "@odoo/owl";
+import {
+    Component, markup, onMounted, onWillStart, onWillUnmount, useState, xml,
+} from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { rpc } from "@web/core/network/rpc";
@@ -37,6 +39,15 @@ import { WALLS } from "@southbrook_kitchen_3d_configurator/js/canvas/constants.e
 // header for why this replaces `useService("notification")` for every
 // message this component produces.
 import { ToastStore } from "@southbrook_kitchen_3d_configurator/js/toast/toast_store.esm";
+// Panel P2 (catalog redesign) — the inventory panel's pure data layer
+// (name parsing, L/R handing, width recovery, search haystack, and the
+// grouped/L-R-merged/sorted catalog shape) and its thumbnail renderer.
+// Both are owned/tested independently of this file — see each module's
+// own header for the contract. Neither is ever re-implemented here.
+import {
+    parseProductName, liftWidth, groupCatalog, searchText,
+} from "@southbrook_kitchen_3d_configurator/js/canvas/catalog_list.esm";
+import { cabinetThumbSVG } from "@southbrook_kitchen_3d_configurator/js/canvas/cabinet_thumb.esm";
 
 const actionRegistry = registry.category("actions");
 
@@ -81,6 +92,29 @@ export function countCabinetBuckets(items) {
         + counts.appliance_count;
     return counts;
 }
+
+// ─── P2 icons-everywhere — synthetic counter-strip family icons ────────────
+// Design-system rule (southbrook-design-system skill, "Cabinet
+// iconography — one source"): cabinetThumbSVG() is the ONLY cabinet icon
+// language in this stack. The sidebar counter strip refers to cabinets by
+// family (base/wall/corner/tall/panel) exactly like the inventory rows
+// below it do, so it reuses that same renderer at metric-row scale
+// instead of a hand-drawn second icon set. Synthetic, minimal-literal
+// products (`{cabinet_type, width_in}`) are explicitly sanctioned by that
+// skill for family-level icons — these never claim to represent one
+// specific SKU. Built ONCE here at module load (pure function of a fixed
+// literal, no product/user data involved) and reused across every
+// render via `_metricIcon()` below — never rebuilt per paint.
+// `appliance` is deliberately absent: cabinet_thumb.esm.js's
+// `thumbFamily()` table has no appliance family, and faking one would
+// show an icon that lies about what actually gets placed.
+const METRIC_ICON_SVG = {
+    base:   markup(cabinetThumbSVG({ cabinet_type: "base", width_in: 24, name: "", sku: "" }, 20)),
+    wall:   markup(cabinetThumbSVG({ cabinet_type: "wall", width_in: 24, name: "", sku: "" }, 20)),
+    corner: markup(cabinetThumbSVG({ cabinet_type: "corner", width_in: 24, name: "", sku: "" }, 20)),
+    tall:   markup(cabinetThumbSVG({ cabinet_type: "tall", width_in: 24, name: "", sku: "" }, 20)),
+    panel:  markup(cabinetThumbSVG({ cabinet_type: "panel", width_in: 24, name: "", sku: "" }, 20)),
+};
 
 // ─── OWL Component ────────────────────────────────────────────────────────────
 class SouthbrookKitchenConfigurator extends Component {
@@ -306,11 +340,26 @@ class SouthbrookKitchenConfigurator extends Component {
             warnings:            [],
             // D13 — searchable inventory + drag-and-drop add.
             inventorySearch: "",
-            // Category filter pill selection. Values: "all" |
-            // "base" | "wall" | "tall" | "panels". Tab click toggles
-            // this; _filteredProducts() applies it BEFORE the search
-            // filter so users can narrow to "wall" then type a size.
+            // Panel P2 (catalog redesign) — category CHIP selection
+            // (replaces the old <select>). "all" or one of the keys
+            // groupCatalog() (catalog_list.esm.js) returns — never a
+            // hardcoded set here, so a new cabinet_type surfaces its
+            // own chip automatically. Chip click toggles this;
+            // _filteredProducts() applies it BEFORE the search filter,
+            // same "narrow then type" order the old tabs used.
             inventoryCategory: "all",
+            // Panel P2 — width CHIP selection, mutually exclusive with
+            // an implicit "all" (no dedicated All button in this row;
+            // clicking the active chip again clears back to "all").
+            // Values come from groupCatalog().widths, never hardcoded.
+            inventoryWidth: "all",
+            // Panel P2 — per-pair L/R handing toggle. Keyed by
+            // "<left product_id>:<right product_id>" (stable across
+            // re-renders, unlike the row object groupCatalog() rebuilds
+            // every call) -> "L" | "R". Missing key = default "L" (see
+            // _pairHanding). Browsing-only UI state, same family as
+            // catalogPreview below — never written to a placed item.
+            pairHanding: {},
             dragHover:       false,
             // D16 — Track which product is being dragged from the
             // inventory so the canvas can highlight the matching
@@ -1357,55 +1406,198 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.catalogPreview = product;
     }
 
-    // ─── D13 — Searchable inventory + drag-and-drop add ─────────────────────────
-    // Category tabs first, then case-insensitive text search across
-    // name / SKU / cabinet type / material / door-style. Both empty →
-    // full catalog. INVENTORY_CATEGORY_MAP maps each tab key to the
-    // cabinet_type values it should include; keeping the map next to
-    // the filter keeps the tab UI and the data contract in one place.
-    // F1 fix (2026-07-27) — "tall" used to also swallow "corner", so a
-    // corner unit had no way to surface under its own filter — it only
-    // ever showed up buried inside the Tall tab (mislabeled, uncounted
-    // as its own category). Corner now gets its own key/tab.
-    _inventoryCategoryTypes(key) {
-        return ({
-            all:      null,   // null = passthrough (no cabinet_type filter)
-            base:     ["base"],
-            wall:     ["wall"],
-            tall:     ["tall"],
-            corner:   ["corner"],
-            panels:   ["filler", "panel"],
-        })[key] || null;
+    // P2 icons-everywhere — explicit dismiss for the catalog preview/
+    // detail block's × control. Same field a real selection already
+    // clears (F14, _selectCabinet) — this is the user-driven equivalent
+    // for when no selection follows the preview.
+    _dismissCatalogPreview() {
+        this.state.catalogPreview = null;
     }
 
-    _productsByCategory(key) {
-        const types = this._inventoryCategoryTypes(key);
-        const list = this.state.products || [];
-        if (!types) return list;
-        return list.filter(p => types.includes(p.cabinet_type));
+    // The previewed product's OWN icon (not a synthetic family icon
+    // like _metricIcon above) — cabinetThumbSVG is a pure function of
+    // the product's own fields, so this can't be memoized at module
+    // load the way the counter-strip icons are; it's cheap enough to
+    // rebuild per render, same as the inventory row thumbs.
+    _catalogPreviewMarkup() {
+        return markup(cabinetThumbSVG(this.state.catalogPreview, 88));
     }
 
-    _filteredProducts() {
-        const q = (this.state.inventorySearch || "").toLowerCase().trim();
-        const list = this._productsByCategory(this.state.inventoryCategory || "all");
-        if (!q) return list;
-        return list.filter(p =>
-            (p.name && p.name.toLowerCase().includes(q)) ||
-            (p.sku && p.sku.toLowerCase().includes(q)) ||
-            (p.cabinet_type && p.cabinet_type.toLowerCase().includes(q)) ||
-            (p.material && p.material.toLowerCase().includes(q)) ||
-            (p.door_style && p.door_style.toLowerCase().includes(q))
-        );
+    // Panel P2 stripped the parenthetical attribute boilerplate off
+    // every list row's title (parseProductName) to keep the list tight;
+    // this detail block is where that stripped detail belongs — shown
+    // on demand for the one product being looked at, not repeated on
+    // every one of the ~48 rows.
+    _catalogPreviewParsed() {
+        return parseProductName(this.state.catalogPreview && this.state.catalogPreview.name);
     }
 
-    // Tab count badges — only compute against the raw catalog so a
-    // typed search doesn't shrink the visible tab counts.
+    _catalogPreviewWidthText() {
+        const p = this.state.catalogPreview;
+        if (!p) return "";
+        const w = liftWidth(p, this._catalogPreviewParsed().attrs);
+        return w > 0 ? this._fmtWidthIn(w) : "width n/a";
+    }
+
+    // ─── D13 / Panel P2 — Searchable, grouped inventory + drag-and-drop add ─────
+    // Panel P2 (catalog redesign) replaced the old flat, per-product,
+    // <select>-filtered list with groupCatalog()'s grouped/L-R-merged/
+    // sorted shape (catalog_list.esm.js). The old INVENTORY_CATEGORY_MAP
+    // tab logic (a hand-maintained cabinet_type -> tab-key map living
+    // only in this file) is gone — chips now render straight off
+    // groupCatalog()'s own `categories` array, so the chip set and the
+    // grouped list's own section headers can never disagree (one
+    // source of truth instead of two parallel filter systems).
+    //
+    // _catalogGroups() is the single call site for groupCatalog() on
+    // the FULL raw catalog; chip metadata (both rows) is read from it
+    // so counts stay stable regardless of the currently active filter
+    // — same "a typed search must not shrink the tab counts" rule the
+    // pre-P2 select used, now extended to the width row too.
+    _catalogGroups() {
+        return groupCatalog(this.state.products || []);
+    }
+
+    _categoryChips() {
+        return this._catalogGroups().categories;
+    }
+
+    _widthChips() {
+        return this._catalogGroups().widths;
+    }
+
     _categoryCount(key) {
-        return this._productsByCategory(key).length;
+        if (key === "all") return this._catalogGroups().total;
+        const cat = this._catalogGroups().categories.find((c) => c.key === key);
+        return cat ? cat.count : 0;
     }
 
     _setInventoryCategory(key) {
         this.state.inventoryCategory = key;
+    }
+
+    // Width row is mutually-exclusive-single-select with an IMPLICIT
+    // "all" — there's no dedicated All chip taking up row space;
+    // clicking the already-active chip clears the filter back to "all".
+    _setInventoryWidth(w) {
+        this.state.inventoryWidth = (this.state.inventoryWidth === w) ? "all" : w;
+    }
+
+    // product_id -> category key, derived from groupCatalog()'s OWN
+    // bucketing (never re-implemented here) so the category chip
+    // filter can never disagree with the grouped list's own headers.
+    _categoryMembership() {
+        const map = new Map();
+        for (const cat of this._catalogGroups().categories) {
+            for (const row of cat.rows) {
+                if (row.kind === "pair") {
+                    if (row.left)  map.set(row.left.product_id, cat.key);
+                    if (row.right) map.set(row.right.product_id, cat.key);
+                } else if (row.product) {
+                    map.set(row.product.product_id, cat.key);
+                }
+            }
+        }
+        return map;
+    }
+
+    // The single filter funnel: search (via searchText()/
+    // parseProductName() so the now-hidden attribute boilerplate still
+    // matches) + category chip + width chip, all applied to the raw
+    // product list. Feeds groupCatalog() (see _groupedInventory) for
+    // the actual rendered, grouped/L-R-merged list.
+    _filteredProducts() {
+        const q = (this.state.inventorySearch || "").toLowerCase().trim();
+        const catKey = this.state.inventoryCategory || "all";
+        const widthKey = this.state.inventoryWidth || "all";
+        const list = this.state.products || [];
+        const catMap = catKey === "all" ? null : this._categoryMembership();
+
+        return list.filter((p) => {
+            if (catMap && catMap.get(p.product_id) !== catKey) return false;
+            const parsed = parseProductName(p && p.name);
+            if (widthKey !== "all" && liftWidth(p, parsed.attrs) !== widthKey) return false;
+            if (q && !searchText(p, parsed).toLowerCase().includes(q)) return false;
+            return true;
+        });
+    }
+
+    // Grouped/L-R-merged/sorted view of the currently-filtered catalog
+    // — what the template actually renders (sticky category headers +
+    // rows). Re-grouping the already-filtered list (rather than
+    // filtering groupCatalog()'s output) means selecting a category
+    // chip naturally collapses this to that one category/header.
+    _groupedInventory() {
+        return groupCatalog(this._filteredProducts());
+    }
+
+    // ─── Panel P2 — L/R handing toggle + row-product resolution ─────────────────
+    // Keyed by product_id pair (stable across re-renders — groupCatalog()
+    // rebuilds a fresh row object every call, so the row itself can't be
+    // used as a key). Default "L" per the mockup; browsing-only state,
+    // same family as catalogPreview (never written to a placed item).
+    _pairKey(row) {
+        return `${row.left.product_id}:${row.right.product_id}`;
+    }
+
+    _pairHanding(row) {
+        return this.state.pairHanding[this._pairKey(row)] || "L";
+    }
+
+    _setPairHanding(row, side) {
+        this.state.pairHanding[this._pairKey(row)] = side;
+    }
+
+    // Which real product a row currently resolves to — the toggled
+    // side for a pair row, the sole product for a single row. Preview,
+    // drag, is-selected highlight, and "+ Add" all resolve through
+    // this so toggling L/R changes what every one of those acts on.
+    _resolveRowProduct(row) {
+        return row.kind === "pair"
+            ? (this._pairHanding(row) === "R" ? row.right : row.left)
+            : row.product;
+    }
+
+    // D17 — archetype taxonomy is no longer a visible row badge (the
+    // list is tighter now); folded into the row's title tooltip instead
+    // so the data keeps flowing to anyone who hovers, same info as
+    // before, less visual weight.
+    _rowTitle(resolved) {
+        const base = `Click to preview · drag onto the scene, or use + Add, to place ${resolved.name}`;
+        if (!resolved.archetype_code) return base;
+        const collection = resolved.archetype_collection
+            ? ` (${resolved.archetype_collection})` : "";
+        return `${base} · Archetype: ${resolved.archetype_code}${collection}`;
+    }
+
+    // The SVG is generated entirely from numeric product fields
+    // (cabinet_type / width_in / height_in / depth_in — see
+    // cabinet_thumb.esm.js's own contract) with no user-supplied text
+    // ever interpolated into it, so trusting it as markup() here is
+    // safe — t-esc would just show the raw "<svg>...</svg>" text.
+    _rowThumbMarkup(resolved) {
+        return markup(cabinetThumbSVG(resolved, 46));
+    }
+
+    // P2 icons-everywhere — returns the pre-built (module-load-time)
+    // markup for a counter-strip family icon; see METRIC_ICON_SVG above.
+    // `key` is one of the CABINET_TYPE_COUNT_KEY buckets this template
+    // renders a tile for (base/wall/corner/tall/panel only).
+    _metricIcon(key) {
+        return METRIC_ICON_SVG[key];
+    }
+
+    _fmtWidthIn(w) {
+        return `${w}″`;
+    }
+
+    _onRowKeydown(ev, resolved) {
+        // WAI-ARIA APG role="button" pattern — Enter/Space activate,
+        // Space must also prevent the page from scrolling.
+        if (ev.key === "Enter" || ev.key === " " || ev.key === "Spacebar") {
+            ev.preventDefault();
+            this._previewCatalogProduct(resolved);
+        }
     }
 
     _onSearchInput(ev) {
@@ -3367,27 +3559,45 @@ SouthbrookKitchenConfigurator.template = xml`
 
       <div class="o_sbk_metric">
         <strong><t t-esc="state.summary.base_count"/></strong>
-        base cabinets
+        <span class="o_sbk_metric_label">
+          <span class="o_sbk_metric_icon" aria-hidden="true"><t t-out="_metricIcon('base')"/></span>
+          base cabinets
+        </span>
       </div>
       <div class="o_sbk_metric">
         <strong><t t-esc="state.summary.wall_count"/></strong>
-        wall cabinets
+        <span class="o_sbk_metric_label">
+          <span class="o_sbk_metric_icon" aria-hidden="true"><t t-out="_metricIcon('wall')"/></span>
+          wall cabinets
+        </span>
       </div>
       <div class="o_sbk_metric">
         <strong><t t-esc="state.summary.corner_count"/></strong>
-        corner units
+        <span class="o_sbk_metric_label">
+          <span class="o_sbk_metric_icon" aria-hidden="true"><t t-out="_metricIcon('corner')"/></span>
+          corner units
+        </span>
       </div>
       <div t-if="state.summary.tall_count" class="o_sbk_metric">
         <strong><t t-esc="state.summary.tall_count"/></strong>
-        tall cabinets
+        <span class="o_sbk_metric_label">
+          <span class="o_sbk_metric_icon" aria-hidden="true"><t t-out="_metricIcon('tall')"/></span>
+          tall cabinets
+        </span>
       </div>
+      <!-- Appliance row deliberately gets no family icon — cabinet_
+           thumb.esm.js's thumbFamily() has no "appliance" bucket, and a
+           faked one would show an icon that lies about what's placed. -->
       <div t-if="state.summary.appliance_count" class="o_sbk_metric">
         <strong><t t-esc="state.summary.appliance_count"/></strong>
         appliance spaces
       </div>
       <div t-if="state.summary.panel_count" class="o_sbk_metric">
         <strong><t t-esc="state.summary.panel_count"/></strong>
-        end panels
+        <span class="o_sbk_metric_label">
+          <span class="o_sbk_metric_icon" aria-hidden="true"><t t-out="_metricIcon('panel')"/></span>
+          end panels
+        </span>
       </div>
       <div t-if="state.summary.unplaced_count" class="o_sbk_metric o_sbk_metric_unplaced">
         <strong><t t-esc="state.summary.unplaced_count"/></strong>
@@ -3649,51 +3859,48 @@ SouthbrookKitchenConfigurator.template = xml`
         </span>
       </div>
 
-      <!-- Category filter dropdown. Options with zero matching
-           products auto-hide so the menu stays tight as SKUs grow
-           into new categories (Appliances etc. will surface here
-           automatically when their data lands, no template edit
-           needed). Count next to each label so users see at a
-           glance how many items are in each group. -->
-      <label class="o_sbk_inv_cat_field">
-        <span class="o_sbk_inv_cat_label">Filter by type</span>
-        <select class="o_sbk_inv_cat_select"
-                t-att-value="state.inventoryCategory"
-                t-on-change="(ev) => this._setInventoryCategory(ev.target.value)"
-                aria-label="Filter cabinet inventory by product category">
-          <option value="all" t-att-selected="state.inventoryCategory === 'all' ? 'selected' : ''">
-            All (<t t-esc="_categoryCount('all')"/>)
-          </option>
-          <option t-if="_categoryCount('base') &gt; 0" value="base"
-                  t-att-selected="state.inventoryCategory === 'base' ? 'selected' : ''">
-            Base (<t t-esc="_categoryCount('base')"/>)
-          </option>
-          <option t-if="_categoryCount('wall') &gt; 0" value="wall"
-                  t-att-selected="state.inventoryCategory === 'wall' ? 'selected' : ''">
-            Wall (<t t-esc="_categoryCount('wall')"/>)
-          </option>
-          <option t-if="_categoryCount('tall') &gt; 0" value="tall"
-                  t-att-selected="state.inventoryCategory === 'tall' ? 'selected' : ''">
-            Tall (<t t-esc="_categoryCount('tall')"/>)
-          </option>
-          <!-- F1 fix (2026-07-27) — corner units used to be folded into
-               the Tall filter (_inventoryCategoryTypes mapped
-               tall -> ["tall", "corner"]), hiding them under the wrong
-               label with no way to isolate them. Corner now gets its
-               own tab. -->
-          <option t-if="_categoryCount('corner') &gt; 0" value="corner"
-                  t-att-selected="state.inventoryCategory === 'corner' ? 'selected' : ''">
-            Corner (<t t-esc="_categoryCount('corner')"/>)
-          </option>
-          <option t-if="_categoryCount('panels') &gt; 0" value="panels"
-                  t-att-selected="state.inventoryCategory === 'panels' ? 'selected' : ''">
-            Panels (<t t-esc="_categoryCount('panels')"/>)
-          </option>
-        </select>
-      </label>
+      <!-- P2 icons-everywhere — catalog preview/detail. Row clicks only
+           PREVIEW (F14 — _previewCatalogProduct never touches
+           state.selected), and Panel P2 stripped the parenthetical
+           attributes off every row's title to keep the list tight
+           (parseProductName, catalog_list.esm.js) — this is where that
+           stripped detail belongs: on demand, for the one product being
+           looked at, not repeated on all ~48 rows. Fixed icon size and
+           a couple of short text lines keep this compact by design so
+           it never pushes the grouped list below the fold. -->
+      <div t-if="state.catalogPreview" class="o_sbk_catalog_preview">
+        <button type="button" class="o_sbk_catalog_preview_dismiss"
+                t-on-click="_dismissCatalogPreview"
+                aria-label="Close product preview">×</button>
+        <div class="o_sbk_catalog_preview_thumb">
+          <t t-out="_catalogPreviewMarkup()"/>
+        </div>
+        <div class="o_sbk_catalog_preview_info">
+          <strong t-esc="_catalogPreviewParsed().title"/>
+          <span t-if="_catalogPreviewParsed().attrs" class="o_sbk_catalog_preview_attrs"
+                t-esc="_catalogPreviewParsed().attrs"/>
+          <span class="o_sbk_catalog_preview_meta">
+            <t t-esc="_catalogPreviewWidthText()"/> · <t t-esc="_money(state.catalogPreview.price)"/>
+          </span>
+        </div>
+      </div>
 
-      <!-- D13 — Searchable inventory. Filters by name, SKU, cabinet
-           type, material, door style. Empty = full catalog. -->
+      <!-- Panel P2 (catalog redesign) follow-up to Task 23 (SBK-037) —
+           every one of the ~48 rows in this panel carries the SAME
+           "Made to order" value (southbrook_is_cabinet=True is the
+           server-side filter for the whole route), so repeating it as
+           a per-row column was zero discriminating information. One
+           static line under the header says it once for the whole
+           list instead. -->
+      <p class="o_sbk_inv_madetoorder_note">All Southbrook cabinets are made to order.</p>
+
+      <!-- D13 — Searchable inventory. Matches via searchText()
+           (catalog_list.esm.js) against parsed title + attrs + sku +
+           material — attrs covers the attribute boilerplate (handing,
+           finish, etc.) that parseProductName() strips off the row's
+           now-plain title, so a search for e.g. "Right Hand" or
+           "maple" still finds the right row even though that text no
+           longer renders anywhere in the row. Empty = full catalog. -->
       <div class="o_sbk_inv_search">
         <input type="search" class="o_sbk_inv_search_input"
                placeholder="Search by name, SKU, type, material…"
@@ -3704,85 +3911,131 @@ SouthbrookKitchenConfigurator.template = xml`
                 t-on-click="_clearSearch" aria-label="Clear search">×</button>
       </div>
 
+      <!-- Panel P2 — category chips replace the old "Filter by type"
+           <select> (and the F1 fix's per-option corner/tall split,
+           which now lives permanently in groupCatalog()'s fixed
+           category order — see catalog_list.esm.js). Always visible,
+           never a hidden dropdown; counts read straight off
+           groupCatalog() so they can never disagree with the grouped
+           list's own section headers below. -->
+      <div class="o_sbk_inv_chiprow" role="group" aria-label="Filter by cabinet type">
+        <button type="button"
+                t-att-class="'o_sbk_chip' + (state.inventoryCategory === 'all' ? ' is-active' : '')"
+                t-att-aria-pressed="state.inventoryCategory === 'all'"
+                t-on-click="() => this._setInventoryCategory('all')">
+          All <span class="o_sbk_chip_count" t-esc="_categoryCount('all')"/>
+        </button>
+        <button t-foreach="_categoryChips()" t-as="cat" t-key="cat.key" type="button"
+                t-att-class="'o_sbk_chip' + (state.inventoryCategory === cat.key ? ' is-active' : '')"
+                t-att-aria-pressed="state.inventoryCategory === cat.key"
+                t-on-click="() => this._setInventoryCategory(cat.key)">
+          <t t-esc="cat.label"/> <span class="o_sbk_chip_count" t-esc="cat.count"/>
+        </button>
+      </div>
+
+      <!-- Panel P2 — width chips, derived from groupCatalog().widths
+           (never hardcoded), so the row grows/shrinks automatically as
+           the real catalog's width range changes. Multi-exclusive
+           single-select with an IMPLICIT "all": no dedicated All chip
+           here (unlike the category row above) — clicking the already-
+           active width chip clears it back to "all" (_setInventoryWidth). -->
+      <div t-if="_widthChips().length" class="o_sbk_inv_chiprow o_sbk_inv_chiprow_width"
+           role="group" aria-label="Filter by width">
+        <span class="o_sbk_inv_chiprow_label">Width</span>
+        <button t-foreach="_widthChips()" t-as="w" t-key="w" type="button"
+                t-att-class="'o_sbk_chip o_sbk_chip_width' + (state.inventoryWidth === w ? ' is-active' : '')"
+                t-att-aria-pressed="state.inventoryWidth === w"
+                t-on-click="() => this._setInventoryWidth(w)"
+                t-esc="_fmtWidthIn(w)"/>
+      </div>
+
       <!-- D13 — Drag hint pill. Only shown when search has results so it
            doesn't clutter the empty state. -->
       <div t-if="_filteredProducts().length" class="o_sbk_inv_draghint">
         ↔ Drag any product into the scene to add it
       </div>
 
-      <!-- Column header.
-           Task 23 (SBK-037) — "Qty" -> "Availability": every row here
-           is southbrook_is_cabinet=True (the /products route filters
-           server-side), and Southbrook cabinets are built to order,
-           never held as stock, so a numeric on-hand count was always
-           a false signal (frequently 0, rendered in warning red). -->
-      <div class="o_sbk_inv_header">
-        <span>Product</span><span>SKU</span><span>Width</span><span>Availability</span><span>Price</span>
-      </div>
-
-      <!-- Product rows.
-           F14 fix (2026-07-27) — row click now PREVIEWS/highlights the
-           catalog product (_previewCatalogProduct, writes
-           state.catalogPreview) instead of writing state.selected — a
-           raw catalog product has no layout_key, so the edit drawer's
-           actions used to silently no-op against it. is-selected lights
-           up for EITHER a matching real selection or a matching preview.
-           F15 fix (2026-07-27) — a keyboard-reachable "+ Add" button
-           (drag-and-drop was previously the only way to add a cabinet).
-           It's a SIBLING of the row button, not nested inside it
-           (buttons cannot legally nest) — the shared t-foreach lives on
-           the wrapping <t>, which OWL renders as two flat siblings per
-           iteration, no extra wrapper element needed. Appends to the
+      <!-- Panel P2 — grouped, sticky-header list. groupCatalog()
+           (catalog_list.esm.js) buckets the already-filtered products
+           by category in its fixed order, L/R-merges handed pairs, and
+           sorts each group by width.
+           F14 fix (2026-07-27), preserved — row click PREVIEWS/
+           highlights the catalog product (_previewCatalogProduct,
+           writes state.catalogPreview) instead of writing
+           state.selected — a raw catalog product has no layout_key, so
+           the edit drawer's actions would silently no-op against it.
+           is-selected lights up for EITHER a matching real selection or
+           a matching preview, resolved against the row's CURRENT L/R
+           toggle side (_resolveRowProduct) for pair rows.
+           F15 fix (2026-07-27), preserved but restructured — "+ Add" is
+           a real, keyboard-reachable <button>. It (and, for pair rows,
+           the L/R toggle) can no longer be a SIBLING of a literal row
+           <button> the way F15 originally built it: this row now needs
+           to host that toggle AND Add as independently-clickable
+           controls, and a <button> can never legally contain another
+           <button> (nested buttons get silently mangled by the HTML
+           parser). The row is instead a role="button" + tabindex="0"
+           container (_onRowKeydown gives it the same Enter/Space
+           activation a native <button> has for free — WAI-ARIA APG
+           button pattern) with real nested <button>s for the toggle
+           and Add; both stop click propagation so activating them never
+           also fires the row's own preview click. Appends to the
            active wall per F7's fixed precedence (state.activeWall wins
            over any stale drop-wall override). -->
       <div class="o_sbk_product_list">
-        <t t-foreach="_filteredProducts()" t-as="product" t-key="product.product_id">
-        <button
-            t-att-class="'o_sbk_product_row o_sbk_prod_draggable' + ((state.selected &amp;&amp; state.selected.product_id === product.product_id) || (state.catalogPreview &amp;&amp; state.catalogPreview.product_id === product.product_id) ? ' is-selected' : '')"
-            draggable="true"
-            t-on-dragstart="(ev) => this._onProductDragStart(ev, product)"
-            t-on-dragend="(ev) => this._onProductDragEnd(ev)"
-            t-on-click="() => this._previewCatalogProduct(product)"
-            t-att-title="'Click to preview · drag onto the scene, or use + Add, to place ' + product.name">
-          <div class="o_sbk_prod_thumb">
-            <img t-att-src="product.image_url" alt="" loading="lazy"/>
-          </div>
-          <div class="o_sbk_prod_info">
-            <strong t-esc="product.name"/>
-            <!-- Typo-spec item 7 — this caption now ellipsizes on overflow
-                 (scss); the title= gives the full type/material on hover
-                 so the row-level title above only has to cover the name. -->
-            <small t-att-title="product.cabinet_type + ' | ' + product.material"><t t-esc="product.cabinet_type"/> | <t t-esc="product.material"/></small>
-            <!-- D17 — Archetype taxonomy badge when the template is
-                 mapped to a Southbrook cabinet archetype. -->
-            <span t-if="product.archetype_code" class="o_sbk_arch_badge"
-                  t-att-title="'Archetype: ' + product.archetype_code + (product.archetype_collection ? ' (' + product.archetype_collection + ')' : '')">
-              <t t-esc="product.archetype_body_class || product.archetype_code"/>
-            </span>
-          </div>
-          <span class="o_sbk_prod_sku"  t-esc="product.sku"/>
-          <span class="o_sbk_prod_dim"  t-esc="product.width_in + '&quot;'"/>
-          <!-- Task 23 (SBK-037) — replaces the qty_available-driven
-               "0" (rendered in warning red on every zero-stock
-               cabinet, which is nearly all of them) with the accurate,
-               non-alarming "Made to order". This panel only ever
-               lists southbrook_is_cabinet=True products (server-side
-               filter), so the label applies unconditionally here —
-               no per-row cabinet check needed. product.available_qty
-               is left in the payload/state (harmless, may still be
-               used elsewhere) but is no longer rendered as a stock
-               signal. -->
-          <span class="o_sbk_prod_qty o_sbk_prod_madetoorder"
-                title="Southbrook cabinets are built to order — not held as stock.">Made to order</span>
-          <span class="o_sbk_prod_price" t-esc="_money(product.price)"/>
-        </button>
-        <button type="button" class="o_sbk_prod_add_btn"
-                draggable="false"
-                t-on-click="() => this._addCabinetFromProduct(product, null, null)"
-                t-att-aria-label="'Add ' + product.name + ' to the layout'"
-                title="Add to layout">+ Add</button>
+        <t t-foreach="_groupedInventory().categories" t-as="cat" t-key="cat.key">
+          <div class="o_sbk_cat_header"
+               t-esc="cat.label.toUpperCase() + ' (' + cat.count + ')'"/>
+          <t t-foreach="cat.rows" t-as="row"
+             t-key="row.kind === 'pair' ? (row.left.product_id + '-' + row.right.product_id) : row.product.product_id">
+            <t t-set="resolved" t-value="_resolveRowProduct(row)"/>
+            <div
+                t-att-class="'o_sbk_product_row o_sbk_prod_draggable' + ((state.selected &amp;&amp; state.selected.product_id === resolved.product_id) || (state.catalogPreview &amp;&amp; state.catalogPreview.product_id === resolved.product_id) ? ' is-selected' : '')"
+                role="button"
+                tabindex="0"
+                draggable="true"
+                t-on-dragstart="(ev) => this._onProductDragStart(ev, resolved)"
+                t-on-dragend="(ev) => this._onProductDragEnd(ev)"
+                t-on-click="() => this._previewCatalogProduct(resolved)"
+                t-on-keydown="(ev) => this._onRowKeydown(ev, resolved)"
+                t-att-title="_rowTitle(resolved)">
+              <div class="o_sbk_prod_thumb">
+                <t t-out="_rowThumbMarkup(resolved)"/>
+              </div>
+              <div class="o_sbk_prod_info">
+                <div class="o_sbk_prod_title_line">
+                  <strong t-esc="row.title"/>
+                  <span t-if="row.kind === 'pair'" class="o_sbk_handing_toggle"
+                        role="group" aria-label="Handing">
+                    <button type="button"
+                            t-att-class="'o_sbk_handing_btn' + (_pairHanding(row) === 'L' ? ' is-active' : '')"
+                            t-att-aria-pressed="_pairHanding(row) === 'L'"
+                            t-on-click.stop="() => this._setPairHanding(row, 'L')">L</button>
+                    <button type="button"
+                            t-att-class="'o_sbk_handing_btn' + (_pairHanding(row) === 'R' ? ' is-active' : '')"
+                            t-att-aria-pressed="_pairHanding(row) === 'R'"
+                            t-on-click.stop="() => this._setPairHanding(row, 'R')">R</button>
+                  </span>
+                </div>
+                <div class="o_sbk_prod_meta_line">
+                  <span t-if="row.dataFlags.includes('missing_width')"
+                        class="o_sbk_data_flag" title="No width on file for this product">no width</span>
+                  <span t-else="" class="o_sbk_prod_dim" t-esc="_fmtWidthIn(row.width_in)"/>
+                  <span class="o_sbk_prod_price" t-esc="_money(row.price)"/>
+                  <span t-if="row.dataFlags.includes('missing_sku')"
+                        class="o_sbk_data_flag" title="No SKU on file for this product">no SKU</span>
+                  <span t-else="" class="o_sbk_prod_sku" t-esc="row.sku"/>
+                </div>
+              </div>
+              <button type="button" class="o_sbk_prod_add_btn"
+                      draggable="false"
+                      t-on-click.stop="() => this._addCabinetFromProduct(resolved, null, null)"
+                      t-att-aria-label="'Add ' + resolved.name + ' to the layout'"
+                      title="Add to layout">+ Add</button>
+            </div>
+          </t>
         </t>
-        <!-- D13 — Empty-state when search yields zero matches. -->
+        <!-- D13 — Empty-state when search/filters yield zero matches. -->
         <div t-if="!_filteredProducts().length &amp;&amp; state.products.length"
              class="o_sbk_inv_empty">
           No products match "<t t-esc="state.inventorySearch"/>".

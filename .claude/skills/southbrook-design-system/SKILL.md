@@ -119,6 +119,19 @@ copy. Useful assertion: no user-facing message contains `run_seq`,
   warnings, no SKU codes, no raw Odoo state codes (`Submitted (sale)`), no
   raw JS errors.
 
+## Cabinet iconography — one source (owner decision, 2026-07-31)
+
+`southbrook_kitchen_3d_configurator/static/src/js/canvas/cabinet_thumb.esm.js`
+is THE cabinet icon language: axonometric SVG, neutral carcass
+(#f2f4f7/#dadee4/#b4bbc4/#c8ced6, stroke #7d858e), doors/drawer fronts in
+walnut #C9762B, blind-corner return leg darkened #9ea6b0. Wherever a surface
+refers to a cabinet — lists, counters, previews, swap pickers — reuse
+`cabinetThumbSVG(product, sizePx)` (synthetic `{cabinet_type, width_in}`
+literals are fine for family-level icons). Never hand-draw a second variant:
+one source means the icon can never disagree with what gets placed. Family
+inference lives in ONE seam (`thumbFamily`) pending explicit footprint fields
+on the product record.
+
 ## Before you claim a UI change works
 
 Odoo caches asset bundles. Verify the shipped bytes, not the source:
