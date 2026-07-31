@@ -24,6 +24,7 @@ board quietly under-reporting again.
 """
 
 from odoo import fields
+from odoo.exceptions import AccessError
 from odoo.tests import TransactionCase, tagged
 
 
@@ -188,3 +189,84 @@ class TestEquipmentBlockedInvalidation(TransactionCase):
         self.env["project.task"].search_count([("equipment_blocked", "=", True)])
         self.env["project.task"]._read_group(
             [], groupby=["equipment_blocked"], aggregates=["__count"])
+
+
+@tagged("post_install", "-at_install", "southbrook", "project_mrp")
+class TestReleaseSignoffGuard(TransactionCase):
+    """The five sign-offs release a job to the shop floor.
+
+    Until now any user with ordinary task write access could flip one straight over RPC —
+    no group, no signer, no trace beyond chatter. These pin both halves of the fix: who may
+    assert a sign-off, and that the record says who did.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.project = cls.env["project.project"].create({"name": "Signoff Jobs"})
+        cls.task = cls.env["project.task"].create(
+            {"name": "Signoff job", "project_id": cls.project.id})
+        cls.plain = cls.env["res.users"].with_context(
+            no_reset_password=True, mail_create_nolog=True).create({
+                "name": "Plain Internal", "login": "sb_test_plain_internal",
+                "group_ids": [(6, 0, [cls.env.ref("base.group_user").id])]})
+
+    def test_a_plain_internal_user_cannot_assert_a_signoff(self):
+        with self.assertRaises(AccessError):
+            self.task.with_user(self.plain).write(
+                {"southbrook_release_cad_approved": True})
+
+    def test_a_manufacturing_user_can(self):
+        mrp_user = self.plain.copy({
+            "login": "sb_test_mrp_user",
+            "group_ids": [(6, 0, [self.env.ref("base.group_user").id,
+                                  self.env.ref("project.group_project_user").id,
+                                  self.env.ref("mrp.group_mrp_user").id])]})
+        self.task.with_user(mrp_user).write({"southbrook_release_cad_approved": True})
+        self.assertTrue(self.task.southbrook_release_cad_approved)
+
+    def test_the_signer_and_time_are_recorded(self):
+        mrp_user = self.plain.copy({
+            "login": "sb_test_mrp_signer",
+            "group_ids": [(6, 0, [self.env.ref("base.group_user").id,
+                                  self.env.ref("project.group_project_user").id,
+                                  self.env.ref("mrp.group_mrp_user").id])]})
+        task = self.task.copy({"name": "Signer capture"})
+        task.with_user(mrp_user).write({"southbrook_release_bom_verified": True})
+        self.assertEqual(task.southbrook_release_bom_verified_by, mrp_user,
+                         "a sign-off with no signer is what the audit called theatre")
+        self.assertTrue(task.southbrook_release_bom_verified_at)
+
+    def test_resaving_does_not_restamp_the_signer(self):
+        """Otherwise the trail names whoever touched the record last, not who decided."""
+        first = self.plain.copy({
+            "login": "sb_test_first_signer",
+            "group_ids": [(6, 0, [self.env.ref("base.group_user").id,
+                                  self.env.ref("project.group_project_user").id,
+                                  self.env.ref("mrp.group_mrp_user").id])]})
+        second = self.plain.copy({
+            "login": "sb_test_second_toucher",
+            "group_ids": [(6, 0, [self.env.ref("base.group_user").id,
+                                  self.env.ref("project.group_project_user").id,
+                                  self.env.ref("mrp.group_mrp_user").id])]})
+        task = self.task.copy({"name": "Restamp guard"})
+        task.with_user(first).write({"southbrook_release_cutlist_approved": True})
+        task.with_user(second).write({"southbrook_release_cutlist_approved": True})
+        self.assertEqual(task.southbrook_release_cutlist_approved_by, first,
+                         "the second write re-asserted an existing sign-off; the record "
+                         "must still name whoever actually made the decision")
+
+    def test_superuser_is_not_blocked(self):
+        """Migrations and automated flows run as su and must not be gated."""
+        task = self.task.copy({"name": "su path"})
+        task.sudo().write({"southbrook_release_crew_reserved": True})
+        self.assertTrue(task.southbrook_release_crew_reserved)
+
+    def test_target_install_date_is_writable_and_separate_from_the_rollup(self):
+        task = self.task.copy({"name": "Target date"})
+        task.x_southbrook_target_install_date = "2026-09-01"
+        self.assertEqual(str(task.x_southbrook_target_install_date), "2026-09-01")
+        self.assertTrue(
+            self.env["project.task"]._fields["job_install_due"].compute,
+            "job_install_due must stay a computed rollup — the new field exists precisely "
+            "so nobody makes that one writable")

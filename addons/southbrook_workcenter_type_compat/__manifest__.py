@@ -1,6 +1,6 @@
 {
     "name": "Southbrook — Work Center Type Compatibility",
-    "version": "19.0.1.0.0",
+    "version": "19.0.1.1.0",
     "category": "Manufacturing",
     "summary": "Stop mrp_product_costing's Work Center Type blocking every work-centre "
                "save and every header-button action.",

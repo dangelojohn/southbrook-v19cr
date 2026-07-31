@@ -187,20 +187,45 @@ class SouthbrookCapacityDay(models.Model):
         Workorder = self.env["mrp.workorder"]
         win_start = datetime.combine(dates[0], time.min)
         win_end = datetime.combine(dates[-1] + timedelta(days=1), time.min)
+        # WHICH DATE THE SHOP ACTUALLY PLANS ON. There are two schedules on this
+        # instance. Native Odoo keeps a work order's plan in `date_start` (computed from
+        # a resource.calendar.leaves row). The installed `mrp_shop_floor_control` keeps a
+        # SECOND, independent plan in `date_planned_start_wo`, hand-editable through its
+        # own wizard — and that is the one planners use: measured on production,
+        # `date_planned_start_wo` was set on 95 of 99 work orders while `date_start` was
+        # set on 17 of 93 in flight.
+        #
+        # Bucketing on `date_start` alone therefore showed a mostly-EMPTY shop while
+        # roughly eighty planned work orders sat invisible. That was read as "84% of work
+        # is unscheduled". It is not: the work is scheduled, in the field this model was
+        # not reading. A floor manager was looking at stations that appeared free.
+        #
+        # Preference order: the planner's date first, native second. Reading only one of
+        # them is what caused the blind spot; preferring native would re-open it.
+        sfc_field = "date_planned_start_wo" if "date_planned_start_wo" in Workorder._fields else None
+
+        def _planned_on(wo):
+            if sfc_field:
+                planned = wo[sfc_field]
+                if planned:
+                    return planned
+            return wo.date_start
+
         load_map = {}
+        # Filtered in Python rather than in the domain: the window test has to run against
+        # whichever of the two dates applies per record, which a single domain cannot say.
         wos = Workorder.search([
             ("workcenter_id", "in", workcenters.ids),
             # Real Odoo 19 CE WO states — 'blocked' is the dependency-wait
             # state; 'pending'/'waiting' never existed and silently zeroed
             # out the blocked load (the bulk of committed work).
             ("state", "in", ["blocked", "ready", "progress"]),
-            ("date_start", ">=", win_start),
-            ("date_start", "<", win_end),
         ])
         for wo in wos:
-            if not wo.date_start:
+            planned = _planned_on(wo)
+            if not planned or not (win_start <= planned < win_end):
                 continue
-            key = (wo.workcenter_id.id, wo.date_start.date())
+            key = (wo.workcenter_id.id, planned.date())
             load_map[key] = load_map.get(key, 0.0) + (wo.duration_expected or 0.0)
         # Build the rows.
         creates = []

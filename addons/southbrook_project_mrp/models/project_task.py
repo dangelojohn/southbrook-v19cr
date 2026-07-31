@@ -4,7 +4,7 @@ from collections import Counter
 import logging
 
 from odoo import _, api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import AccessError, UserError
 
 _logger = logging.getLogger(__name__)
 
@@ -44,9 +44,74 @@ def _first_meaningful_line(*texts):
 class ProjectTask(models.Model):
     _inherit = "project.task"
 
+    # The five release sign-offs, and the audit pair each one stamps.
+    _RELEASE_SIGNOFFS = {
+        "southbrook_release_cad_approved": "cad_approved",
+        "southbrook_release_cutlist_approved": "cutlist_approved",
+        "southbrook_release_bom_verified": "bom_verified",
+        "southbrook_release_crew_reserved": "crew_reserved",
+        "southbrook_release_equipment_available": "equipment_available",
+    }
+    _RELEASE_SIGNOFF_GROUP = "mrp.group_mrp_user"
+
     def write(self, vals):
         self._southbrook_check_readiness_stage_gate(vals)
+        self._southbrook_check_release_signoff_rights(vals)
+        vals = self._southbrook_stamp_release_signoffs(vals)
         return super().write(vals)
+
+    def _southbrook_check_release_signoff_rights(self, vals):
+        """Only a manufacturing user may assert a release sign-off.
+
+        These five booleans gate production release, and until now anyone with ordinary
+        write access to a task could flip one straight over RPC — no group, no signer, no
+        trace beyond chatter. That is the "caller-declared privilege" shape: the system
+        believed whoever asked.
+
+        Gated on mrp.group_mrp_user rather than on the group whose NAME fits. The obvious
+        candidate, southbrook_mrp_pm.group_floor_manager, has ten members and every one of
+        them is a PORTAL user who cannot open a backend list at all; group_southbrook_
+        production_approver has no members whatsoever. Gating on either would have locked
+        out the people doing the work. group_mrp_manager implies group_mrp_user, so both
+        manufacturing groups pass.
+        """
+        if self.env.su:
+            return
+        asserted = [f for f in self._RELEASE_SIGNOFFS if vals.get(f)]
+        if not asserted:
+            return
+        if self.env.user.has_group(self._RELEASE_SIGNOFF_GROUP):
+            return
+        raise AccessError(_(
+            "Production release sign-off requires the Manufacturing / User group. "
+            "You tried to set: %(fields)s.\n\n"
+            "This gate exists because these five booleans release a job to the shop "
+            "floor. If you should be able to sign these off, ask an administrator to add "
+            "you to Manufacturing / User — do not work around it by asking someone else "
+            "to tick the box, because the record will then name them and not you.",
+            fields=", ".join(asserted)))
+
+    def _southbrook_stamp_release_signoffs(self, vals):
+        """Record who signed and when, on the transition into True.
+
+        Only on the flip TO True: re-saving a form that already had the box ticked must
+        not restamp it with a later user, or the audit trail records whoever touched the
+        record last rather than whoever made the decision.
+        """
+        asserted = [f for f in self._RELEASE_SIGNOFFS if vals.get(f)]
+        if not asserted:
+            return vals
+        now = fields.Datetime.now()
+        for field in asserted:
+            suffix = self._RELEASE_SIGNOFFS[field]
+            by_field = "southbrook_release_%s_by" % suffix
+            at_field = "southbrook_release_%s_at" % suffix
+            # Only stamp where it is not already a sign-off, i.e. at least one record in
+            # this set is flipping rather than being re-saved.
+            if any(not rec[field] for rec in self):
+                vals.setdefault(by_field, self.env.user.id)
+                vals.setdefault(at_field, now)
+        return vals
 
     def _southbrook_check_readiness_stage_gate(self, vals):
         """Block kitchen jobs from entering production stages before ready."""
@@ -167,6 +232,18 @@ class ProjectTask(models.Model):
         related="company_id.currency_id", string="Company Currency")
 
     # --- T1.2 polish: surfaced from the MO's other tabs ---------------------
+    # The customer's REQUESTED install date, captured at intake. Deliberately a separate
+    # field from `job_install_due` below, not a replacement for it: that one is a MIN()
+    # rollup over the linked MOs' own dates and is correct as a rollup — making it writable
+    # would desync it the moment any MO moved. Before this field there was nowhere to
+    # record what the customer asked for, because a brand-new job has no MOs yet.
+    x_southbrook_target_install_date = fields.Date(
+        string="Target Install Date",
+        tracking=True,
+        help="What the customer asked for, recorded at intake. The Earliest Install Due "
+             "below is computed from the manufacturing orders once they exist; when the "
+             "two disagree, that is a scheduling problem worth seeing.")
+
     job_install_due = fields.Date(
         string="Earliest Install Due", compute="_compute_mrp_status",
         store=True, index=True)
@@ -437,6 +514,31 @@ class ProjectTask(models.Model):
         index=True,
         readonly=True,
     )
+    # WHO signed, and WHEN. The five booleans above were criticised in the audit as
+    # "governance theatre" — a sign-off with no signer, no timestamp and no role. The
+    # timestamp and signer are the cheap half and carry no risk of locking anybody out, so
+    # they are captured unconditionally in write() below.
+    southbrook_release_cad_approved_by = fields.Many2one(
+        "res.users", string="CAD Approved By", readonly=True, copy=False)
+    southbrook_release_cad_approved_at = fields.Datetime(
+        string="CAD Approved On", readonly=True, copy=False)
+    southbrook_release_cutlist_approved_by = fields.Many2one(
+        "res.users", string="Cutlist Approved By", readonly=True, copy=False)
+    southbrook_release_cutlist_approved_at = fields.Datetime(
+        string="Cutlist Approved On", readonly=True, copy=False)
+    southbrook_release_bom_verified_by = fields.Many2one(
+        "res.users", string="BoM Verified By", readonly=True, copy=False)
+    southbrook_release_bom_verified_at = fields.Datetime(
+        string="BoM Verified On", readonly=True, copy=False)
+    southbrook_release_crew_reserved_by = fields.Many2one(
+        "res.users", string="Crew Reserved By", readonly=True, copy=False)
+    southbrook_release_crew_reserved_at = fields.Datetime(
+        string="Crew Reserved On", readonly=True, copy=False)
+    southbrook_release_equipment_available_by = fields.Many2one(
+        "res.users", string="Equipment Confirmed By", readonly=True, copy=False)
+    southbrook_release_equipment_available_at = fields.Datetime(
+        string="Equipment Confirmed On", readonly=True, copy=False)
+
     southbrook_site_measurement_status = fields.Selection(
         [
             ("pending", "Pending"),
