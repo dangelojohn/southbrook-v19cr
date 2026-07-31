@@ -50,3 +50,7 @@ from . import test_geometry_writeback
 from . import test_sku_defaults_wave2
 # M1 rules-as-data corner cabinetry layer (09-rule-engine-spec.md §6-7).
 from . import test_placement_rule
+# Task 4 (corner-remediation-2026-07-30) — corner catalog truth: real
+# SKUs for SB-CORNER-BLIND/DIAG/WALL-CORNER, SB-CORNER renamed, the
+# SB-CORNER-LSUSAN duplicate archived.
+from . import test_corner_family_repair
