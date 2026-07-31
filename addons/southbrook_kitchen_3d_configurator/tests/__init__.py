@@ -166,3 +166,11 @@ from . import test_placed_width_in
 # is_unresolved diagnostic-overlay contract (counted once under its own
 # bucket, never a double-counted eighth bucket).
 from . import test_counter_summary
+
+# Task 12, corner-remediation (2026-07-30, SBK-021/022) — room-dimension
+# bounds as an @api.constrains (model), out-of-range rejection in
+# save_design (readable {error, error_code} response, nothing
+# persisted), and /layout's 120-line hard autofill cap with a surfaced,
+# non-silent warning.
+from . import test_room_bounds_constraint
+from . import test_room_bounds_save_and_autofill_cap

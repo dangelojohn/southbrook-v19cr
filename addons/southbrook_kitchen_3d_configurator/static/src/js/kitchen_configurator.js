@@ -202,9 +202,22 @@ class SouthbrookKitchenConfigurator extends Component {
                 depth_in:  params.room_depth_in  || 96,
                 height_in: params.room_height_in || 96,
             },
+            // Task 12 (corner-remediation 2026-07-30, SBK-021/022) — one
+            // inline validation message per room-dimension field, keyed
+            // the same as `room` above. Empty string means "no error".
+            // Set by `_changeRoom` when an out-of-range value is clamped;
+            // cleared on the next in-range edit. Rendered next to the
+            // offending field (o_sbk_field_error) — NOT a toast, per the
+            // brief ("toast store ONLY for transient notices").
+            roomDimErrors: { width_in: "", depth_in: "", height_in: "" },
             products:  [],
             items:     [],
             selected:  null,
+            // Task 12 — same pattern as roomDimErrors above, for the
+            // "Selected Cabinet" drawer's Width field. V5-partc SBK-021/
+            // 022 claim 6: `_updateSelectedWidth` used to bare-early-
+            // return on an out-of-range value with zero feedback.
+            selectedWidthError: "",
             // F14 — catalog BROWSING is not layout SELECTION. Clicking an
             // inventory row previews/highlights that catalog product; it
             // must never write `selected` (a raw catalog product has no
@@ -1093,12 +1106,36 @@ class SouthbrookKitchenConfigurator extends Component {
         return !!(this.state.designId && this._hydratedFromDesign);
     }
 
+    // Task 12 (corner-remediation 2026-07-30, SBK-021/022) — mirrors the
+    // server's ROOM_WIDTH_MIN_IN/MAX_IN etc. (models/kitchen_design.py,
+    // controllers/main.py save_design). Kept as ONE lookup table so
+    // _changeRoom and _stretchWidth (below) can never drift against each
+    // other. Not the model constraint itself (that's server-side and
+    // authoritative) — this only prevents an obviously-bad value from
+    // ever leaving the browser, and gives the honest inline message
+    // V5-partc's claim 6 found missing entirely.
+    static ROOM_DIM_BOUNDS = {
+        width_in:  { min: 12, max: 480 },
+        depth_in:  { min: 12, max: 480 },
+        height_in: { min: 84, max: 144 },
+    };
+
     async _changeRoom(field, raw) {
         const v = parseFloat(raw);
         if (!Number.isFinite(v)) return;
         this._markUserAction();
-        const min = { width_in: 12, depth_in: 12, height_in: 84 };
-        this.state.room[field] = Math.max(min[field] || 12, v);
+        const bounds = SouthbrookKitchenConfigurator.ROOM_DIM_BOUNDS[field]
+            || { min: 12, max: 480 };
+        // Out-of-range input is CLAMPED (never silently dropped — the
+        // pre-fix behavior floored at a minimum but had NO ceiling at
+        // all) AND flagged with an inline message next to the field
+        // (state.roomDimErrors, rendered by the template's
+        // o_sbk_field_error span) instead of just silently correcting
+        // the number with no feedback.
+        this.state.roomDimErrors[field] = (v < bounds.min || v > bounds.max)
+            ? `Must be ${bounds.min}"–${bounds.max}".`
+            : "";
+        this.state.room[field] = Math.min(bounds.max, Math.max(bounds.min, v));
         if (this._usesEngineResize()) {
             await this._rearrangeOnServer();   // persists server-side; no auto-save needed
             return;
@@ -1107,9 +1144,29 @@ class SouthbrookKitchenConfigurator extends Component {
         this._queueAutoSave();    // D5
     }
 
+    // Task 12 — which room dimension the ±24in buttons (and their
+    // disabled state, in the template) target: back/front walls run
+    // ALONG the room's WIDTH axis; left/right walls run along DEPTH
+    // (COORDINATE_CONTRACT.md — the same axis convention _addCabinet
+    // FromProduct and the multi-wall engine already use). No wall
+    // selected keeps the pre-existing width-only behavior. Before this
+    // fix the buttons unconditionally mutated width_in regardless of
+    // which wall the rep was looking at (V5-partc SBK-021/022 claim 5).
+    _stretchAxisField() {
+        const wall = this.state.activeWall;
+        return (wall === WALLS.LEFT || wall === WALLS.RIGHT)
+            ? "depth_in" : "width_in";
+    }
+
     async _stretchWidth(delta) {
         this._markUserAction();
-        this.state.room.width_in = Math.max(12, this.state.room.width_in + delta);
+        const field = this._stretchAxisField();
+        const bounds = SouthbrookKitchenConfigurator.ROOM_DIM_BOUNDS[field];
+        this.state.room[field] = Math.min(
+            bounds.max, Math.max(bounds.min, this.state.room[field] + delta));
+        // A button click can't itself submit an out-of-range value (it's
+        // clamped above), so any stale message on this axis is now moot.
+        this.state.roomDimErrors[field] = "";
         if (this._usesEngineResize()) {
             await this._rearrangeOnServer();
             return;
@@ -1195,6 +1252,10 @@ class SouthbrookKitchenConfigurator extends Component {
         // F14 — a real layout-cabinet selection supersedes any inventory
         // row catalog-preview highlight.
         this.state.catalogPreview = null;
+        // Task 12 — a stale width-validation message from a PREVIOUS
+        // selection must not bleed onto a newly-selected cabinet's Width
+        // field.
+        this.state.selectedWidthError = "";
     }
 
     // F14 — inventory row click is catalog BROWSING, not layout
@@ -1650,7 +1711,20 @@ class SouthbrookKitchenConfigurator extends Component {
     // Width edit: validate, mutate item, cascade x positions, rebuild.
     _updateSelectedWidth(rawValue) {
         const v = parseFloat(rawValue);
-        if (!Number.isFinite(v) || v < 6 || v > 48) return;
+        if (!Number.isFinite(v) || v < 6 || v > 48) {
+            // Task 12 (corner-remediation 2026-07-30, SBK-021/022 claim
+            // 6) — this used to be a bare early-return: no state
+            // mutation, no notification, nothing. The rep saw the field
+            // silently ignore/revert their input with zero explanation.
+            // An inline message next to the field (state.selectedWidth
+            // Error / o_sbk_field_error in the template) fixes that —
+            // NOT a toast: per the brief, the toast store is for
+            // TRANSIENT notices, and this is a persistent field-level
+            // validation state that should stay visible until corrected.
+            this.state.selectedWidthError = "Must be 6–48 in.";
+            return;
+        }
+        this.state.selectedWidthError = "";
         const sel = this.state.selected;
         // F14 — defense in depth: the edit drawer must only ever bind to
         // a placed layout item (one with a layout_key), never a raw
@@ -1709,6 +1783,9 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.items.splice(idx, 1);
         // Pick a neighbour as the new selection (or null if empty).
         this.state.selected = this.state.items[idx] || this.state.items[idx - 1] || null;
+        // Task 12 — same reasoning as _selectCabinet: don't carry a
+        // stale width error onto whichever cabinet becomes selected next.
+        this.state.selectedWidthError = "";
         this._recomputeLayoutFromItems();
         // v19.0.4.24.0 P0#1 Stage 1 — sync delete server-side so
         // pinned-line rows don't resurrect on next load. Fire-and-
@@ -2669,23 +2746,31 @@ SouthbrookKitchenConfigurator.template = xml`
       <label class="o_sbk_room_dim">
         <span class="o_sbk_room_dim_label">Width</span>
         <div class="o_sbk_room_dim_input_row">
-          <input type="number" min="12" step="6"
+          <input type="number" min="12" max="480" step="6"
                  t-att-value="state.room.width_in"
                  t-on-change="(ev) => this._changeRoom('width_in', ev.target.value)"/>
           <span class="o_sbk_room_dim_ft"><t t-esc="(state.room.width_in / 12).toFixed(1)"/>′</span>
         </div>
+        <!-- Task 12 (corner-remediation, SBK-021/022) — inline, next to
+             the offending field (never a toast — see _changeRoom). -->
+        <span t-if="state.roomDimErrors.width_in" class="o_sbk_field_error"
+              t-esc="state.roomDimErrors.width_in"/>
       </label>
       <label class="o_sbk_room_dim">
         <span class="o_sbk_room_dim_label">Depth</span>
-        <input type="number" min="12" step="6"
+        <input type="number" min="12" max="480" step="6"
                t-att-value="state.room.depth_in"
                t-on-change="(ev) => this._changeRoom('depth_in', ev.target.value)"/>
+        <span t-if="state.roomDimErrors.depth_in" class="o_sbk_field_error"
+              t-esc="state.roomDimErrors.depth_in"/>
       </label>
       <label class="o_sbk_room_dim">
         <span class="o_sbk_room_dim_label">Height</span>
-        <input type="number" min="84" step="6"
+        <input type="number" min="84" max="144" step="6"
                t-att-value="state.room.height_in"
                t-on-change="(ev) => this._changeRoom('height_in', ev.target.value)"/>
+        <span t-if="state.roomDimErrors.height_in" class="o_sbk_field_error"
+              t-esc="state.roomDimErrors.height_in"/>
       </label>
       <!-- Templates T3 (user directive): the template entry lives in the
            TOP FRAME beside the room dimensions — dims first, then shape
@@ -2753,13 +2838,21 @@ SouthbrookKitchenConfigurator.template = xml`
       <span class="o_sbk_channel_label" t-esc="state.channel.channel_label"/>
     </div>
     <div class="o_sbk_actions">
+      <!-- Task 12 (corner-remediation, SBK-021/022 claim 5) — these
+           buttons now target state.room[_stretchAxisField()] (width for
+           back/front/no wall, depth for left/right — see _stretchWidth's
+           own comment), not always width_in. The title makes the active
+           axis visible since the button label itself stays generic. -->
       <button class="o_sbk_btn o_sbk_btn_ghost"
               t-on-click="() => this._stretchWidth(-24)"
-              t-att-disabled="state.room.width_in &lt;= 12">
+              t-att-disabled="(_stretchAxisField() === 'depth_in' ? state.room.depth_in : state.room.width_in) &lt;= 12"
+              t-att-title="'Shrink room ' + (_stretchAxisField() === 'depth_in' ? 'depth' : 'width') + ' by 24 in'">
         − 24 in
       </button>
       <button class="o_sbk_btn o_sbk_btn_ghost"
-              t-on-click="() => this._stretchWidth(24)">
+              t-on-click="() => this._stretchWidth(24)"
+              t-att-disabled="(_stretchAxisField() === 'depth_in' ? state.room.depth_in : state.room.width_in) &gt;= 480"
+              t-att-title="'Grow room ' + (_stretchAxisField() === 'depth_in' ? 'depth' : 'width') + ' by 24 in'">
         + 24 in
       </button>
       <button class="o_sbk_btn o_sbk_btn_outline"
@@ -3369,6 +3462,10 @@ SouthbrookKitchenConfigurator.template = xml`
             <input type="number" min="6" max="48" step="3" class="o_sbk_edit_input"
                    t-att-value="state.selected.width_in"
                    t-on-change="(ev) => this._updateSelectedWidth(ev.target.value)"/>
+            <!-- Task 12 (corner-remediation, SBK-021/022 claim 6) —
+                 inline, next to the field; see _updateSelectedWidth. -->
+            <span t-if="state.selectedWidthError" class="o_sbk_field_error"
+                  t-esc="state.selectedWidthError"/>
           </label>
         </div>
 

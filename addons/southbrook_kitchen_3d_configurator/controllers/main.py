@@ -37,6 +37,18 @@ from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import
 from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
     placed_width_in,
 )
+# Task 12 (corner-remediation 2026-07-30, SBK-021/022) — the ONE
+# definition of the sane room-dimension range (see that module's own
+# comment for the full rationale). save_design's pre-check below
+# duplicates these bounds into a readable {error, error_code} response
+# so an out-of-range room is rejected BEFORE any create/write, never
+# relying on the model's own @api.constrains raising an unhandled
+# ValidationError.
+from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
+    ROOM_WIDTH_MIN_IN, ROOM_WIDTH_MAX_IN,
+    ROOM_DEPTH_MIN_IN, ROOM_DEPTH_MAX_IN,
+    ROOM_HEIGHT_MIN_IN, ROOM_HEIGHT_MAX_IN,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -47,6 +59,25 @@ _logger = logging.getLogger(__name__)
 # "producer" section). Threshold value imported from kitchen_design.py's
 # `DEBRIS_THRESHOLD_IN` (review round 2 — single source of truth; see
 # that constant's docstring for the full list of shared call sites).
+
+
+# Task 12 (corner-remediation 2026-07-30, SBK-021/022) — hard cap on how
+# many lines a single /layout call will generate. Live evidence:
+# room_width_in=99999 with a 24in module -> n≈4166 base+wall PAIRS
+# (8,332 total lines) built in one unbounded Python loop, returned in
+# one JSON-RPC payload, then persisted verbatim by save_design (which
+# had no length/count guard of its own — see save_design's own
+# ROOM_OUT_OF_BOUNDS check, which closes the room-dims half of this;
+# this constant closes the "even a merely-large-but-in-range room
+# shouldn't flood the client with thousands of items" half).
+# Reserves 2 slots for the largest possible filler-strategy output
+# ("split" emits 2 pieces) so the true post-filler item count never
+# exceeds _MAX_AUTOFILL_LINES — hence filler creation is skipped
+# entirely once capped (see `layout()` below): a filler bridging a
+# multi-thousand-inch leftover run would just be the same "phantom
+# runaway cost" bug in a different shape.
+_MAX_AUTOFILL_LINES = 120
+_MAX_AUTOFILL_PAIRS = (_MAX_AUTOFILL_LINES - 2) // 2
 
 
 def _is_sentinel_position(value):
@@ -177,7 +208,17 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # Task 11 (SBK-024) — the resolved base variant's own Width.
         module_w = placed_width_in(base) or 24.0
         rw = float(room_width_in)
-        n  = max(0, int(math.floor(rw / module_w)))
+        n_uncapped = max(0, int(math.floor(rw / module_w)))
+        # Task 12 (corner-remediation 2026-07-30, SBK-021/022) — hard cap
+        # so a huge (or merely large) room can never flood this response
+        # with thousands of lines (see _MAX_AUTOFILL_PAIRS's own comment
+        # for the live-evidence numbers). Deliberately NOT silent: `capped`
+        # drives an explicit warning appended below, and filler creation
+        # is skipped entirely when capped (a filler bridging a multi-
+        # thousand-inch leftover run would just reinvent the same
+        # phantom-cost bug in a different shape).
+        capped = n_uncapped > _MAX_AUTOFILL_PAIRS
+        n = min(n_uncapped, _MAX_AUTOFILL_PAIRS)
         # Task 10 (SBK-023) — remainder only has meaning in the context of
         # a real cabinet run; an undersized/empty room (n==0, e.g. the
         # client's own 12in minimum room width vs. a 24in module) has no
@@ -192,6 +233,8 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # (including "scribe" — remainder_in there is by design the true
         # physical gap the installer scribes on site, decoupled from
         # filler $, same pattern as "Est. excludes filler by design").
+        # When capped, this is still the honest geometric gap (now a
+        # large one, by construction) — just never turned into a filler.
         remainder = (rw - n * module_w) if n > 0 else 0.0
 
         # Cabinet dimensions for placement
@@ -236,6 +279,23 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                     "soffit" if alignment == "to_soffit" else "ceiling",
                 ),
             })
+        if capped:
+            # Task 12 (corner-remediation 2026-07-30, SBK-021/022) —
+            # explicit, non-silent notice that the auto-fill stopped
+            # short of covering the whole room. `severity: "warning"`
+            # (non-blocking — the truncated fill is still usable) mirrors
+            # the `o_sbk_warning_warning` CSS class kitchen_configurator.js
+            # already renders for this shape (state.warnings, D8).
+            warnings.append({
+                "code":     "ROOM_TOO_LARGE_FOR_AUTOFILL",
+                "severity": "warning",
+                "message":  (
+                    "Room too large to auto-fill: only the first %d "
+                    "cabinet(s) (%.0f in of %.0f in total width) were "
+                    "generated. Add cabinets manually beyond this point, "
+                    "or resize the room in stages."
+                ) % (n, n * module_w, rw),
+            })
 
         items = []
         for i in range(n):
@@ -259,7 +319,13 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         filler_strategy = (filler_strategy or "split").lower()
         if filler_strategy not in ("split", "left", "right", "scribe"):
             filler_strategy = "split"
-        if remainder >= 1.0 and filler_strategy != "scribe":
+        # Task 12 — `not capped`: once the auto-fill has stopped short of
+        # the room's true width (see ROOM_TOO_LARGE_FOR_AUTOFILL above),
+        # `remainder` is the (large, honest) leftover run beyond the cap —
+        # NOT a small end-of-run gap a filler panel is meant to bridge.
+        # Synthesizing one here would just be the same phantom/runaway-
+        # cost bug (V5-partc §SBK-023) in a new shape.
+        if remainder >= 1.0 and filler_strategy != "scribe" and not capped:
             if filler_strategy == "split":
                 half = remainder / 2.0
                 # Shift bases + walls right by `half` so the left filler
@@ -324,6 +390,11 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 "remainder_in":    round(remainder, 2),
                 "filler_strategy": filler_strategy,
                 "snap_hint":       self._snap_hint(rw, module_w),
+                # Task 12 — machine-readable twin of the
+                # ROOM_TOO_LARGE_FOR_AUTOFILL warning above, so a test (or
+                # a future client affordance) can check for the cap
+                # without string-matching the human-readable message.
+                "capped":          capped,
             },
             "channel":  self._channel_meta(partner, pricelist),
             "warnings": warnings,
@@ -423,6 +494,48 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         room_w = room.get("width_in",  12)
         room_d = room.get("depth_in",  24)
         room_h = room.get("height_in", 96)
+        # Task 12 (corner-remediation 2026-07-30, SBK-021/022) — reject an
+        # out-of-range room BEFORE any create/write, with a readable
+        # {error, error_code} response (same convention as invalid_wall/
+        # NO_CABINETS/ROOM_TOO_SMALL above and below). Live evidence:
+        # room_width_in=99999 -> 8,332 lines / ~$1.77M persisted, because
+        # nothing on this path checked a sane upper bound. This early
+        # return happens before Design.create/write, so a rejected save
+        # persists NOTHING — not even a design record with the bad dims.
+        # The model's own @api.constrains (kitchen_design.py
+        # _check_room_bounds) is the belt-and-suspenders backstop for any
+        # OTHER write path (e.g. /rearrange); this check exists so THIS
+        # path gives a friendly message instead of a raw ValidationError.
+        try:
+            room_w_f, room_d_f, room_h_f = float(room_w), float(room_d), float(room_h)
+        except (TypeError, ValueError):
+            return {
+                "error": "Room width/depth/height must be numbers.",
+                "error_code": "ROOM_OUT_OF_BOUNDS",
+            }
+        _room_problems = []
+        if not (ROOM_WIDTH_MIN_IN <= room_w_f <= ROOM_WIDTH_MAX_IN):
+            _room_problems.append(
+                'width %g" (must be %g"-%g")'
+                % (room_w_f, ROOM_WIDTH_MIN_IN, ROOM_WIDTH_MAX_IN))
+        if not (ROOM_DEPTH_MIN_IN <= room_d_f <= ROOM_DEPTH_MAX_IN):
+            _room_problems.append(
+                'depth %g" (must be %g"-%g")'
+                % (room_d_f, ROOM_DEPTH_MIN_IN, ROOM_DEPTH_MAX_IN))
+        if not (ROOM_HEIGHT_MIN_IN <= room_h_f <= ROOM_HEIGHT_MAX_IN):
+            _room_problems.append(
+                'height %g" (must be %g"-%g")'
+                % (room_h_f, ROOM_HEIGHT_MIN_IN, ROOM_HEIGHT_MAX_IN))
+        if _room_problems:
+            _logger.warning(
+                "save_design: rejected payload — room dims out of bounds "
+                "(%s). No design/lines were created or modified.",
+                "; ".join(_room_problems))
+            return {
+                "error": "Room size is out of range: %s." % "; ".join(_room_problems),
+                "error_code": "ROOM_OUT_OF_BOUNDS",
+            }
+        room_w, room_d, room_h = room_w_f, room_d_f, room_h_f
         # Resolve the partner through the ACL-checked helper (empty recordset
         # if the caller may not read it) and persist THAT validated id — never
         # the raw client partner_id, which a user could point at any partner to

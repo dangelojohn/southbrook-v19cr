@@ -4,7 +4,7 @@ import math
 import time
 
 from odoo import api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 # The pure layout engine (source of truth for spatial arrangement). Imported
 # here so the auto-arrange SERVICE lives on the model, not the HTTP
 # controller — see COORDINATE_CONTRACT.md + the auto-arrange design doc.
@@ -31,6 +31,34 @@ _MM_PER_IN = 25.4
 # action_auto_arrange's reset, _transform_layout's reset, and
 # controllers/main.py's save_design down-shift branch).
 DEBRIS_THRESHOLD_IN = 9999
+
+# Task 12 (corner-remediation 2026-07-30, SBK-021/022) — the ONE
+# definition of the sane room-dimension range, shared by this model's
+# own @api.constrains (SouthbrookKitchenDesign._check_room_bounds,
+# below) and controllers/main.py's save_design pre-check, which
+# duplicates the same numbers into a readable {error, error_code} JSON
+# response BEFORE any create/write happens, so a bad payload never even
+# reaches the ORM guard (matching the NO_CABINETS / ROOM_TOO_SMALL
+# structured-error convention already used by this controller). Live
+# evidence (V5-partc §SBK-021/022): room_width_in=99999 generated 8,332
+# lines / ~$1.77M and persisted, because nothing anywhere on the write
+# path checked a sane upper bound — `room_width_in`/`room_depth_in`/
+# `room_height_in` were plain `fields.Float(required=True)` with zero
+# `@api.constrains`.
+#
+# Deliberately a WRITE-time-only guard, never enforced on read: an
+# already-persisted design above these bounds (e.g. any legacy
+# room_width_in=99999 row) must keep LOADING untouched — only a NEW
+# create() or a write() that touches one of these three fields is
+# rejected. Odoo's @api.constrains semantics already give us this for
+# free (it fires on create, and on write only when a listed field is
+# part of the values dict) — no special-casing needed here.
+ROOM_WIDTH_MIN_IN  = 12.0
+ROOM_WIDTH_MAX_IN  = 480.0
+ROOM_DEPTH_MIN_IN  = 12.0
+ROOM_DEPTH_MAX_IN  = 480.0
+ROOM_HEIGHT_MIN_IN = 84.0
+ROOM_HEIGHT_MAX_IN = 144.0
 
 
 class _BomAutoseedDryRun(Exception):
@@ -207,6 +235,35 @@ class SouthbrookKitchenDesign(models.Model):
     room_width_in  = fields.Float(string="Room Width (in)",  default=96.0,  required=True)
     room_depth_in  = fields.Float(string="Room Depth (in)",  default=96.0,  required=True)
     room_height_in = fields.Float(string="Room Height (in)", default=96.0,  required=True)
+
+    # Task 12 (corner-remediation 2026-07-30, SBK-021/022) — Odoo 19: the
+    # current constraint API (`@api.constrains`), NOT the deprecated
+    # `_sql_constraints`. Bounds are ROOM_WIDTH_MIN_IN/MAX_IN etc.
+    # (module-level, above) — the same numbers controllers/main.py's
+    # save_design pre-check uses for its readable {error, error_code}
+    # response. Fires on create() always, and on write() only when one
+    # of these three fields is in the values dict — so an already-
+    # persisted out-of-bounds design (e.g. legacy room_width_in=99999)
+    # keeps loading/reading fine; only a NEW create/write of the room
+    # dims themselves is rejected.
+    @api.constrains("room_width_in", "room_depth_in", "room_height_in")
+    def _check_room_bounds(self):
+        for design in self:
+            if not (ROOM_WIDTH_MIN_IN <= design.room_width_in <= ROOM_WIDTH_MAX_IN):
+                raise ValidationError(
+                    'Room width must be between %g" and %g" (got %g").'
+                    % (ROOM_WIDTH_MIN_IN, ROOM_WIDTH_MAX_IN,
+                       design.room_width_in))
+            if not (ROOM_DEPTH_MIN_IN <= design.room_depth_in <= ROOM_DEPTH_MAX_IN):
+                raise ValidationError(
+                    'Room depth must be between %g" and %g" (got %g").'
+                    % (ROOM_DEPTH_MIN_IN, ROOM_DEPTH_MAX_IN,
+                       design.room_depth_in))
+            if not (ROOM_HEIGHT_MIN_IN <= design.room_height_in <= ROOM_HEIGHT_MAX_IN):
+                raise ValidationError(
+                    'Room height must be between %g" and %g" (got %g").'
+                    % (ROOM_HEIGHT_MIN_IN, ROOM_HEIGHT_MAX_IN,
+                       design.room_height_in))
 
     # ── Layout lines ────────────────────────────────────────────────────────────
     cabinet_line_ids = fields.One2many(

@@ -102,6 +102,10 @@ $sbk-amber:      #B45309;
     gap: 3px;
     line-height: 1;
     margin: 0;
+    // Task 12 (corner-remediation, SBK-021/022) — anchor for the
+    // absolutely-positioned inline error below, so an out-of-range
+    // value doesn't shove the whole topbar taller.
+    position: relative;
 }
 
 .o_sbk_room_dim_label {
@@ -151,6 +155,31 @@ $sbk-amber:      #B45309;
     color: $sbk-muted;
     line-height: 1;
     white-space: nowrap;
+}
+
+// Task 12 (corner-remediation 2026-07-30, SBK-021/022) — inline field-
+// level validation text, shared by the room-dimension inputs (topbar)
+// and the "Selected Cabinet" Width field (edit drawer). Deliberately
+// NOT a toast (ToastStore is for transient notices — this persists
+// next to the field until the value is corrected). Base rule below is
+// generic prose styling; the topbar variant overrides to an absolutely
+// -positioned callout so an error never grows the topbar's height.
+.o_sbk_field_error {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+    color: $sbk-warn;
+}
+
+.o_sbk_room_dim .o_sbk_field_error {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 3px;
+    white-space: nowrap;
+    z-index: 1;
 }
 
 // ─── Buttons ──────────────────────────────────────────────────────────────────
@@ -1428,6 +1457,15 @@ $sbk-amber:      #B45309;
         color: $sbk-muted;
         font-weight: 600;
         letter-spacing: 0.5px;
+    }
+    // Task 12 (corner-remediation, SBK-021/022) — the generic `span`
+    // rule above (uppercase/muted label styling) would otherwise also
+    // catch the inline width-validation message; this needs the higher
+    // specificity of a compound selector to win over it.
+    span.o_sbk_field_error {
+        text-transform: none;
+        color: $sbk-warn;
+        letter-spacing: normal;
     }
 }
 .o_sbk_edit_select,
