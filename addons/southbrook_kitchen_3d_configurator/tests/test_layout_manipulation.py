@@ -104,9 +104,22 @@ class TestLayoutManipulation(TransactionCase):
         line = design.cabinet_line_ids.filtered(
             lambda l: l.template_slot_code == "B1")[:1]
         # DB24 demo drawer bank — same width, different price (180 -> 210).
-        drawer = self.env.ref(
-            "southbrook_kitchen_3d_configurator.product_tmpl_db24"
-        ).product_variant_id
+        drawer_tmpl = self.env.ref(
+            "southbrook_kitchen_3d_configurator.product_tmpl_db24")
+        # Task 6 (corner-remediation 2026-07-30) — action_swap_product now
+        # gates on southbrook_is_cabinet=True (V3-products.md claim 4,
+        # "HIGH-1 money vector"; was previously an unguarded browse()).
+        # demo_cabinets.xml ships this record `noupdate="1"` (by design —
+        # so runtime edits survive -u), which means a prior mutation on a
+        # shared DB clone's southbrook_is_cabinet flag never self-heals on
+        # a later module upgrade the way the Q8-locked canonical catalog's
+        # tags do (canonical_catalog_tag.xml reapplies every -u). Force
+        # the flag here so this test's own precondition doesn't silently
+        # depend on which harness/DB-clone data-drift state it happens to
+        # run against.
+        if not drawer_tmpl.southbrook_is_cabinet:
+            drawer_tmpl.southbrook_is_cabinet = True
+        drawer = drawer_tmpl.product_variant_id
         price_before = design.estimated_price
         line.action_swap_product(drawer.id)
         self.assertEqual(line.product_id, drawer)

@@ -140,3 +140,11 @@ from . import test_filler_remainder_gate
 # identified (controllers/main.py's "back-wall lines are LEFT ALONE"
 # write previously persisted x/z verbatim).
 from . import test_sentinel_write_guard
+
+# Task 6, corner-remediation (2026-07-30) — hand-aware wall corners
+# (the shared _sb_resolve_corner_variant resolver generalizes to the
+# wall layer once an RH twin exists) + action_swap_product's catalog
+# gate (southbrook_is_cabinet=True), corner-only/footprint-fit
+# restriction, and hand-contradiction guard (shared with the
+# validator's CORNER_HAND_MISMATCH check via _sb_corner_expected_hand).
+from . import test_corner_hand_swap

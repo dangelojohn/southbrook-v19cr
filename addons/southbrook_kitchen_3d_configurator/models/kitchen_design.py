@@ -762,6 +762,26 @@ class SouthbrookKitchenDesign(models.Model):
                 # action_swap_product, and the reconcile mirror, so every
                 # corner-pricing surface resolves the SAME product.product
                 # for the same nominal SKU (V3-products.md claim 3).
+                #
+                # Task 6 (corner-remediation 2026-07-30, V3-products.md
+                # claim 2) — this call is layer-agnostic on PURPOSE: the
+                # pure engine tags `node["handed"]` identically for base
+                # AND wall corners (kitchen_layout_engine._CORNER_RESOLVE
+                # does not branch on layer), so once a template has more
+                # than one materialized Hinge Side variant, this hand-
+                # aware override already applies to SB-WALL-CORNER too —
+                # no per-layer special case is needed here. Before the
+                # catalog task backfilled an RH SB-WALL-CORNER twin, this
+                # branch was a structural no-op for wall corners
+                # (`len(tmpl.product_variant_ids) > 1` never true); it now
+                # picks the RH wall variant at right-facing junctions the
+                # same way the base-corner path always has. The safe
+                # fallback (`variant = handed[:1] or variant` inside
+                # `_sb_resolve_corner_variant`) stays for any corner
+                # family that never gets an RH twin (e.g. a genuinely
+                # symmetric wall corner) — `_check_production_ready`'s
+                # CORNER_HAND_MISMATCH check (§3c) is the backstop if a
+                # wrong-hand fallback ever ships.
                 variant, tmpl = Line._sb_resolve_corner_variant(
                     code, hand=node.get("handed"))
                 if not variant:
@@ -1387,21 +1407,23 @@ class SouthbrookKitchenDesign(models.Model):
         #     disagrees. Products with no Hinge Side PTAV (e.g.
         #     SB-WALL-CORNER, which has no L/R split) carry nothing to
         #     check and are silently skipped, not flagged.
+        #
+        #     Task 6 (corner-remediation 2026-07-30) — the ACTUAL
+        #     _CORNER_RESOLVE/_CORNER_STANDALONE consultation now lives
+        #     in ONE place, `_sb_corner_expected_hand()` on the LINE
+        #     model, shared with `action_swap_product`'s corner-swap
+        #     hand guard — this block still owns the layout_key-prefix
+        #     filter + the message's `cname`, but never independently
+        #     re-derives the expected hand from the tables itself.
         key_prefix_hand = "corner-%s-" % self.id
         for cl in self.cabinet_line_ids.filtered(
                 lambda l: l.cabinet_type == "corner"
                 and l.layout_role == "derived"
                 and (l.layout_key or "").startswith(key_prefix_hand)):
-            cname = cl.layout_key[len(key_prefix_hand):].rsplit("-", 1)[0]
-            spec = kitchen_layout_engine._CORNER_RESOLVE.get(cname)
-            if spec is not None:
-                expected_hand = spec[3]
-            elif cname in kitchen_layout_engine._CORNER_STANDALONE:
-                # resolve_and_layout hardcodes "L" for the standalone
-                # (both-high) front-right corner node.
-                expected_hand = "L"
-            else:
+            expected_hand = cl._sb_corner_expected_hand()
+            if expected_hand not in ("L", "R"):
                 continue
+            cname = cl.layout_key[len(key_prefix_hand):].rsplit("-", 1)[0]
             prefix = "LH" if expected_hand == "L" else "RH"
             hinge_ptavs = cl.product_id.product_template_attribute_value_ids.filtered(
                 lambda pt: pt.attribute_id.name == "Hinge Side")
@@ -3103,6 +3125,41 @@ class SouthbrookKitchenDesignLine(models.Model):
         return ((variant.lst_price if variant else 0.0)
                 or (tmpl.list_price if tmpl else 0.0))
 
+    # Task 6 (corner-remediation 2026-07-30, V2-validator.md §4d /
+    # V3-products.md claim 2) — ONE place that consults
+    # kitchen_layout_engine._CORNER_RESOLVE / _CORNER_STANDALONE to
+    # derive a derived corner LINE's expected hand from its layout_key
+    # ("corner-<design_id>-<corner>-<layer>", set verbatim by
+    # action_auto_arrange). Shared by _check_production_ready's
+    # CORNER_HAND_MISMATCH check (§3c above) and action_swap_product's
+    # corner-swap hand guard below — neither re-derives the table
+    # lookup independently, so a design the writer builds and a swap
+    # performed on it can never silently disagree about which hand a
+    # junction needs.
+    def _sb_corner_expected_hand(self):
+        """Expected "L"/"R" for this derived corner line's junction, or
+        None when this isn't a derived corner line with a resolvable
+        layout_key (nothing to check — e.g. a manually-added line with
+        cabinet_type='corner', which was never engine-placed at a real
+        junction)."""
+        self.ensure_one()
+        if not (self.cabinet_type == "corner"
+                and self.layout_role == "derived"):
+            return None
+        key = self.layout_key or ""
+        prefix = "corner-%s-" % self.design_id.id
+        if not key.startswith(prefix):
+            return None
+        cname = key[len(prefix):].rsplit("-", 1)[0]
+        spec = kitchen_layout_engine._CORNER_RESOLVE.get(cname)
+        if spec is not None:
+            return spec[3]
+        if cname in kitchen_layout_engine._CORNER_STANDALONE:
+            # resolve_and_layout hardcodes "L" for the standalone
+            # (both-high) front-right corner node.
+            return "L"
+        return None
+
     # ── Task 5 (kitchen templates) — line manipulation API ────────────
     # Server-side formalization of the client-only _swapSelectedProduct /
     # _updateSelectedWidth (kitchen_configurator.js) — the client paths
@@ -3147,9 +3204,40 @@ class SouthbrookKitchenDesignLine(models.Model):
             ) from e
 
     def action_swap_product(self, product_id):
-        product = self.env["product.product"].browse(int(product_id))
-        product.ensure_one()
+        """Replace this line's product. Task 6 (corner-remediation
+        2026-07-30, V3-products.md claim 4, "HIGH-1 money vector") — this
+        used to take a plain `browse()` with NO domain gate at all, while
+        every OTHER product-accepting surface (save_design's server-side
+        re-validation, controllers/main.py:420-471; the /products catalog
+        endpoint) gates on `southbrook_is_cabinet=True AND sale_ok=True`.
+        A tampered client, stale id, or raw RPC call could otherwise swap
+        a design line onto ANY `product.product` row in the database —
+        archived, non-cabinet, or an unrelated priced item — the same
+        money-vector class the save_design comment flags. Resolve
+        through the identical catalog contract instead of trusting the
+        caller's id.
+        """
+        self.ensure_one()
+        product = self.env["product.product"].search([
+            ("id", "=", int(product_id)),
+            ("sale_ok", "=", True),
+            ("product_tmpl_id.southbrook_is_cabinet", "=", True),
+        ], limit=1)
+        if not product:
+            raise UserError(
+                "That product isn't in the cabinet catalog (missing, "
+                "archived, not sale_ok, or not tagged as a Southbrook "
+                "cabinet) — swap refused.")
         tmpl = product.product_tmpl_id
+        # A derived corner line stands for a JUNCTION, not a free
+        # canonical slot: _guard_canonical's usual "engine-owned, adjust
+        # the canonical run instead" refusal is right for width/position,
+        # but here the user is legitimately choosing which corner STYLE
+        # (lazy-susan/blind/diagonal/wall) fills this same junction —
+        # see _swap_derived_corner's own docstring for why this can't
+        # just go through _write_then_rearrange like every other line.
+        if self.cabinet_type == "corner" and self.layout_role == "derived":
+            return self._swap_derived_corner(product, tmpl)
         return self._write_then_rearrange({
             "product_id": product.id,
             # T5 — same shared formula every corner write site uses.
@@ -3160,6 +3248,77 @@ class SouthbrookKitchenDesignLine(models.Model):
             "depth_in": tmpl.southbrook_depth_in or self.depth_in,
             "is_unresolved": False,
         })
+
+    def _swap_derived_corner(self, product, tmpl):
+        """Swap a DERIVED corner line's product in place — no
+        `_write_then_rearrange`/`action_auto_arrange` round-trip, which
+        would just delete this very line and regenerate it back to the
+        engine's own default SKU (auto-arrange's docstring: derived
+        corner lines are "DERIVED artifact — deleted + regenerated every
+        run"), silently discarding whatever the user just chose. Only
+        the junction's PLACEMENT (x/y/z/rotation/wall/run_seq/zone/
+        layout_key) is preserved untouched; width/height/depth follow
+        the new product like any other swap, since a different corner
+        archetype genuinely has a different footprint.
+
+        Restricted (Task 6 scope item 3):
+        1. `tmpl.southbrook_cabinet_type` must be 'corner' — a base or
+           wall cabinet can't stand in for a junction.
+        2. The new product's own footprint (`southbrook_width_in` /
+           `southbrook_depth_in`, when the template carries them) must
+           fit within the cell this junction already reserved — this
+           line's OWN current `width_in`/`depth_in`, set by the writer
+           from the winning placement rule (or the legacy square).
+           Missing dims on the target template are not validated (can't
+           check what isn't there), matching the "or self.width_in"
+           fallback convention every other swap/write site in this
+           class uses.
+        3. The junction's expected hand (`_sb_corner_expected_hand`,
+           the SAME derivation `_check_production_ready`'s
+           CORNER_HAND_MISMATCH check uses) must agree with the new
+           product's own Hinge Side PTAV, when it carries one at all —
+           a product with no Hinge Side split (e.g. SB-WALL-CORNER) has
+           nothing to check and is always allowed, exactly like the
+           validator's own skip rule.
+        Both restrictions raise a UserError (actionable message,
+        no silent substitution) rather than accepting a bad swap.
+        """
+        self.ensure_one()
+        if tmpl.southbrook_cabinet_type != "corner":
+            raise UserError(
+                "%s is not a corner cabinet — only corner products can "
+                "replace a corner junction. Swap refused."
+                % tmpl.display_name)
+        new_w = tmpl.southbrook_width_in or 0.0
+        new_d = tmpl.southbrook_depth_in or 0.0
+        cell_w = self.width_in or 0.0
+        cell_d = self.depth_in or 0.0
+        if (new_w and new_w > cell_w + 0.01) or (
+                new_d and new_d > cell_d + 0.01):
+            raise UserError(
+                "%s (%.1f\" x %.1f\") is too large for this junction's "
+                "reserved space (%.1f\" x %.1f\") — swap refused." % (
+                    tmpl.display_name, new_w, new_d, cell_w, cell_d))
+        expected_hand = self._sb_corner_expected_hand()
+        if expected_hand in ("L", "R"):
+            prefix = "LH" if expected_hand == "L" else "RH"
+            hinge_ptavs = product.product_template_attribute_value_ids.filtered(
+                lambda pt: pt.attribute_id.name == "Hinge Side")
+            if hinge_ptavs and not any(
+                    (pt.name or "").startswith(prefix) for pt in hinge_ptavs):
+                raise UserError(
+                    "%s is the wrong hand for this junction (needs %s) "
+                    "— the corner mechanism will not clear. Swap "
+                    "refused." % (product.display_name, prefix))
+        self.write({
+            "product_id": product.id,
+            # T5 — same shared formula every corner write site uses.
+            "price_unit": self._sb_variant_price(product, tmpl),
+            "width_in": new_w or self.width_in,
+            "height_in": tmpl.southbrook_height_in or self.height_in,
+            "depth_in": new_d or self.depth_in,
+        })
+        return {"corners": 0, "removed": 0, "inserted": 0, "swapped": True}
 
     def action_set_width(self, width_in):
         return self._write_then_rearrange({"width_in": float(width_in)})
