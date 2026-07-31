@@ -1388,11 +1388,23 @@ class SouthbrookKitchenConfigurator extends Component {
         //       relative to their host cabinet (set by _addCabinetFromProduct
         //       or downstream). Both are left untouched here on purpose.
 
+        // Task 10 (SBK-023) — a design can end up with a lone filler line
+        // and ZERO real cabinets: either a pre-fix persisted "$70 filler,
+        // zero cabinets" record reopened here, or a user manually deleting
+        // every real cabinet and leaving an orphan filler behind. Either
+        // way there is no cabinet run for that filler to belong to, so it
+        // is treated as INERT below — no filler $ counted, no honest
+        // remainder reported (see remainderIn further down) — mirroring
+        // the parallel "don't pre-select it either" guard in
+        // _hydrateFromDesign above. Computed up front so both the price
+        // loop and remainderIn share one definition.
+        const hasCabinets = items.some(it => it.cabinet_type !== "filler");
+
         let price = 0;
         let fillerPrice = 0;
         for (const it of items) {
             if (it.cabinet_type === "filler") {
-                fillerPrice += (it.price || 0);
+                if (hasCabinets) fillerPrice += (it.price || 0);
             } else {
                 price += (it.price || 0);
             }
@@ -1411,7 +1423,10 @@ class SouthbrookKitchenConfigurator extends Component {
         //   - cabinet_price mirrors `price` (same definition server-side:
         //     controllers/main.py sums non-filler item prices for both).
         //   - filler_price is recomputable locally as the sum of current
-        //     filler items' prices (unchanged by Task 10).
+        //     filler items' prices, EXCEPT when there are no real cabinets
+        //     at all — see the `hasCabinets` gate above and the Task 10
+        //     note below (an orphan filler with no cabinet run is inert,
+        //     not a real $ line).
         //   - filler_strategy isn't read from state.summary anywhere in
         //     the template (state.fillerStrategy is used directly) and
         //     snap_hint is NOT recomputable client-side (it needs the
@@ -1442,12 +1457,27 @@ class SouthbrookKitchenConfigurator extends Component {
         // a dimension this one field was never meant to carry. No
         // cabinets at all (n==0, mirroring the server's own n>0 gate) ->
         // no honest "remainder" to report either, same as a fresh empty
-        // room never gets a phantom filler.
-        const hasCabinets = items.some(it => it.cabinet_type !== "filler");
+        // room never gets a phantom filler. Reuses the `hasCabinets` gate
+        // computed above the price loop.
+        //
+        // A corner cabinet's extent ALONG the back wall isn't always its
+        // width_in — kitchen_design.py's wall_start_offsets reservation
+        // (read-only reference, not duplicated logic) uses width_in for
+        // rot 0/180 but depth_in for rot 90/270 (the corner pivots 90°,
+        // swapping which dimension spans the back/front axis vs. the
+        // left/right axis). Mirror that read here so a rotated corner
+        // doesn't under/over-count back-wall occupancy.
+        const backWallExtentIn = (it) => {
+            if (it.cabinet_type !== "corner") return (it.width_in || 0);
+            const rot = Math.round(it.rotation_deg || 0) % 360;
+            return (rot === 0 || rot === 180)
+                ? (it.width_in || 0)
+                : (it.depth_in || 0);
+        };
         const backRunOccupiedIn = items
             .filter(it => (it.wall || "back") === "back"
                 && (it.cabinet_type === "base" || it.cabinet_type === "corner"))
-            .reduce((sum, it) => sum + (it.width_in || 0), 0);
+            .reduce((sum, it) => sum + backWallExtentIn(it), 0);
         const roomWidthIn = (this.state.room && this.state.room.width_in) || 0;
         const remainderIn = hasCabinets
             ? Math.max(0, roomWidthIn - backRunOccupiedIn)

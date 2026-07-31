@@ -14,6 +14,18 @@
  * INCLUDING a same-wall corner cabinet's reserved footprint in
  * "occupied" (a corner cell reserves real run length too — see
  * kitchen_design.py's wall_start_offsets folding).
+ *
+ * Review-fix amendments (same task, post-review):
+ *   Finding 1 (Important) — an orphan filler (no real cabinet at all —
+ *     either a pre-fix persisted "$70, zero cabinets" record, or every
+ *     real cabinet deleted live) used to still count toward
+ *     filler_price / the "+$X filler" UI row even though its lone
+ *     pre-selection guard was already fixed. Both are now gated on the
+ *     same `hasCabinets` check.
+ *   Finding 2 (Minor) — a corner cabinet's back-wall occupancy now
+ *     reads its ROTATION-correct extent (width_in for rot 0/180,
+ *     depth_in for rot 90/270), matching kitchen_design.py's
+ *     wall_start_offsets ext_x/ext_z split, instead of always width_in.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -143,4 +155,77 @@ test("reopening a legacy zero-cabinet design (lone filler, no real cabinets) pre
         "a lone persisted filler must never be pre-selected as the edited cabinet");
     assert.equal(h.component.state.summary.remainder_in, 0,
         "no cabinets -> no honest remainder to report either");
+    // Review fix (Finding 1) — the orphan filler's $140 must not leak
+    // into filler_price / the "+$X filler" UI row either. An inert
+    // filler with no cabinet run to belong to is not a real $ line.
+    assert.equal(h.component.state.summary.filler_price, 0,
+        "an orphan filler on a 0-cabinet design must not count toward filler_price");
+});
+
+test("deleting the last real cabinet leaves an orphan filler inert (filler_price drops to 0, not the filler's own $)", async () => {
+    // Same failure shape as the legacy-reopen case above, but reached by
+    // live user action: delete every real cabinet one at a time, leaving
+    // a filler behind. _recomputeLayoutFromItems must treat it as inert
+    // the moment the last real cabinet is gone, not just on hydrate.
+    const h = await mountHydrated(
+        { width_in: 30, depth_in: 24, height_in: 96 },
+        [
+            {
+                layout_key: "base-1", cabinet_type: "base", product_name: "Base 24",
+                width_in: 24, height_in: 34.5, depth_in: 24,
+                x_position_in: 3, y_position_in: 0, z_position_in: 0,
+                wall: "back", price: 500,
+            },
+            {
+                layout_key: "filler-L", cabinet_type: "filler", product_name: "Filler L",
+                width_in: 6, height_in: 34.5, depth_in: 0.75,
+                x_position_in: 0, y_position_in: 0, z_position_in: 0,
+                wall: "back", price: 70,
+            },
+        ],
+    );
+    assert.equal(h.component.state.summary.filler_price, 70,
+        "sanity check: filler_price counts normally while a real cabinet exists");
+
+    const base = h.component.state.items.find(it => it.layout_key === "base-1");
+    h.component.state.selected = base;
+    h.component._removeSelectedCabinet();
+    clearTimeout(h.component._autoSaveTimer);
+
+    const s = h.component.state.summary;
+    assert.equal(s.base_count, 0);
+    assert.equal(s.filler_price, 0,
+        "the surviving filler is orphaned (no cabinet run) — must go inert, not keep billing $70");
+    assert.equal(s.remainder_in, 0);
+});
+
+test("a corner cabinet rotated 90/270 counts its DEPTH (not width) toward back-wall occupancy", async () => {
+    // Mirrors kitchen_design.py's wall_start_offsets reservation math
+    // (M2, read-only reference): rot 0/180 -> width_in spans the
+    // back/front (X) axis; rot 90/270 -> the corner has pivoted, so
+    // depth_in spans that axis instead. room=60in; base(24) + a
+    // 90deg-rotated corner whose width_in=36 but depth_in=24 must
+    // occupy 24 (its rotated back-wall extent), not 36 -> remainder
+    // = 60 - 24 - 24 = 12, not 0.
+    const h = await mountHydrated(
+        { width_in: 60, depth_in: 96, height_in: 96 },
+        [
+            {
+                layout_key: "base-1", cabinet_type: "base", product_name: "Base 24",
+                width_in: 24, height_in: 34.5, depth_in: 24,
+                x_position_in: 0, y_position_in: 0, z_position_in: 0,
+                wall: "back", price: 500,
+            },
+            {
+                layout_key: "corner-rot90", cabinet_type: "corner", product_name: "Corner unit",
+                width_in: 36, height_in: 34.5, depth_in: 24, rotation_deg: 90,
+                x_position_in: 24, y_position_in: 0, z_position_in: 0,
+                wall: "back", price: 900,
+            },
+        ],
+    );
+
+    assert.equal(h.component.state.summary.remainder_in, 12,
+        "rotated corner's back-wall extent is depth_in(24), not width_in(36): "
+        + "60 - base(24) - corner_depth(24) = 12");
 });
