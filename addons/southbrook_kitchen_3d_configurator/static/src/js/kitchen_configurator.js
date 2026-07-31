@@ -939,8 +939,9 @@ class SouthbrookKitchenConfigurator extends Component {
 
     _selectCabinet(item) {
         // 24e — parent no longer owns cabObjs. <KitchenCanvas>
-        // observes state.selected via onWillUpdateProps and calls
-        // highlightSelected against its own scene.
+        // observes state.selected via onWillUpdateProps and applies
+        // the selection visuals (tint + outline + bbox — Task 22)
+        // against its own scene.
         this.state.selected = item;
         // F14 — a real layout-cabinet selection supersedes any inventory
         // row catalog-preview highlight.
@@ -1721,6 +1722,19 @@ class SouthbrookKitchenConfigurator extends Component {
         if (this._canvasApi) this._canvasApi.setView(key);
     }
 
+    // Task 22 (SBK-036) — front/left/right are flat orthographic
+    // elevations: cabinet move-drag isn't usable there (the width/depth
+    // resize handles are also gated off it — pointer_pipeline.esm.js's
+    // isHandleActiveView). Before this task the ONLY signal was a line
+    // of body text in the bottom-right hint pill (easy to miss/never
+    // read); this getter backs an actual visual marker (badge + scene-
+    // panel border tint — see the template + SCSS) so the read-only
+    // state is unmistakable, not just documented.
+    _isReadOnlyView() {
+        return this.state.view === "front" || this.state.view === "left"
+            || this.state.view === "right";
+    }
+
     _onKeyDown(e) {
         // Ignore when typing in form inputs.
         const tag = (e.target && e.target.tagName) || "";
@@ -1830,27 +1844,64 @@ class SouthbrookKitchenConfigurator extends Component {
         }
     }
 
-    // D6 — cycle selection through selectable items (bases then walls,
-    // each sorted left-to-right). +1 = next, -1 = previous; wraps.
+    // D6 / Task 22 (SBK-036) — cycle selection through every placed,
+    // independently-selectable cabinet. +1 = next, -1 = previous; wraps.
+    //
+    // Audit finding: the pre-Task-22 version only included
+    // cabinet_type "base"/"wall" — tall/corner/appliance cabinets
+    // (real, clickable, independently selectable placed units; see
+    // the "Selected Cabinet" drawer, which is generic across every
+    // cabinet_type) were silently unreachable via the keyboard, which
+    // read as "advances unreliably and repeats items" once a design
+    // had any of those types mixed in with base/wall runs — the loop
+    // only ever cycled through the base/wall subset, so it looked
+    // short/repetitive relative to what's actually on screen. Filler
+    // panels stay excluded — they are server-derived, not
+    // independently clickable in the 3D view at all (not `cab`-
+    // flagged, never pushed to `clickable`; see
+    // other_cabinets.esm.js's buildFillerPanel), so cycling to one
+    // would select something nothing else in the UI treats as
+    // selectable.
+    //
+    // Order is fully deterministic — wall (canonical WALLS order),
+    // then run_seq (position along that wall), then layout_key as a
+    // final tiebreak — so two items that legitimately share a wall
+    // and run_seq (or are missing one) still sort the same way every
+    // time, regardless of the incoming items array's own order (which
+    // can shuffle across a reload/re-fetch). This also fixes an
+    // off-by-one on the very first ArrowLeft press with nothing
+    // selected: it used to land on the second-to-last item instead of
+    // the last one (idx defaulted to -1 for both directions, so
+    // -1 + -1 wrapped one short of the end).
     _cycleSelection(dir) {
         const items = this.state.items || [];
+        const wallRank = { [WALLS.BACK]: 0, [WALLS.LEFT]: 1, [WALLS.RIGHT]: 2, [WALLS.FRONT]: 3 };
         const selectable = items
-            .filter(it => it.cabinet_type === "base" || it.cabinet_type === "wall")
+            .filter(it => it.cabinet_type !== "filler")
+            .slice()
             .sort((a, b) => {
-                if (a.cabinet_type !== b.cabinet_type) {
-                    return a.cabinet_type === "base" ? -1 : 1;
-                }
-                return (a.x_position_in || 0) - (b.x_position_in || 0);
+                const wa = wallRank[a.wall] ?? 99;
+                const wb = wallRank[b.wall] ?? 99;
+                if (wa !== wb) return wa - wb;
+                const ra = a.run_seq ?? 0;
+                const rb = b.run_seq ?? 0;
+                if (ra !== rb) return ra - rb;
+                const ka = a.layout_key || "";
+                const kb = b.layout_key || "";
+                return ka < kb ? -1 : ka > kb ? 1 : 0;
             });
         if (!selectable.length) return;
-        let idx = -1;
-        if (this.state.selected) {
-            idx = selectable.findIndex(
-                it => it.layout_key === this.state.selected.layout_key
-            );
-        }
-        idx = (idx + dir + selectable.length) % selectable.length;
-        if (idx < 0) idx += selectable.length;
+        let idx = selectable.findIndex(
+            it => this.state.selected && it.layout_key === this.state.selected.layout_key
+        );
+        // Nothing currently selected (or the selection isn't in this
+        // list — e.g. it was just deleted): treat "next" as starting
+        // one before the first item (lands on index 0) and "previous"
+        // as starting one after the last item (lands on the last
+        // index), so the very first keypress in either direction
+        // lands somewhere sensible rather than skipping an item.
+        if (idx === -1) idx = dir > 0 ? -1 : 0;
+        idx = ((idx + dir) % selectable.length + selectable.length) % selectable.length;
         this._selectCabinet(selectable[idx]);
     }
 
@@ -2534,7 +2585,9 @@ SouthbrookKitchenConfigurator.template = xml`
     <!-- D13 — Wrapper carries the drag-and-drop handlers; the canvas3d
          div stays clean for Three.js. dragHover toggles a brand-blue
          outline so the rep gets immediate "drop here" feedback. -->
-    <main t-att-class="'o_sbk_scene_panel' + (state.dragHover ? ' is-drag-hover' : '')"
+    <main t-att-class="'o_sbk_scene_panel'
+                       + (state.dragHover ? ' is-drag-hover' : '')
+                       + (_isReadOnlyView() ? ' is-readonly-view' : '')"
           t-on-dragover="_onCanvasDragOver"
           t-on-dragleave="_onCanvasDragLeave"
           t-on-drop="_onCanvasDrop">
@@ -2555,6 +2608,15 @@ SouthbrookKitchenConfigurator.template = xml`
                      onResizeRoomDepth="(nd, f) => this._onCanvasResizeDepth(nd, f)"
                      onViewChange="(k) => this._onCanvasViewChange(k)"
                      onReady="(api) => this._onCanvasReady(api)"/>
+
+      <!-- Task 22 (SBK-036) — read-only view marker. front/left/right
+           are flat elevations with no move-drag/resize; body text
+           alone (the o_sbk_draghint pill) wasn't visible enough per
+           audit. role="status" so a screen reader announces the mode
+           change same as the count strip below. -->
+      <div t-if="_isReadOnlyView()" class="o_sbk_readonly_badge" role="status">
+        <span class="o_sbk_readonly_icon">&#x1F512;</span> Read-only view — switch to Iso, Top or Perspective to move cabinets
+      </div>
 
       <!-- Task #48 — Persistent count + room + estimate strip.
            Real-time sanity check for the customer / rep. Filler is

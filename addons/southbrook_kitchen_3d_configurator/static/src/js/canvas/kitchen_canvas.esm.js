@@ -53,7 +53,9 @@ import {
 import { ndcFromEvent }      from "@southbrook_kitchen_3d_configurator/js/canvas/pointer_helpers.esm";
 import { computeViewSpecs }  from "@southbrook_kitchen_3d_configurator/js/canvas/view_specs.esm";
 import { computeOrthoFrustum } from "@southbrook_kitchen_3d_configurator/js/canvas/ortho_frustum.esm";
-import { highlightSelected } from "@southbrook_kitchen_3d_configurator/js/canvas/selection.esm";
+import {
+    applySelectionVisuals, clearSelectionVisuals, createSelectionState,
+} from "@southbrook_kitchen_3d_configurator/js/canvas/selection.esm";
 import { computeDropXIn }    from "@southbrook_kitchen_3d_configurator/js/canvas/drop_raycaster.esm";
 import { easeInOutCubic }    from "@southbrook_kitchen_3d_configurator/js/canvas/easing.esm";
 import {
@@ -67,8 +69,15 @@ import {
 } from "@southbrook_kitchen_3d_configurator/js/canvas/pointer_pipeline.esm";
 
 export class KitchenCanvas extends Component {
+    // Task 22 (SBK-036) — tabindex makes the canvas a focusable surface
+    // (keyboard shortcuts already work regardless, via the parent's
+    // window-scoped keydown listener; this only adds the DOM focus
+    // state a :focus outline can key off — see the SCSS focus-ring
+    // rule for .o_sbk_canvas3d). aria-label gives it an accessible
+    // name for screen readers tabbing through the page.
     static template = xml`
-        <div t-ref="kitchenCanvas" class="o_sbk_canvas3d"/>
+        <div t-ref="kitchenCanvas" class="o_sbk_canvas3d" tabindex="0"
+             aria-label="3D kitchen scene. Click a cabinet to select it, arrow keys cycle selection, 1-6 switch camera views."/>
     `;
     static props = {
         items:          { type: Array, optional: true },
@@ -116,6 +125,11 @@ export class KitchenCanvas extends Component {
             animId: null, animatingCamera: false,
             movingItem: null, moveStartClient: { x: 0, y: 0 },
             moveLastX: null, moveCommitted: false,
+            // Task 22 (SBK-036) — persistent across `_buildScene`
+            // rebuilds; cleared (never recreated) at the top of every
+            // rebuild so it never holds a reference into a torn-down
+            // group. See selection.esm.js's docstring.
+            selectionVisual: createSelectionState(),
         };
         this._onMouseDown = this._onMouseDown.bind(this);
         this._onMouseMove = this._onMouseMove.bind(this);
@@ -204,7 +218,7 @@ export class KitchenCanvas extends Component {
             if (roomChanged || itemsChanged) {
                 this._buildScene(next);
             } else if (selChanged) {
-                highlightSelected(this.T.cabObjs, next.selected, P);
+                applySelectionVisuals(this.T, next.selected, P);
             }
             // Active-wall change: just repaint the wall glow (no rebuild).
             if (!(roomChanged || itemsChanged)
@@ -236,6 +250,13 @@ export class KitchenCanvas extends Component {
 
     _buildScene(props) {
         this._clearDragGhost();   // T7 — never survive a rebuild
+        // Task 22 (SBK-036) — clear the selection tint/outline/bbox
+        // BEFORE the old cabObjs are disposed below: this restores
+        // every tinted mesh's material to its original reference and
+        // disposes our own clones/overlays deterministically, instead
+        // of leaving the original (untinted) material objects to leak
+        // as orphaned references once the old groups are torn down.
+        clearSelectionVisuals(this.T.selectionVisual);
         const { THREE, scene } = this.T;
         if (!scene) return;
         const room = props.room || {};
@@ -325,7 +346,7 @@ export class KitchenCanvas extends Component {
 
         this._recomputeViews(rw, rh, rd);
         this._setView(props.view || this._currentView, /*instant=*/true, /*skipCallback=*/true);
-        if (props.selected) highlightSelected(this.T.cabObjs, props.selected, P);
+        if (props.selected) applySelectionVisuals(this.T, props.selected, P);
         this._applyWallHighlight(props.activeWall);
     }
 
@@ -647,6 +668,15 @@ export class KitchenCanvas extends Component {
     }
 
     _onMouseDown(e) {
+        // Task 22 (SBK-036) — canvas focus ring. Several branches below
+        // call e.preventDefault() (handle-drag, cabinet-select), which
+        // in some browsers suppresses the native "click focuses the
+        // element" default action — so focus is claimed explicitly
+        // here, unconditionally, rather than relying on that default.
+        const mount = this.canvasRef.el;
+        if (mount && typeof mount.focus === "function") {
+            mount.focus({ preventScroll: true });
+        }
         const { activeCamera, raycaster, handleMesh, arrowMeshes,
                 depthHandleMesh, depthArrowMeshes, clickable } = this.T;
         if (!activeCamera || !raycaster) return;

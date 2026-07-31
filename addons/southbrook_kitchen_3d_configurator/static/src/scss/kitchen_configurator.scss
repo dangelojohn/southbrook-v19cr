@@ -373,6 +373,53 @@ $sbk-amber:      #B45309;
         width: 100% !important;
         height: 100% !important;
     }
+
+    // Task 22 (SBK-036) — canvas focus ring. The div carries
+    // tabindex="0" (kitchen_canvas.esm.js) and claims focus explicitly
+    // on every mousedown, so this is reliably visible whenever the
+    // rep is interacting with the scene, not just via Tab. Plain
+    // :focus (not :focus-visible) — the ring is meant to show for
+    // mouse-triggered focus too, which :focus-visible's heuristic
+    // would normally suppress. Inset (negative offset) since the
+    // canvas fills its panel edge-to-edge and an outset ring would be
+    // clipped by the panel's own overflow:hidden.
+    &:focus {
+        outline: 2px solid $sbk-accent;
+        outline-offset: -2px;
+    }
+}
+
+// Task 22 (SBK-036) — read-only view marker (front/left/right flat
+// elevations). Two reinforcing signals so the state reads even at a
+// glance: a border tint on the whole scene panel (visible without
+// looking at any text) plus the badge below (explicit label).
+.o_sbk_scene_panel.is-readonly-view {
+    box-shadow: inset 0 0 0 3px rgba(180, 83, 9, 0.35);
+}
+
+.o_sbk_readonly_badge {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: var(--sb-radius);
+    background: rgba(180, 83, 9, 0.92);
+    color: $sbk-white;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.o_sbk_readonly_icon {
+    font-size: 11px;
+    line-height: 1;
 }
 
 // Dimension ruler overlay (HTML overlay on 3D canvas)
