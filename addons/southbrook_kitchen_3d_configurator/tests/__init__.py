@@ -153,3 +153,11 @@ from . import test_corner_hand_swap
 # ONE entrypoint asserting geometry/corner/reconciliation/catalogue
 # invariants for EVERY active shipped kitchen template.
 from . import test_invariant_matrix
+
+# Task 7, corner-remediation (2026-07-30, SBK-033 expanded scope) — ONE
+# server-computed counter summary: tall_count/corner_count/panel_count/
+# appliance_count/unplaced_count/summary_total, the sum-of-parts ==
+# active-line-count identity for every shipped template, and the
+# is_unresolved diagnostic-overlay contract (counted once under its own
+# bucket, never a double-counted eighth bucket).
+from . import test_counter_summary

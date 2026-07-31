@@ -161,6 +161,41 @@ class SouthbrookKitchenDesign(models.Model):
     estimated_price  = fields.Monetary(compute="_compute_totals", store=True)
     base_count       = fields.Integer(compute="_compute_totals", store=True)
     wall_count       = fields.Integer(compute="_compute_totals", store=True)
+    # ── Task 7 (SBK-033, corner-remediation) — ONE server-computed
+    # counter summary. V4-counters-templates.md claim 1 found FOUR
+    # disagreeing totals for one design (header 9, sidebar 4+2, record
+    # 13, summary 10+2) because base_count/wall_count were the ONLY
+    # per-type buckets anywhere — corner/tall/panel/appliance lines
+    # were invisible to every count surface even though they're real,
+    # priced, active lines. These five fields complete the partition:
+    # every cabinet_type value now has its own bucket, computed the
+    # SAME way base_count/wall_count always have (inclusive of
+    # is_unresolved GHOST lines — test_invariant_matrix.py's existing
+    # oracle already pins that shape for base_count/wall_count; a
+    # carve-out here would silently break it). Because cabinet_type is
+    # a closed Selection (base/wall/tall/filler/panel/corner/
+    # appliance), every active line has EXACTLY one of these seven
+    # buckets, so base+wall+tall+corner+filler+panel+appliance always
+    # equals len(active cabinet_line_ids) by construction — see
+    # summary_total below and _get_counter_summary()'s docstring.
+    tall_count       = fields.Integer(compute="_compute_totals", store=True)
+    corner_count     = fields.Integer(compute="_compute_totals", store=True)
+    panel_count      = fields.Integer(compute="_compute_totals", store=True)
+    appliance_count  = fields.Integer(compute="_compute_totals", store=True)
+    # Diagnostic OVERLAY, not an eighth additive bucket: counts how
+    # many of the lines already tallied above (under their own
+    # cabinet_type bucket) are is_unresolved GHOST placeholders (Task
+    # 2) — e.g. "4 base cabinets, 1 still unresolved". Archived
+    # debris/sentinel lines (_is_debris_signature) never reach here at
+    # all — they're active=False, already excluded from
+    # cabinet_line_ids by Odoo's default active_test, same as every
+    # other bucket above.
+    unplaced_count   = fields.Integer(compute="_compute_totals", store=True)
+    # base+wall+tall+corner+filler+panel+appliance — the honest "how
+    # many rows will I see" total, INCLUDING fillers. Deliberately
+    # separate from the legacy total_cabinets field (unchanged below —
+    # T6's filler-exclusion is a shipped decision, not touched here).
+    summary_total    = fields.Integer(compute="_compute_totals", store=True)
     remainder_in     = fields.Float(
         string="Remainder (in)",
         compute="_compute_totals",
@@ -502,6 +537,7 @@ class SouthbrookKitchenDesign(models.Model):
         "cabinet_line_ids.quantity",
         "cabinet_line_ids.price_unit",
         "cabinet_line_ids.cabinet_type",
+        "cabinet_line_ids.is_unresolved",
         "room_width_in",
         "sale_order_id",
         "sale_order_id.order_line.product_uom_qty",
@@ -512,15 +548,30 @@ class SouthbrookKitchenDesign(models.Model):
         for design in self:
             lines = design.cabinet_line_ids
             if lines:
-                base_lines = lines.filtered(lambda l: l.cabinet_type == "base")
-                wall_lines = lines.filtered(lambda l: l.cabinet_type == "wall")
+                base_lines      = lines.filtered(lambda l: l.cabinet_type == "base")
+                wall_lines      = lines.filtered(lambda l: l.cabinet_type == "wall")
+                tall_lines      = lines.filtered(lambda l: l.cabinet_type == "tall")
+                corner_lines    = lines.filtered(lambda l: l.cabinet_type == "corner")
+                panel_lines     = lines.filtered(lambda l: l.cabinet_type == "panel")
+                appliance_lines = lines.filtered(lambda l: l.cabinet_type == "appliance")
                 cab_lines = lines.filtered(
                     lambda l: l.cabinet_type != "filler")
                 design.base_count      = sum(base_lines.mapped("quantity"))
                 design.wall_count      = sum(wall_lines.mapped("quantity"))
+                design.tall_count      = sum(tall_lines.mapped("quantity"))
+                design.corner_count    = sum(corner_lines.mapped("quantity"))
+                design.panel_count     = sum(panel_lines.mapped("quantity"))
+                design.appliance_count = sum(appliance_lines.mapped("quantity"))
                 design.total_cabinets  = sum(cab_lines.mapped("quantity"))
                 design.filler_count    = sum(
                     (lines - cab_lines).mapped("quantity"))
+                design.unplaced_count  = sum(
+                    lines.filtered("is_unresolved").mapped("quantity"))
+                design.summary_total   = (
+                    design.base_count + design.wall_count
+                    + design.tall_count + design.corner_count
+                    + design.filler_count + design.panel_count
+                    + design.appliance_count)
                 design.estimated_price = sum(
                     l.quantity * l.price_unit for l in lines
                 )
@@ -537,15 +588,40 @@ class SouthbrookKitchenDesign(models.Model):
                 wall_ol = order_lines.filtered(
                     lambda l: l.product_id.product_tmpl_id.southbrook_cabinet_type == "wall"
                 )
+                tall_ol = order_lines.filtered(
+                    lambda l: l.product_id.product_tmpl_id.southbrook_cabinet_type == "tall"
+                )
+                corner_ol = order_lines.filtered(
+                    lambda l: l.product_id.product_tmpl_id.southbrook_cabinet_type == "corner"
+                )
+                panel_ol = order_lines.filtered(
+                    lambda l: l.product_id.product_tmpl_id.southbrook_cabinet_type == "panel"
+                )
+                appliance_ol = order_lines.filtered(
+                    lambda l: l.product_id.product_tmpl_id.southbrook_cabinet_type == "appliance"
+                )
                 cab_ol = order_lines.filtered(
                     lambda l: l.product_id.product_tmpl_id
                     .southbrook_cabinet_type != "filler"
                 )
                 design.base_count      = sum(base_ol.mapped("product_uom_qty"))
                 design.wall_count      = sum(wall_ol.mapped("product_uom_qty"))
+                design.tall_count      = sum(tall_ol.mapped("product_uom_qty"))
+                design.corner_count    = sum(corner_ol.mapped("product_uom_qty"))
+                design.panel_count     = sum(panel_ol.mapped("product_uom_qty"))
+                design.appliance_count = sum(appliance_ol.mapped("product_uom_qty"))
                 design.total_cabinets  = sum(cab_ol.mapped("product_uom_qty"))
                 design.filler_count    = sum(
                     (order_lines - cab_ol).mapped("product_uom_qty"))
+                # Order lines carry no is_unresolved concept — this
+                # fallback path only ever runs before the design has any
+                # configurator-origin lines of its own.
+                design.unplaced_count  = 0
+                design.summary_total   = (
+                    design.base_count + design.wall_count
+                    + design.tall_count + design.corner_count
+                    + design.filler_count + design.panel_count
+                    + design.appliance_count)
                 design.estimated_price = sum(order_lines.mapped("price_subtotal"))
             # Remainder: width minus base cabinet modules
             module_w = 24.0
@@ -554,6 +630,75 @@ class SouthbrookKitchenDesign(models.Model):
                 module_w = bp.product_tmpl_id.southbrook_width_in or 24.0
             n = max(0, int(math.floor(design.room_width_in / module_w)))
             design.remainder_in = max(0.0, design.room_width_in - n * module_w)
+
+    # ── Task 7 (SBK-033) — the ONE summary object every surface renders ──
+    def _get_counter_summary(self):
+        """The single server-computed cabinet-count summary. The 3D
+        header strip, the 3D sidebar metrics, and controllers/main.py's
+        save/load/rearrange responses all source their numbers from
+        here — none of them may independently re-derive a partition of
+        cabinet_line_ids (that duplication is exactly what produced the
+        four disagreeing totals V4-counters-templates.md claim 1
+        documents for one design: header 9, sidebar 4+2, record 13,
+        summary 10+2).
+
+        Keys mirror the stored *_count fields 1:1 so the numbers shipped
+        to the client can never drift from what's actually stored.
+        `total` sums the seven cabinet_type buckets (base+wall+tall+
+        corner+filler+panel+appliance) — every active line has exactly
+        one cabinet_type, so `total` always equals
+        len(active cabinet_line_ids) (or the order-line fallback's line
+        count) by construction; see test_counter_summary.py's identity
+        assertions. `unplaced_count` is a DIAGNOSTIC OVERLAY, not an
+        eighth additive bucket — an is_unresolved GHOST line (Task 2) is
+        already counted once under its own cabinet_type bucket above
+        (matching how base_count/wall_count have always behaved —
+        test_invariant_matrix.py's existing oracle pins that shape), so
+        adding it a second time here would break the sum-of-parts
+        identity. Archived debris/sentinel lines never reach this
+        method at all: they're active=False, already excluded from
+        cabinet_line_ids by Odoo's default active_test, same as every
+        bucket above.
+
+        `price`/`cabinet_price` mirror the historical /layout + client
+        convention (non-filler line total, fillers broken out
+        separately) — NOT the same figure as `estimated_price` (the
+        stored field, unchanged, whole-design total INCLUDING fillers,
+        still what the backend Summary group's Monetary field shows).
+        """
+        self.ensure_one()
+        lines = self.cabinet_line_ids
+        if lines:
+            cabinet_price = sum(
+                l.quantity * l.price_unit for l in lines
+                if l.cabinet_type != "filler")
+            filler_price = sum(
+                l.quantity * l.price_unit for l in lines
+                if l.cabinet_type == "filler")
+        else:
+            order_lines = self.sale_order_id.order_line.filtered(
+                lambda l: l.product_id.product_tmpl_id.southbrook_is_cabinet
+            )
+            cabinet_price = sum(
+                l.price_subtotal for l in order_lines
+                if l.product_id.product_tmpl_id.southbrook_cabinet_type != "filler")
+            filler_price = sum(
+                l.price_subtotal for l in order_lines
+                if l.product_id.product_tmpl_id.southbrook_cabinet_type == "filler")
+        return {
+            "base_count":      self.base_count,
+            "wall_count":      self.wall_count,
+            "tall_count":      self.tall_count,
+            "corner_count":    self.corner_count,
+            "filler_count":    self.filler_count,
+            "panel_count":     self.panel_count,
+            "appliance_count": self.appliance_count,
+            "unplaced_count":  self.unplaced_count,
+            "total":           self.summary_total,
+            "price":           cabinet_price,
+            "cabinet_price":   cabinet_price,
+            "filler_price":    filler_price,
+        }
 
     # ── Actions ─────────────────────────────────────────────────────────────────
     def action_generate_layout(self):

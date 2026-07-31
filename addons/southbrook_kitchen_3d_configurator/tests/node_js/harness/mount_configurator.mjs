@@ -38,8 +38,17 @@ const CONFIGURATOR_SRC = path.resolve(
 const DEFAULT_ROUTES = {
     "/southbrook_kitchen/configurator/products": () => ({ channel: null, products: [] }),
     "/southbrook_kitchen/configurator/user_defaults": () => ({}),
+    // Task 7 (SBK-033) — full bucket shape, matching the real
+    // controller's /layout response (controllers/main.py) and
+    // southbrook.kitchen.design._get_counter_summary() so a test that
+    // doesn't override this route still sees state.summary.corner_count
+    // etc. as a real 0, not undefined.
     "/southbrook_kitchen/configurator/layout": () => ({
-        items: [], summary: { base_count: 0, wall_count: 0, total: 0, price: 0, remainder_in: 0 },
+        items: [], summary: {
+            base_count: 0, wall_count: 0, tall_count: 0, corner_count: 0,
+            filler_count: 0, panel_count: 0, appliance_count: 0,
+            unplaced_count: 0, total: 0, price: 0, remainder_in: 0,
+        },
     }),
     // Task 20 (SBK-034) — the landing screen's recent-designs fetch,
     // fired from onWillStart on every no-id boot (see kitchen_

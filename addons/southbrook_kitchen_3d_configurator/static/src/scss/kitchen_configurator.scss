@@ -852,6 +852,11 @@ $sbk-amber:      #B45309;
     color: #1e9e6a;
     font-size: 12px;
 }
+// Task 7 (SBK-033) — unresolved/GHOST placeholder count. Warning color
+// (matches the existing $6 remainder banner's palette) so an unresolved
+// slot reads as "needs attention", distinct from the neutral base/wall/
+// corner counters above it.
+.o_sbk_metric_unplaced strong { color: #B45309; }
 .o_sbk_remainder_strategy {
     font-size: 10px;
     opacity: 0.7;

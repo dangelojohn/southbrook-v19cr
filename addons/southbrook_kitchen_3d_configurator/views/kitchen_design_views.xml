@@ -329,13 +329,32 @@
                             <field name="room_height_in" string="Height (in)"/>
                         </group>
                     </group>
+                    <!-- Task 7 (SBK-033) — the backend form is one of the
+                         three surfaces (3D header, 3D sidebar, this form)
+                         that must render the SAME server-computed summary
+                         (southbrook.kitchen.design._get_counter_summary(),
+                         backing fields on _compute_totals). tall_count/
+                         corner_count/panel_count/appliance_count/
+                         unplaced_count are new; base_count/wall_count/
+                         total_cabinets/filler_count/remainder_in/
+                         estimated_price are unchanged (same fields, same
+                         formulas — total_cabinets' filler-exclusion stays
+                         the deliberate T6 shipped decision). summary_total
+                         is the honest "how many rows" figure INCLUDING
+                         fillers, unlike total_cabinets. -->
                     <group string="Summary">
                         <field name="base_count"      readonly="1"/>
                         <field name="wall_count"      readonly="1"/>
+                        <field name="tall_count"      readonly="1"/>
+                        <field name="corner_count"    readonly="1"/>
+                        <field name="panel_count"     readonly="1"/>
+                        <field name="appliance_count" readonly="1"/>
                         <field name="total_cabinets"  readonly="1"/>
                         <!-- T6: fillers are counted separately — a 3"
                              strip is not a cabinet on quote or floor. -->
                         <field name="filler_count"    readonly="1"/>
+                        <field name="unplaced_count"  readonly="1"/>
+                        <field name="summary_total"   readonly="1" string="Total (incl. fillers)"/>
                         <field name="remainder_in"    readonly="1"/>
                         <field name="estimated_price" readonly="1" widget="monetary"/>
                         <field name="currency_id"     invisible="1"/>

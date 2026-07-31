@@ -40,6 +40,48 @@ import { ToastStore } from "@southbrook_kitchen_3d_configurator/js/toast/toast_s
 
 const actionRegistry = registry.category("actions");
 
+// ─── Task 7 (SBK-033) — the ONE cabinet-count partition ─────────────────────
+// V4-counters-templates.md claim 1: four different places in this codebase
+// each computed their OWN count of "how many cabinets" from state.items —
+// the sidebar's base/wall-only tally, the header's non-filler tally, the
+// server's base_count/wall_count/total_cabinets fields — and none of them
+// agreed (corner/tall/panel/appliance lines were invisible to every one of
+// them). This function is now the SINGLE definition every client-side
+// surface uses, mirroring southbrook.kitchen.design._get_counter_summary()
+// (models/kitchen_design.py) field-for-field so the two can never drift:
+// every item has exactly one of the seven cabinet_type buckets below, so
+// their sum always equals items.length (excluding nothing — fillers count
+// too, unlike the legacy total_cabinets server field, which stays as-is).
+// `unplaced_count` is a DIAGNOSTIC OVERLAY (an is_unresolved GHOST item is
+// already counted once under its own cabinet_type bucket, same as the
+// server), not an eighth additive bucket.
+const CABINET_TYPE_COUNT_KEY = {
+    base:      "base_count",
+    wall:      "wall_count",
+    tall:      "tall_count",
+    corner:    "corner_count",
+    filler:    "filler_count",
+    panel:     "panel_count",
+    appliance: "appliance_count",
+};
+
+export function countCabinetBuckets(items) {
+    const counts = {
+        base_count: 0, wall_count: 0, tall_count: 0, corner_count: 0,
+        filler_count: 0, panel_count: 0, appliance_count: 0,
+        unplaced_count: 0,
+    };
+    for (const it of (items || [])) {
+        const key = CABINET_TYPE_COUNT_KEY[it && it.cabinet_type];
+        if (key) counts[key] += 1;
+        if (it && it.is_unresolved) counts.unplaced_count += 1;
+    }
+    counts.total = counts.base_count + counts.wall_count + counts.tall_count
+        + counts.corner_count + counts.filler_count + counts.panel_count
+        + counts.appliance_count;
+    return counts;
+}
+
 // ─── OWL Component ────────────────────────────────────────────────────────────
 class SouthbrookKitchenConfigurator extends Component {
     setup() {
@@ -177,7 +219,18 @@ class SouthbrookKitchenConfigurator extends Component {
             // placement / save / rendering are intentionally unaffected
             // (that arrives in PR2/PR3/PR4).
             activeWall: null,
-            summary:   { base_count: 0, wall_count: 0, total: 0, price: 0, remainder_in: 0 },
+            // Task 7 (SBK-033) — full bucket shape from boot, matching
+            // southbrook.kitchen.design._get_counter_summary() 1:1 (see
+            // countCabinetBuckets below). Every surface (header strip,
+            // sidebar metrics, and — server-side — the backend Summary
+            // group) renders from THIS one object; no surface computes
+            // its own independent partition of state.items.
+            summary:   {
+                base_count: 0, wall_count: 0, tall_count: 0,
+                corner_count: 0, filler_count: 0, panel_count: 0,
+                appliance_count: 0, unplaced_count: 0,
+                total: 0, price: 0, remainder_in: 0,
+            },
             // PR2.5a (Gap 1) — falls back to the URL-restore-only
             // actionStack signal (see setup() comment above) when
             // params.design_id is absent (a direct-URL reload).
@@ -594,16 +647,6 @@ class SouthbrookKitchenConfigurator extends Component {
         }
     }
 
-    // Task #48 — Count summary. Filler is NEVER counted since fillers
-    // are billing-invisible (no line on the SO, no cabinet on the
-    // shop floor) — matching the existing convention in the price
-    // summary (`if it.cabinet_type !== "filler"`).
-    _nonFillerCount() {
-        return (this.state.items || []).filter(
-            it => it.cabinet_type !== "filler"
-        ).length;
-    }
-
     // PR2.5 — Reopen an existing design from its canonical saved lines
     // instead of running the /layout generator. /layout always computes
     // a *fresh* cabinet fill for the current room width; calling it on
@@ -722,6 +765,18 @@ class SouthbrookKitchenConfigurator extends Component {
             }
             if (resp && resp.design_name && !this._hasExplicitDesignName) {
                 this.state.designName = resp.design_name;
+            }
+            // Task 7 (SBK-033) — seed state.summary from the server's
+            // authoritative _get_counter_summary() before the local
+            // recompute below runs. Belt-and-suspenders: _recomputeLayout
+            // FromItems() (called a few lines down once state.items is
+            // set) immediately recomputes the same shape from the same
+            // data and supersedes this, but a hydrate that short-circuits
+            // before reaching that call (see the `!lines.length` branch
+            // just below) still ends up with real numbers instead of the
+            // boot placeholder's all-zero shape.
+            if (resp && resp.summary) {
+                this.state.summary = resp.summary;
             }
             const lines = (resp && resp.lines) || [];
             if (!lines.length) {
@@ -1842,10 +1897,13 @@ class SouthbrookKitchenConfigurator extends Component {
             ? Math.max(0, roomWidthIn - backRunOccupiedIn)
             : 0;
 
+        // Task 7 (SBK-033) — counts come from the ONE shared partition
+        // (countCabinetBuckets, module-level above), not a bespoke
+        // bases.length/walls.length pair. That old pair is exactly the
+        // V4-counters-templates.md claim 1 bug: corner/tall/panel/
+        // appliance items were silently invisible to `total`.
         this.state.summary = {
-            base_count:    bases.length,
-            wall_count:    walls.length,
-            total:         bases.length + walls.length,
+            ...countCabinetBuckets(items),
             price:         price,
             cabinet_price: price,
             filler_price:  fillerPrice,
@@ -2216,6 +2274,18 @@ class SouthbrookKitchenConfigurator extends Component {
                 && items.some(it => it.layout_key === selectedKey);
             if (!stillSelected) this.state.selected = null;
             this._recomputeLayoutFromItems();
+        }
+        // Task 7 (SBK-033) — the server's counts/price are authoritative:
+        // merge them over whatever the client's local recompute produced
+        // (either just above, or from a prior edit) so a save can never
+        // leave state.summary out of sync with the row that was actually
+        // written (server-side channel pricing, the sentinel guard, or
+        // appliance price-pinning can all change price_unit/active
+        // without the client knowing). Local-only breakdown keys not on
+        // the server object (remainder_in, snap_hint) survive via the
+        // spread-merge.
+        if (result && result.summary) {
+            this.state.summary = { ...this.state.summary, ...result.summary };
         }
         if (result && result.layout_warning) {
             this._toast(result.layout_warning,
@@ -2806,7 +2876,17 @@ SouthbrookKitchenConfigurator.template = xml`
                t-on-change="(ev) => this._changeSoffit(ev.target.value)"/>
       </label>
 
-      <!-- Summary metrics -->
+      <!-- Summary metrics — Task 7 (SBK-033): base/wall/corner are
+           always-visible (the V4-counters-templates.md AC: a U-shape
+           design must show base/wall/corner counts side by side, not
+           corner value silently folded into the $ figure only); tall/
+           appliance/panel/unresolved are conditional so the common
+           design (none of those) doesn't clutter. All eight numbers —
+           base_count, wall_count, tall_count, corner_count,
+           filler_count, panel_count, appliance_count, unplaced_count —
+           come from state.summary, the SAME object the header total
+           above renders from (countCabinetBuckets / server
+           _get_counter_summary()) — no separate tally lives here. -->
       <div class="o_sbk_divider"/>
 
       <div class="o_sbk_metric">
@@ -2816,6 +2896,26 @@ SouthbrookKitchenConfigurator.template = xml`
       <div class="o_sbk_metric">
         <strong><t t-esc="state.summary.wall_count"/></strong>
         wall cabinets
+      </div>
+      <div class="o_sbk_metric">
+        <strong><t t-esc="state.summary.corner_count"/></strong>
+        corner units
+      </div>
+      <div t-if="state.summary.tall_count" class="o_sbk_metric">
+        <strong><t t-esc="state.summary.tall_count"/></strong>
+        tall cabinets
+      </div>
+      <div t-if="state.summary.appliance_count" class="o_sbk_metric">
+        <strong><t t-esc="state.summary.appliance_count"/></strong>
+        appliance spaces
+      </div>
+      <div t-if="state.summary.panel_count" class="o_sbk_metric">
+        <strong><t t-esc="state.summary.panel_count"/></strong>
+        end panels
+      </div>
+      <div t-if="state.summary.unplaced_count" class="o_sbk_metric o_sbk_metric_unplaced">
+        <strong><t t-esc="state.summary.unplaced_count"/></strong>
+        unresolved
       </div>
       <div class="o_sbk_metric o_sbk_metric_price">
         <strong><t t-esc="_money(state.summary.price)"/></strong>
@@ -2909,15 +3009,22 @@ SouthbrookKitchenConfigurator.template = xml`
       </div>
 
       <!-- Task #48 — Persistent count + room + estimate strip.
-           Real-time sanity check for the customer / rep. Filler is
-           excluded from the cabinet count to match the pricing rule
-           (fillers don't ship on the SO, don't get built). Room
-           feet come straight from state.room; estimated total is the
-           already-computed state.summary.price so we don't overlap
-           model-side pricing work Agent A hasn't scoped. -->
+           Real-time sanity check for the customer / rep. Room feet come
+           straight from state.room; estimated total is the already-
+           computed state.summary.price so we don't overlap model-side
+           pricing work Agent A hasn't scoped.
+           Task 7 (SBK-033) — this used to be _nonFillerCount(), a THIRD
+           independent tally alongside the sidebar's base/wall-only pair
+           and the server's own fields — none of the three agreed once a
+           design had a corner cabinet (V4-counters-templates.md claim 1:
+           "header 9, sidebar 4+2, record 13, summary 10+2" for one
+           design). Now reads state.summary.total — the SAME object the
+           sidebar metrics below render from — so header and sidebar can
+           never disagree again; identity: base+wall+tall+corner+filler+
+           panel+appliance == total == this number == active line count. -->
       <div class="o_sbk_count_strip" role="status" aria-live="polite">
         <span class="o_sbk_count_item">
-          <strong t-esc="_nonFillerCount()"/>
+          <strong t-esc="state.summary.total"/>
           <span class="o_sbk_count_label"> cabinets</span>
         </span>
         <span class="o_sbk_count_sep">•</span>

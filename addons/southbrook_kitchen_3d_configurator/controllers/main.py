@@ -145,8 +145,20 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                     },
                 },
                 "items": [],
-                "summary": {"base_count": 0, "wall_count": 0, "total": 0,
-                             "price": 0.0, "remainder_in": 0.0},
+                # Task 7 (SBK-033) — same shape as the success branch's
+                # summary below (and southbrook.kitchen.design.
+                # _get_counter_summary()): every bucket present, even
+                # though nothing was generated. Prevents a NO_CABINETS
+                # boot from handing the client a partial summary object
+                # (missing corner_count etc.) that later renders as
+                # blank instead of "0".
+                "summary": {"base_count": 0, "wall_count": 0,
+                             "tall_count": 0, "corner_count": 0,
+                             "filler_count": 0, "panel_count": 0,
+                             "appliance_count": 0, "unplaced_count": 0,
+                             "total": 0, "price": 0.0,
+                             "cabinet_price": 0.0, "filler_price": 0.0,
+                             "remainder_in": 0.0},
                 "room": {"width_in": float(room_width_in),
                          "depth_in": float(room_depth_in),
                          "height_in": float(room_height_in)},
@@ -268,6 +280,15 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                              if it["cabinet_type"] not in ("filler",))
         filler_price  = sum(it["price"] for it in items
                              if it["cabinet_type"] == "filler")
+        # Task 7 (SBK-033) — this generator only ever produces base/wall/
+        # filler items (no corner/tall/panel/appliance slot exists in the
+        # straight-fill algorithm above), but the summary shape must still
+        # match southbrook.kitchen.design._get_counter_summary() exactly
+        # so the client's sidebar/header can render from ONE consistent
+        # object regardless of which endpoint populated it. `total` is
+        # every bucket summed (INCLUDING fillers), unlike the legacy
+        # per-endpoint `n * 2` this replaces (base+wall only).
+        filler_count = sum(1 for it in items if it["cabinet_type"] == "filler")
 
         return {
             "room": {
@@ -279,7 +300,13 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             "summary": {
                 "base_count":      n,
                 "wall_count":      n,
-                "total":           n * 2,
+                "tall_count":      0,
+                "corner_count":    0,
+                "filler_count":    filler_count,
+                "panel_count":     0,
+                "appliance_count": 0,
+                "unplaced_count":  0,
+                "total":           n + n + filler_count,
                 # Backward compat: 'price' kept as cabinet total. The
                 # UI can now show filler as a separate breakdown row.
                 "price":           cabinet_price,
@@ -774,6 +801,15 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             "relaid":         relaid,
             "lines":          self._serialize_design_lines(design) if relaid else None,
             "layout_warning": layout_warning,
+            # Task 7 (SBK-033) — every save refreshes state.summary from
+            # the record just written, so counts/price can never drift
+            # from the DB the way the audited "four disagreeing totals"
+            # finding describes. Sent unconditionally (not gated on
+            # `relaid`) — server-side pricing (_channel_price) or the
+            # sentinel guard above can change price_unit/active even on
+            # an ordinary single-wall save that never touches the corner
+            # engine.
+            "summary": design._get_counter_summary(),
         }
 
     # ── v19.0.4.20.0 · Smart-pinning RPC surface ─────────────────────────────────
@@ -853,6 +889,11 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 "height_in": design.room_height_in,
             },
             "design_name": design.display_name,
+            # Task 7 (SBK-033) — hydrate state.summary with the
+            # authoritative server object immediately, rather than
+            # leaving it at the boot placeholder until the client's own
+            # first local recompute runs.
+            "summary": design._get_counter_summary(),
         }
 
     # ─── Task 20 (SBK-034) — landing-state recent designs ───────────────────────
@@ -969,6 +1010,11 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 "depth_in": design.room_depth_in,
                 "height_in": design.room_height_in,
             },
+            # Task 7 (SBK-033) — auto-arrange is exactly where corner/
+            # tall/appliance counts CHANGE (derived corners inserted,
+            # absorbed canonicals archived), so the client needs a fresh
+            # authoritative summary here more than almost anywhere else.
+            "summary": design._get_counter_summary(),
         }
 
     @http.route(
@@ -1083,6 +1129,13 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 # load -> unmodified resave doesn't blank it out (save_design
                 # now writes this field for cabinet_type='appliance' lines).
                 "appliance_type": line.appliance_type or False,
+                # Task 7 (SBK-033) — the client's local bucket-count
+                # mirror (kitchen_configurator.js countCabinetBuckets)
+                # needs this to keep its `unplaced_count` overlay in
+                # sync with the server's; previously unexposed, so a
+                # hydrated/rearranged session couldn't tell a GHOST
+                # placeholder (Task 2) apart from a real cabinet.
+                "is_unresolved":  line.is_unresolved,
             })
         return out
 
