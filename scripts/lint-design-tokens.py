@@ -92,8 +92,6 @@ DESIGN_TOKEN_ALLOWLIST = frozenset({
 DEFAULT_BASELINE_PATH = REPO_ROOT / "scripts" / ".design-tokens-baseline.txt"
 
 # Status/semantic keywords that turn a bare color literal into a violation.
-# Case-insensitive; matched with \b so `blocked` hits but `blockquote`
-# doesn't (CSS hyphens are non-word chars, so `.sb-late-fg` hits on `late`).
 STATUS_KEYWORDS = (
     "ok", "success", "pass", "good",
     "warn", "warning", "caution",
@@ -101,19 +99,39 @@ STATUS_KEYWORDS = (
     "danger", "error", "critical", "alert", "fail", "blocked", "block",
     "info",
 )
+# 2026-07-31 — this used `\b...\b`, which has a blind spot precisely where
+# this codebase names things. Python treats `_` as a WORD character, so
+# `\blate\b` does NOT match inside `o_sb_pm_dash_late` — and Odoo class
+# names are underscore-joined by convention. The gate was therefore
+# reporting 0 violations for whole addons that were full of them (caught
+# on a real Phase 1 fix, where ~30 hardcoded status colors sat in files
+# the linter called clean).
+#
+# Explicit lookarounds instead: a keyword must not be flanked by another
+# letter/digit, so `_` and `-` both count as separators while `blockquote`
+# (block + `q`) and `token` (`t` + ok) still correctly do NOT match.
 KEYWORD_RE = re.compile(
-    r"\b(?:" + "|".join(STATUS_KEYWORDS) + r")\b", re.IGNORECASE
+    r"(?<![a-z0-9])(?:" + "|".join(STATUS_KEYWORDS) + r")(?![a-z0-9])",
+    re.IGNORECASE,
 )
 
 # Canonical role bucket per matched keyword, used only to shape the
 # suggested-token-name hint printed in the fix message. Not authoritative —
 # the real token names live in the token file(s), this is just a nudge.
+# Must name a token that ACTUALLY EXISTS in southbrook_ui's scale:
+# ok / warn / late / blocked / info / neutral. This previously mapped
+# everything urgent to "danger" and told authors to use
+# `--sb-status-danger-fg`, which is not a token — advice naming a
+# non-existent token is worse than no advice.
+# "late" (overdue, keep going) and "blocked" (hard stop) are deliberately
+# distinct in the token layer, so they must stay distinct here.
 ROLE_CANONICAL = {
     "ok": "ok", "success": "ok", "pass": "ok", "good": "ok",
     "warn": "warn", "warning": "warn", "caution": "warn",
-    "late": "danger", "overdue": "danger", "danger": "danger",
-    "error": "danger", "critical": "danger", "alert": "danger",
-    "fail": "danger", "blocked": "danger", "block": "danger",
+    "late": "late", "overdue": "late",
+    "danger": "blocked", "error": "blocked", "critical": "blocked",
+    "alert": "blocked", "fail": "blocked", "blocked": "blocked",
+    "block": "blocked",
     "info": "info",
 }
 

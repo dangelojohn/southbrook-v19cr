@@ -10,6 +10,7 @@ addons/sb_materials_hardware/static/src/catalog/catalog.scss:342:#fff8e1
 addons/sb_materials_hardware/static/src/catalog/catalog.scss:49:#6fcf87
 addons/sb_materials_hardware/static/src/catalog/catalog.scss:50:#163821
 addons/sb_materials_hardware/static/src/catalog/catalog.scss:51:#2a2418
+addons/southbrook_command_center/static/src/scss/central_command.scss:279:#667
 addons/southbrook_configurator_ux/static/src/scss/configurator.scss:50:#1f9d6b
 addons/southbrook_configurator_ux/static/src/scss/configurator.scss:51:#e6f7ef
 addons/southbrook_configurator_ux/static/src/scss/configurator.scss:55:#b07d2a
@@ -24,10 +25,13 @@ addons/southbrook_estimating_website/static/src/scss/planner.scss:778:#a83a2b
 addons/southbrook_estimating_website/static/src/scss/planner.scss:793:#b35a1a
 addons/southbrook_estimating_website/static/src/scss/planner.scss:794:#fff
 addons/southbrook_estimating_website/static/src/scss/portal_root.scss:101:rgba(168, 58, 43, 0.06)
+addons/southbrook_estimating_website/static/src/scss/portal_root.scss:1422:#dc2626
 addons/southbrook_estimating_website/static/src/scss/portal_root.scss:1897:#16a34a
 addons/southbrook_estimating_website/static/src/scss/portal_root.scss:3100:#2f7d32
 addons/southbrook_estimating_website/static/src/scss/portal_root.scss:3110:#2f7d32
 addons/southbrook_estimating_website/static/src/scss/portal_root.scss:3111:#a83a2b
+addons/southbrook_estimating_website/static/src/scss/portal_root.scss:588:#4a6b3d
+addons/southbrook_estimating_website/static/src/scss/portal_root.scss:694:#983b3b
 addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1235:#d9a85f
 addons/southbrook_estimating_website/static/src/scss/room_layout.scss:1238:#6fb8d6
 addons/southbrook_estimating_website/static/src/scss/room_layout.scss:127:#fbf7ef
@@ -68,7 +72,12 @@ addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.s
 addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:18:#15803D
 addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:19:#C2410C
 addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:20:#B45309
+addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:883:rgba(192, 73, 47, 0.10)
 addons/southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss:964:#1e9e6a
+addons/southbrook_mrp_pm/static/src/css/kiosk.css:109:rgba(56, 142, 60, 0.2)
+addons/southbrook_mrp_pm/static/src/css/kiosk.css:114:rgba(198, 40, 40, 0.25)
+addons/southbrook_mrp_pm/static/src/css/kiosk.css:210:rgb(255, 138, 128)
+addons/southbrook_mrp_pm/static/src/scss/floor.scss:301:#6b665e
 addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:396:#e5f1ea
 addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:40:#f7dcd7
 addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:41:#bc2f1c
@@ -79,7 +88,18 @@ addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:
 addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:46:#a7a7b2
 addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:47:#f7e9c8
 addons/southbrook_premium_orchestration/static/src/scss/kitchen_jobs_board.scss:48:#7a5a12
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:215:#d3f9d8
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:227:#fff3bf
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:233:#d0ebff
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:246:#d3f9d8
 addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:24:#666
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:251:#fff3bf
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:256:#d0ebff
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:296:#155724
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:297:#5c4400
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:298:#721c24
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:299:#0b4d8b
+addons/southbrook_qr_kit/static/src/scss/floor_screens.scss:300:#5c4400
 addons/southbrook_qr_kit/static/src/scss/operator_pin_modal.scss:136:#2b8a3e
 addons/southbrook_qr_kit/static/src/scss/operator_pin_modal.scss:19:#c92a2a
 addons/southbrook_qr_kit/static/src/scss/operator_pin_modal.scss:26:#2b8a3e
