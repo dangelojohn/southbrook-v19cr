@@ -261,6 +261,49 @@ class CatalogExpansion(models.AbstractModel):
         AttrLine = self.env["product.template.attribute.line"]
         Category = self.env["product.category"]
 
+        # Deploy-gate hotfix round 3 (2026-07-31) -- self-heal the
+        # corner repair chain on EVERY build_catalog() run, not just
+        # when southbrook_estimating's own version-gated migrations
+        # happen to fire.
+        #
+        # Root cause (live-confirmed on prod; reproduced clean in
+        # isolation -- southbrook_estimating alone, zero southbrook_
+        # configurator_ux involvement, confirmed via log inspection
+        # that build_catalog() never even ran during the reproduction):
+        # southbrook_estimating/data/product_templates.xml is
+        # noupdate="0" and its "corner" record's own <field
+        # name="name"> is still the pre-repair "Corner Cabinet" -- it
+        # reloads (resetting the name) on EVERY -u of southbrook_
+        # estimating, but the repair that renames it to "Corner Base ·
+        # Lazy-Susan 36" only runs from inside a version-gated
+        # migration script (19.0.9.1.0 / 19.0.9.2.0), which does NOT
+        # re-fire on a subsequent -u once the module is already at
+        # that version. First deploy: migration fires (module load
+        # order puts the XML reset before the post-migrate repair) ->
+        # correct name. Second deploy (module version unchanged): XML
+        # still reloads and resets the name, but the migration doesn't
+        # re-fire -- nothing re-applies the rename. build_catalog()
+        # itself never WRITES this name (bare "SB-CORNER" isn't a
+        # _CATALOG row at all) -- it was an innocent bystander that
+        # simply ran after the reset and left it as-is.
+        #
+        # build_catalog()'s own data file is ALSO noupdate="0" and
+        # re-runs on literally every upgrade of southbrook_
+        # configurator_ux, regardless of version -- unlike southbrook_
+        # estimating's migrations, it has no version gate to skip
+        # past. That makes it the natural self-healing checkpoint:
+        # re-running the SAME, already-proven-idempotent repair chain
+        # here guarantees the corner-family truths (this rename
+        # included) get re-asserted on every single upgrade,
+        # independent of southbrook_estimating's own migration-
+        # versioning state. southbrook_configurator_ux already hard-
+        # depends on southbrook_estimating (see __manifest__.py), so
+        # this is a same-dependency-direction call, not an inversion.
+        from odoo.addons.southbrook_estimating.models.corner_sku_repair import (
+            repair_corner_sku,
+        )
+        repair_corner_sku(self.env)
+
         # Vocab caches.
         attrs_by_name = {a.name: a for a in Attr.search([])}
         vals_by_attr_name = {}
@@ -369,7 +412,27 @@ class CatalogExpansion(models.AbstractModel):
                 "southbrook_icon_key": icon_key,
             }
             if existing:
-                existing.write(vals)
+                # Deploy-gate hotfix round 3 (2026-07-31) — `name` is
+                # deliberately EXCLUDED from an adopt-update. Once a
+                # template exists, its authoritative name is whatever
+                # the repair chain (or a human) has established for
+                # it — this loop's job on a re-run is to reconcile
+                # STRUCTURE (attribute lines, price, category, flags),
+                # never to re-stamp identity fields a prior run or a
+                # different owner has already settled. Chosen over the
+                # alternative (updating each _CATALOG row's `name` to
+                # match whatever a repair might rename a record to)
+                # because _CATALOG is the SEED/create-time value for
+                # ~40 templates this file owns outright — coupling it
+                # to every other repair's rename decisions would make
+                # future catalog rows incoherent (which name is the
+                # "real" one: this table's, or whatever a specific DB
+                # happened to get renamed to?). Excluding `name` here
+                # keeps _CATALOG's role exactly "the initial name at
+                # creation time" and nothing more, for every row, not
+                # just the ones some other repair happens to rename.
+                write_vals = {k: v for k, v in vals.items() if k != "name"}
+                existing.write(write_vals)
                 tmpl = existing
                 updated += 1
                 # Audit Phase 2H (2026-06-09) — DO NOT unlink existing
@@ -385,6 +448,9 @@ class CatalogExpansion(models.AbstractModel):
                 # which preserves FK references from product.config.line
                 # gating rules so they don't CASCADE-delete.
             else:
+                # A brand-new record DOES get its name from `vals`
+                # (the only moment _CATALOG's name is authoritative:
+                # giving a fresh template its initial identity).
                 tmpl = Template.create(vals)
                 created += 1
 

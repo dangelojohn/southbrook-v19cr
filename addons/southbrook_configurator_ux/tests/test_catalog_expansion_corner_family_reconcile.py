@@ -228,3 +228,71 @@ class TestCatalogExpansionCornerFamilyReconcile(TransactionCase):
                 second, first,
                 "%s: pass 2 (fresh build_catalog call) must not mint a "
                 "new template" % code)
+
+    def test_build_catalog_self_heals_sb_corner_rename_after_xml_reset(self):
+        """Deploy-gate hotfix round 3 (2026-07-31) — southbrook_
+        estimating/data/product_templates.xml is noupdate="0" and its
+        "corner" record's own <field name="name"> is still the
+        pre-repair "Corner Cabinet". It reloads (resetting the name)
+        on EVERY -u of southbrook_estimating, but the repair that
+        renames it to "Corner Base · Lazy-Susan 36" only runs from
+        inside a version-gated migration script — which does NOT
+        re-fire on a subsequent -u once the module is already at that
+        version. Live-confirmed on prod: correct after the first
+        deploy that crossed the version threshold, reverted after the
+        next deploy (module version unchanged, so no migration re-ran,
+        but the noupdate=0 XML still reloaded and reset it).
+
+        build_catalog() itself never WRITES this name (bare
+        "SB-CORNER" isn't a _CATALOG row at all — verified: it was an
+        innocent bystander, not the cause) — but its own data file
+        has NO version gate to skip past, unlike southbrook_
+        estimating's migrations, making it the natural self-healing
+        checkpoint. This pins that self-heal."""
+        from odoo.addons.southbrook_estimating.models.corner_sku_repair import (
+            repair_corner_sku,
+        )
+        repair_corner_sku(self.env)
+        corner = self._tmpl("SB-CORNER")
+        self.assertEqual(corner.name, "Corner Base · Lazy-Susan 36")
+
+        # Simulate the XML noupdate=0 reload resetting the name back
+        # to its pre-repair value — the exact precondition a second,
+        # same-version -u produces (verified live and reproduced
+        # clean in isolation: southbrook_estimating alone, with
+        # southbrook_configurator_ux never even loading, still shows
+        # this exact reset).
+        corner.name = "Corner Cabinet"
+        self.env.flush_all()
+
+        # build_catalog() must SELF-HEAL it, not merely leave it be.
+        self.Expansion.build_catalog()
+
+        corner.invalidate_recordset(["name"])
+        self.assertEqual(
+            corner.name, "Corner Base · Lazy-Susan 36",
+            "build_catalog() must self-heal the SB-CORNER rename even "
+            "when southbrook_estimating's own migration didn't re-run "
+            "this pass")
+
+    def test_build_catalog_never_overwrites_an_existing_templates_name(self):
+        """The general hardening (not just the SB-CORNER special case,
+        which isn't even a _CATALOG row): once a _CATALOG-managed
+        template exists, build_catalog()'s reconcile must never
+        re-stamp its `name` — excluded entirely from the adopt-update
+        vals, only ever set at creation time. Structural fields keep
+        reconciling normally (covered by the pre-existing rerun test
+        above); this pins that `name` specifically survives even a
+        deliberate, unrelated rename."""
+        blind = self._tmpl("SB-CORNER-BLIND")
+        blind.name = "Manually Renamed By A Human"
+        self.env.flush_all()
+
+        self.Expansion.build_catalog()
+
+        blind.invalidate_recordset(["name"])
+        self.assertEqual(
+            blind.name, "Manually Renamed By A Human",
+            "build_catalog() must never overwrite an existing "
+            "template's name on a reconcile pass — name is "
+            "create-time only")
