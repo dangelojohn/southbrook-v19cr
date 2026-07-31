@@ -383,38 +383,32 @@
   }
 }
 
-.o_sb_floor_eq_good .o_sb_floor_eq_pill_select {
-  background: rgba(56, 142, 60, 0.15);
-  color: rgb(46, 125, 50);
+// Equipment condition -> status token. good=ok, fair=info (informal
+// "keep an eye on it, not urgent"), watch=warn (needs attention
+// soon), critical/offline=blocked (hard stop). Was 4 independently
+// hand-typed rgba() pairs per selector (8 total) — now routed
+// through the shared --sb-status-* scale (southbrook_ui dependency)
+// so "critical equipment" reads the same red as every other blocked
+// state in the shop, not its own one-off hex.
+.o_sb_floor_eq_good .o_sb_floor_eq_pill_select,
+.o_sb_floor_eq_good .o_sb_floor_eq_pill {
+  background: var(--sb-status-ok-bg);
+  color: var(--sb-status-ok-fg);
 }
-.o_sb_floor_eq_fair .o_sb_floor_eq_pill_select {
-  background: rgba(13, 71, 161, 0.12);
-  color: rgb(13, 71, 161);
+.o_sb_floor_eq_fair .o_sb_floor_eq_pill_select,
+.o_sb_floor_eq_fair .o_sb_floor_eq_pill {
+  background: var(--sb-status-info-bg);
+  color: var(--sb-status-info-fg);
 }
-.o_sb_floor_eq_watch .o_sb_floor_eq_pill_select {
-  background: rgba(245, 124, 0, 0.15);
-  color: rgb(230, 81, 0);
+.o_sb_floor_eq_watch .o_sb_floor_eq_pill_select,
+.o_sb_floor_eq_watch .o_sb_floor_eq_pill {
+  background: var(--sb-status-warn-bg);
+  color: var(--sb-status-warn-fg);
 }
 .o_sb_floor_eq_critical .o_sb_floor_eq_pill_select,
-.o_sb_floor_eq_offline .o_sb_floor_eq_pill_select {
-  background: rgba(198, 40, 40, 0.15);
-  color: rgb(198, 40, 40);
-}
-
-.o_sb_floor_eq_good .o_sb_floor_eq_pill {
-  background: rgba(56, 142, 60, 0.15);
-  color: rgb(46, 125, 50);
-}
-.o_sb_floor_eq_fair .o_sb_floor_eq_pill {
-  background: rgba(13, 71, 161, 0.12);
-  color: rgb(13, 71, 161);
-}
-.o_sb_floor_eq_watch .o_sb_floor_eq_pill {
-  background: rgba(245, 124, 0, 0.15);
-  color: rgb(230, 81, 0);
-}
+.o_sb_floor_eq_offline .o_sb_floor_eq_pill_select,
 .o_sb_floor_eq_critical .o_sb_floor_eq_pill,
 .o_sb_floor_eq_offline .o_sb_floor_eq_pill {
-  background: rgba(198, 40, 40, 0.15);
-  color: rgb(198, 40, 40);
+  background: var(--sb-status-blocked-bg);
+  color: var(--sb-status-blocked-fg);
 }

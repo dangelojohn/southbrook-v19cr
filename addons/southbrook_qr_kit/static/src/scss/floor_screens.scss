@@ -115,6 +115,15 @@
     font-size: 0.9rem;
 }
 
+// UX-P1 (2026-07-31, ux-shopfloor.md #3) — this table is the primary
+// tap target on the Bin-Scan screen (pick which product to move). It
+// used to rely on `tbody tr:hover` for the "you can tap this" cue,
+// which never fires on a touchscreen, at a ~30px row height once
+// `body.sb-dense` (hardcoded on by default, see floor_shell_template.xml)
+// shrank the padding further. Rows are now sized to the same 56px
+// touch-target floor as the PIN modal keypad (operator_pin_modal.scss)
+// and carry a persistent (non-hover) chevron so a gloved operator can
+// see a row is tappable before ever touching it.
 .sb_floor_quants {
     width: 100%;
     border-collapse: collapse;
@@ -131,6 +140,38 @@
     }
     tbody tr {
         cursor: pointer;
+
+        td {
+            // min-height on a table-cell is honoured by every
+            // shipped-target browser (Chrome/Safari/Edge on tablet);
+            // padding is bumped too so the box actually grows rather
+            // than just clipping content inside a taller-but-unpadded
+            // cell.
+            min-height: 56px;
+            box-sizing: border-box;
+            padding-top: 0.85rem;
+            padding-bottom: 0.85rem;
+        }
+
+        // Persistent tap affordance — visible before interaction, not
+        // just on/after it. `:hover` is kept below as a harmless bonus
+        // for mouse/trackpad testing, but is never the ONLY cue.
+        td:last-child {
+            position: relative;
+            padding-right: 1.5rem;
+
+            &::after {
+                content: "\203A"; // "›" — always-on affordance glyph
+                position: absolute;
+                right: 0.4rem;
+                top: 50%;
+                transform: translateY(-50%);
+                font-size: 1.3rem;
+                font-weight: 700;
+                color: #868e96;
+            }
+        }
+
         &:hover {
             background: #f5faff;
         }
@@ -138,6 +179,10 @@
     .sb_quant_row_selected {
         background: #d3f9d8;
         font-weight: 600;
+
+        td:last-child::after {
+            color: #155724;
+        }
     }
 }
 
@@ -264,10 +309,18 @@
 }
 
 // W039 dense — tighter spacing for high-density tablet stations.
+//
+// UX-P1 (2026-07-31, ux-shopfloor.md #3) — `.sb_floor_quants` rows are
+// deliberately EXCLUDED from the compression below. `body.sb-dense` is
+// stamped on unconditionally by floor_shell_template.xml (there is no
+// non-dense mode for this screen), so the old `th, td { padding: 0.35rem
+// 0.3rem }` override here was the thing actually producing the ~30px
+// gloved-hand tap target the audit flagged — it fired on every load,
+// always, regardless of density preference. Non-interactive chrome
+// (page padding, card padding) can still compress; the tap target
+// cannot.
 body.sb-dense {
     .sb_floor { padding: 0.5rem; }
     .sb_floor_step { padding: 0.5rem 0.75rem; }
     .sb_floor_card { padding: 0.5rem 0.75rem; }
-    .sb_floor_quants th,
-    .sb_floor_quants td { padding: 0.35rem 0.3rem; }
 }

@@ -29,7 +29,7 @@ record this addon implements.
     "author": "Southbrook Cabinetry",
     "license": "LGPL-3",
     "category": "Manufacturing",
-    "version": "19.0.2.0.0",
+    "version": "19.0.2.1.0",
     "depends": [
         # --- Odoo core / native (read-only, no new business schema) ---
         "mail",     # chatter/activity mixin + owner-assignment notifications
@@ -53,6 +53,13 @@ record this addon implements.
         "southbrook_integrations",
         "southbrook_floor_traveler",
         "southbrook_training_hub",  # contextual "learn this term" help lookup
+
+        # Phase 1 design-system consolidation (2026-07-31) — Central
+        # Command's SCSS hardcoded its own red/amber/green literals for
+        # health-band, severity and status semantics; southbrook_ui is
+        # the shared, contrast-checked --sb-status-* token layer those
+        # names now resolve through. See central_command.scss.
+        "southbrook_ui",
     ],
     "data": [
         "security/command_center_groups.xml",

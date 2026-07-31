@@ -5,6 +5,22 @@
  * rather than bundled into web.assets_frontend so the kiosk template
  * stays free of Odoo's frontend chrome. The page is full-screen
  * dark + high-contrast for HDMI displays mounted 8-12 feet away.
+ *
+ * 2026-07-31 design-token pass (scratchpad/retest/p1-planner.md) —
+ * this file's red/amber/green literals were deliberately NOT
+ * converted to var(--sb-status-*). Two reasons: (1) this stylesheet
+ * is loaded via a bare <link> on views/floor_template.xml's
+ * `portal_floor_kiosk` template, which has no <head> asset-bundle
+ * call at all — southbrook_ui's token partial is never present on
+ * this page, so var() calls here would be permanently inert (always
+ * falling back), not actually tokenized; (2) these exact hues
+ * (e.g. rgb(255,138,128) for "late") were tuned for legibility on a
+ * near-black background from 8-12 feet away, a constraint the
+ * --sb-status-* scale was never contrast-checked against, and this
+ * pass can't verify a swap visually (no odoo run / no screenshot
+ * available in this session). Converting blind risked shipping a
+ * real legibility regression on a shop-floor safety display. Revisit
+ * once the kiosk template loads a real asset bundle.
  * ===================================================================== */
 
 * {

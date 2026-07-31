@@ -167,8 +167,33 @@
                         </div>
                         <div t-if="state.flow.bottleneck" class="sb_cc_bottleneck">
                             <div class="sb_cc_sub_h">Bottleneck</div>
-                            <div t-foreach="state.flow.bottleneck.lines || []" t-as="bl" t-key="bl.id"
-                                 t-esc="bl.name"/>
+                            <div t-if="!(state.flow.bottleneck.lines || []).length" class="sb_cc_empty">
+                                No bottleneck data yet.
+                            </div>
+                            <!-- Task 2 (2026-07-31, p1-planner.md): was a plain
+                                 t-esc row with zero interaction — the least
+                                 actionable panel on the page for the thing this
+                                 persona most needs. Now a real <button> per
+                                 workcenter, reusing the SAME onNavigate
+                                 click-through the Issues panel's "Open source"
+                                 button already uses (no new navigation pattern
+                                 invented). The bottleneck_line record carries a
+                                 real workcenter_id (see controllers/main.py
+                                 _flow) so this opens the actual mrp.workcenter
+                                 record — the underlying record the data
+                                 supports directly, with no extra RPC needed. -->
+                            <button t-foreach="state.flow.bottleneck.lines || []" t-as="bl" t-key="bl.id"
+                                    type="button"
+                                    t-attf-class="sb_cc_bottleneck_row sb_cc_bottleneck_#{bl.severity || 'ok'}"
+                                    t-on-click="() => this.onNavigate('mrp.workcenter', bl.workcenter_id)"
+                                    t-attf-aria-label="Open #{bl.name} — #{bl.queue_depth} in queue, #{bl.load_pct}% loaded">
+                                <span class="sb_cc_bottleneck_top">
+                                    <span class="sb_cc_bottleneck_name" t-esc="bl.name"/>
+                                    <span class="sb_cc_bottleneck_load" t-esc="bl.load_pct + '%'"/>
+                                </span>
+                                <span class="sb_cc_bottleneck_why" t-esc="bl.why"/>
+                                <i class="fa fa-chevron-right sb_cc_bottleneck_chevron" aria-hidden="true"/>
+                            </button>
                         </div>
                     </t>
                 </div>

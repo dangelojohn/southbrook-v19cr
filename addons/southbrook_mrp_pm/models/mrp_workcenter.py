@@ -82,6 +82,36 @@ class MrpWorkcenter(models.Model):
         ),
     )
 
+    # P1 fix (2026-07-31, see scratchpad/retest/p1-planner.md) — the
+    # Late tile on the PM Dashboard kanban was hardcoding the class
+    # `o_sb_pm_dash_late` directly in the QWeb card template
+    # (views/pm_dashboard.xml), so dashboard.scss's
+    # `.o_sb_pm_dash_late .o_sb_pm_dash_value { color: red; }` rule
+    # applied unconditionally — the tile read as "late" even at
+    # southbrook_pm_late_count == 0. dashboard.scss's own old comment
+    # admitted this ("the kanban renderer doesn't pass conditional
+    # class support without an OWL component") but that premise is
+    # false: this addon's own mrp_production_kanban.xml already proves
+    # a plain QWeb kanban `<t t-name="card">` CAN bind a class to a
+    # record value via t-attf-class (see o_sb_mo_state_#{...} there).
+    # Rather than push a ternary into the XML template (OWL's kanban
+    # tokenizer is picky about inline expressions — see
+    # owl_tokenizer_constraints.md), this field does the branching in
+    # Python where it's trivially unit-testable, and the template just
+    # interpolates the field's raw_value.
+    southbrook_pm_late_state = fields.Selection(
+        [("ok", "On Track"), ("late", "Late")],
+        string="Late Tile State",
+        compute="_compute_southbrook_pm_kpis",
+        help=(
+            "Drives the Late tile's colour on the PM Dashboard. 'ok' "
+            "when southbrook_pm_late_count is 0, 'late' otherwise — "
+            "a permanently-red tile trains the PM to ignore the one "
+            "signal that should never be ignored, so this must never "
+            "be a static/always-on class again."
+        ),
+    )
+
     southbrook_pm_equipment_alerts = fields.Integer(
         string="Equipment Alerts",
         compute="_compute_southbrook_pm_kpis",
@@ -118,6 +148,9 @@ class MrpWorkcenter(models.Model):
                 ("date_deadline", "<", now),
                 ("workorder_ids.workcenter_id", "=", wc.id),
             ])
+            wc.southbrook_pm_late_state = (
+                "late" if wc.southbrook_pm_late_count else "ok"
+            )
             wc.southbrook_pm_equipment_alerts = Eq.search_count([
                 ("workcenter_id", "=", wc.id),
                 ("southbrook_condition", "in", list(_ALERT_CONDITIONS)),

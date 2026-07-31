@@ -25,6 +25,7 @@
           <field name="southbrook_pm_inflight_count"/>
           <field name="southbrook_pm_throughput_today"/>
           <field name="southbrook_pm_late_count"/>
+          <field name="southbrook_pm_late_state"/>
           <field name="southbrook_pm_equipment_alerts"/>
           <templates>
             <t t-name="card">
@@ -59,9 +60,16 @@
                       <field name="southbrook_pm_throughput_today"/>
                     </div>
                   </div>
+                  <!-- P1 fix: class is now bound to
+                       southbrook_pm_late_state (computed in Python —
+                       see mrp_workcenter.py), NOT a static class.
+                       o_sb_pm_dash_late only lands here when
+                       southbrook_pm_late_count > 0; a clean shop day
+                       renders o_sb_pm_dash_ok instead, matching the
+                       tokenized colour rules in dashboard.scss. -->
                   <button name="action_view_impacted_productions"
                           type="object"
-                          class="o_sb_pm_dash_metric o_sb_pm_dash_late oe_kanban_action oe_kanban_action_a">
+                          t-attf-class="o_sb_pm_dash_metric oe_kanban_action oe_kanban_action_a o_sb_pm_dash_#{record.southbrook_pm_late_state.raw_value}">
                     <div class="o_sb_pm_dash_label">Late</div>
                     <div class="o_sb_pm_dash_value">
                       <field name="southbrook_pm_late_count"/>

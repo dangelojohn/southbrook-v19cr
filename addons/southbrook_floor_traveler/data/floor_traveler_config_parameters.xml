@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: LGPL-3.0-only -->
+<odoo noupdate="1">
+    <!-- UX-P1 (2026-07-31, ux-shopfloor.md #2) — TTL, in hours, for the
+         SIGNED qr_kit payload format only ('sb://pkg/<id>?t=...&s=...').
+         The legacy bare 'sb-package:<id>' format every printed traveler
+         uses today carries no timestamp and never expires — this
+         parameter has no effect on it. 0 = no expiry even for the
+         signed format. Default 720h (30 days): a production package
+         may sit queued for a while before reaching its next station,
+         so this is deliberately generous compared to the ~24h TTL used
+         for ephemeral POD QRs elsewhere in the qr_kit ecosystem.
+         Clamped to [1, 8760] in the controller when non-zero. -->
+    <record id="ir_config_param_scan_qr_ttl_hours" model="ir.config_parameter">
+        <field name="key">southbrook_floor_traveler.scan_qr_ttl_hours</field>
+        <field name="value">720</field>
+    </record>
+</odoo>

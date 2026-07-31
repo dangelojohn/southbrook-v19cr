@@ -19,15 +19,39 @@
         .sb_cc_title { font-weight: 600; font-size: 15px; }
         .sb_cc_role { opacity: .75; text-transform: capitalize; }
         .sb_cc_spacer { flex: 1 1 auto; }
+        // sb_cc_refreshing / sb_cc_stale intentionally keep their
+        // literal colours: both sit directly on this permanently-
+        // dark header bar (#1f2733), not on a page background the
+        // token system's light-mode --sb-status-*-fg values were
+        // contrast-checked against. Swapping them for the token
+        // risks an unverifiable contrast regression (this session
+        // cannot render/screenshot to confirm) — see
+        // scratchpad/retest/p1-planner.md.
         .sb_cc_refreshing { font-size: 11px; color: #9fd3ff; }
         .sb_cc_stale { font-size: 11px; color: #f0ad4e; }
-        .sb_cc_bus { font-size: 11px; padding: 1px 6px; border-radius: 8px; }
-        .sb_cc_bus_on { background: #2e7d32; }
-        .sb_cc_bus_off { background: #6c757d; }
+        // Bus badge is a small filled PILL, not text laid directly on
+        // the dark header — its own tint/fg/border pairing is what
+        // needs to pass AA, independent of the header behind it, so
+        // it safely routes through the shared tokens like the badges
+        // in the Issues panel below.
+        .sb_cc_bus {
+            font-size: 11px; padding: 1px 6px; border-radius: 8px;
+            border: 1px solid transparent;
+        }
+        .sb_cc_bus_on {
+            background: var(--sb-status-ok-bg);
+            color: var(--sb-status-ok-fg);
+            border-color: var(--sb-status-ok-border);
+        }
+        .sb_cc_bus_off {
+            background: var(--sb-status-neutral-bg);
+            color: var(--sb-status-neutral-fg);
+            border-color: var(--sb-status-neutral-border);
+        }
     }
 
     .sb_cc_msg { padding: 24px; color: #555; }
-    .sb_cc_error { color: #b00020; }
+    .sb_cc_error { color: var(--sb-status-blocked-fg); }
 
     // initial-load skeleton
     .sb_cc_skeleton {
@@ -84,17 +108,40 @@
         transition: background .12s ease;
         &:hover { background: #f0f3f7; }
 
+        // Health-score badge — was solid-fill colour + white text with
+        // three hand-typed hex literals (#2e7d32/#f0ad4e/#c62828), the
+        // exact "same amber means something different on two screens"
+        // drift the audit called out. Solid-fill-with-white-text can't
+        // safely route through --sb-status-*-fg (the DARK-mode fg
+        // values are themselves light/bright — computed ~2.9-3.4:1
+        // against white text, below the 4.5:1 AA minimum) so this uses
+        // the tint-bg + saturated-fg + border pattern the token file
+        // documents as the correct one (same shape as .sb-badge--live),
+        // which is contrast-checked in BOTH themes.
         .sb_cc_health_score {
             font-size: 30px;
             font-weight: 700;
             padding: 2px 14px;
             border-radius: 6px;
-            color: #fff;
-            background: #6c757d;
+            border: 1px solid transparent;
+            background: var(--sb-status-neutral-bg);
+            color: var(--sb-status-neutral-fg);
         }
-        .sb_cc_band_green { background: #2e7d32; }
-        .sb_cc_band_amber { background: #f0ad4e; }
-        .sb_cc_band_red   { background: #c62828; }
+        .sb_cc_band_green {
+            background: var(--sb-status-ok-bg);
+            color: var(--sb-status-ok-fg);
+            border-color: var(--sb-status-ok-border);
+        }
+        .sb_cc_band_amber {
+            background: var(--sb-status-warn-bg);
+            color: var(--sb-status-warn-fg);
+            border-color: var(--sb-status-warn-border);
+        }
+        .sb_cc_band_red {
+            background: var(--sb-status-blocked-bg);
+            color: var(--sb-status-blocked-fg);
+            border-color: var(--sb-status-blocked-border);
+        }
         .sb_cc_health_headtext { display: flex; flex-direction: column; flex: 1 1 auto; }
         .sb_cc_health_label { font-weight: 600; font-size: 15px; }
         .sb_cc_health_sub { font-size: 12px; color: #8a94a0; }
@@ -147,7 +194,10 @@
             &:hover { background: #f0f3f7; }
         }
         .sb_cc_chip_on { background: #1f2733; color: #fff; border-color: #1f2733; }
-        .sb_cc_chip_clear { color: #b00020; border-color: #e6b3ba; }
+        .sb_cc_chip_clear {
+            color: var(--sb-status-blocked-fg);
+            border-color: var(--sb-status-blocked-border);
+        }
         .sb_cc_typesel {
             font-size: 12px; padding: 2px 6px; border-radius: 6px;
             border: 1px solid #cfd6df; background: #fff;
@@ -172,23 +222,48 @@
                 padding: 0 6px; text-transform: capitalize;
             }
         }
-        .sb_cc_action { font-size: 13px; color: #1f6feb; margin-top: 3px; i { font-size: 11px; } }
+        .sb_cc_action { font-size: 13px; color: var(--sb-status-info-fg); margin-top: 3px; i { font-size: 11px; } }
+
         .sb_cc_why { font-size: 12px; color: #778; margin-top: 2px; }
         .sb_cc_issue_btns { margin-top: 6px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-        .sb_cc_confirm { font-size: 12px; color: #b00020; font-weight: 600; }
+        .sb_cc_confirm { font-size: 12px; color: var(--sb-status-blocked-fg); font-weight: 600; }
     }
-    .sb_cc_issue_critical { border-left-color: #c62828; }
-    .sb_cc_issue_high { border-left-color: #e8590c; }
-    .sb_cc_issue_medium { border-left-color: #f0ad4e; }
+    // Severity -> status token. critical/high/medium map onto
+    // blocked/late/warn (an escalation ladder, not three arbitrary
+    // hex values); "low" has no border-left override here (falls
+    // back to the neutral #e3e6ea default above it).
+    .sb_cc_issue_critical { border-left-color: var(--sb-status-blocked-border); }
+    .sb_cc_issue_high { border-left-color: var(--sb-status-late-border); }
+    .sb_cc_issue_medium { border-left-color: var(--sb-status-warn-border); }
 
+    // Severity pill — was solid-fill + white text (4 hand-typed hex);
+    // switched to the tint-bg + fg + border pattern for the same
+    // dark-mode contrast reason as .sb_cc_health_score above.
     .sb_cc_sev {
         font-size: 11px; text-transform: uppercase; font-weight: 700;
-        padding: 0 6px; border-radius: 3px; color: #fff;
+        padding: 0 6px; border-radius: 3px;
+        border: 1px solid transparent;
     }
-    .sb_cc_sev_low { background: #6c757d; }
-    .sb_cc_sev_medium { background: #f0ad4e; }
-    .sb_cc_sev_high { background: #e8590c; }
-    .sb_cc_sev_critical { background: #c62828; }
+    .sb_cc_sev_low {
+        background: var(--sb-status-neutral-bg);
+        color: var(--sb-status-neutral-fg);
+        border-color: var(--sb-status-neutral-border);
+    }
+    .sb_cc_sev_medium {
+        background: var(--sb-status-warn-bg);
+        color: var(--sb-status-warn-fg);
+        border-color: var(--sb-status-warn-border);
+    }
+    .sb_cc_sev_high {
+        background: var(--sb-status-late-bg);
+        color: var(--sb-status-late-fg);
+        border-color: var(--sb-status-late-border);
+    }
+    .sb_cc_sev_critical {
+        background: var(--sb-status-blocked-bg);
+        color: var(--sb-status-blocked-fg);
+        border-color: var(--sb-status-blocked-border);
+    }
 
     // -- flow / hermes / alerts --
     .sb_cc_flow_row {
@@ -199,22 +274,26 @@
     }
     .sb_cc_alert_row, .sb_cc_rec { font-size: 13px; padding: 2px 0; }
     .sb_cc_rec_top { display: flex; gap: 8px; }
-    .sb_cc_prio { font-size: 11px; color: #8a5a00; text-transform: uppercase; }
+    .sb_cc_prio { font-size: 11px; color: var(--sb-status-warn-fg); text-transform: uppercase; }
+
     .sb_cc_alert_type { color: #667; margin-right: 6px; font-size: 12px; }
 
-    // -- "New here?" help banner --
+    // -- "New here?" help banner -- an informational callout, not a
+    // status/exception; ad-hoc blue (#eef4fb/#cfe0f3/#1f6feb) replaced
+    // with the --sb-status-info-* tint the token layer added
+    // specifically because this codebase had no dedicated "info" role.
     .sb_cc_helpbanner {
         display: flex;
         align-items: center;
         gap: 10px;
         margin: 8px 10px 0;
         padding: 7px 12px;
-        background: #eef4fb;
-        border: 1px solid #cfe0f3;
+        background: var(--sb-status-info-bg);
+        border: 1px solid var(--sb-status-info-border);
         border-radius: 6px;
         font-size: 13px;
-        color: #2b3a4a;
-        i { color: #1f6feb; margin-right: 4px; }
+        color: var(--sb-status-info-fg);
+        i { color: var(--sb-status-info-fg); margin-right: 4px; }
         span { flex: 1 1 auto; }
         .sb_cc_help_x {
             border: none; background: transparent; cursor: pointer;
@@ -232,9 +311,75 @@
 
     // -- contextual "?" help icon next to a jargon term --
     .sb_cc_help_q {
-        border: 1px solid #cfd6df; background: #fff; color: #1f6feb;
+        background: #fff;
+        border: 1px solid var(--sb-status-info-border);
+        color: var(--sb-status-info-fg);
         width: 16px; height: 16px; line-height: 12px; padding: 0;
         border-radius: 50%; font-size: 11px; font-weight: 700; cursor: pointer;
-        &:hover { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+        // Tint fill on hover/focus, not solid-fill-with-white-text —
+        // the dark-mode --sb-status-info-fg value is itself a light
+        // colour (readable AS text on a dark tint), not dark enough
+        // to guarantee 4.5:1 under white text in dark mode.
+        &:hover, &:focus-visible {
+            background: var(--sb-status-info-bg);
+            color: var(--sb-status-info-fg);
+            border-color: var(--sb-status-info-border);
+        }
+    }
+
+    // -- Bottleneck panel (Task 2, p1-planner.md) — was plain t-esc
+    // text with zero interaction; now a real button per workcenter,
+    // styled with the same left-border severity treatment as the
+    // Issues cards above so it doesn't visually disappear next to
+    // them, per the planner rule "exceptions outrank normals
+    // visually".
+    .sb_cc_bottleneck_row {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 2px;
+        width: 100%;
+        text-align: left;
+        font: inherit;
+        border: none;
+        border-left: 3px solid var(--sb-status-neutral-border);
+        background: #fafbfc;
+        border-radius: 0 4px 4px 0;
+        padding: 6px 8px;
+        margin-bottom: 6px;
+        cursor: pointer;
+        position: relative;
+
+        &:hover { background: #f0f3f7; }
+
+        // Real, visible focus state — this is now a control, not a
+        // label. outline (not just a colour change) so it's visible
+        // to keyboard users regardless of the row's own background.
+        &:focus-visible {
+            outline: 2px solid var(--sb-status-info-border);
+            outline-offset: 1px;
+        }
+    }
+    .sb_cc_bottleneck_ok { border-left-color: var(--sb-status-ok-border); }
+    .sb_cc_bottleneck_late { border-left-color: var(--sb-status-late-border); }
+    .sb_cc_bottleneck_blocked { border-left-color: var(--sb-status-blocked-border); }
+
+    .sb_cc_bottleneck_top {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 8px;
+        padding-right: 16px; // room for the chevron
+    }
+    .sb_cc_bottleneck_name { font-weight: 600; font-size: 13px; color: #1f2733; }
+    .sb_cc_bottleneck_load { font-weight: 700; font-size: 12px; color: #55606c; }
+    .sb_cc_bottleneck_why { font-size: 12px; color: #667; }
+    .sb_cc_bottleneck_chevron {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 11px;
+        color: #8a94a0;
     }
 }

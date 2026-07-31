@@ -75,3 +75,9 @@ from . import test_corner_repair_chain_migration
 # (34.488" -> persisted 34.49") while every other base cabinet read
 # 34.50"; 876.3 = 25.4 * 34.5 is inch-exact.
 from . import test_corner_base_height_precision
+# Phase 1 sales-rep UX fix (2026-07-31) — Task 1: hard-validation
+# issues surfaced pre-confirm (audit: docs sales-ops retest).
+from . import test_p1_preconfirm_validation
+# Phase 1 sales-rep UX fix (2026-07-31) — Task 2: blocked-option
+# reason surfaced to the rep, CLAUDE.md section 5.
+from . import test_p1_blocked_option_reason

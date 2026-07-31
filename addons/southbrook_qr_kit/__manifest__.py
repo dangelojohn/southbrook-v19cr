@@ -43,7 +43,7 @@ SECURITY:
   Optional `expires_in_seconds` per kind — handles "one-time use"
   receipts (e.g. ephemeral POD QRs that expire in 24h).
 """,
-    "version": "19.0.0.15.0",
+    "version": "19.0.0.16.0",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "category": "Manufacturing",
@@ -74,10 +74,18 @@ SECURITY:
     # web.assets_frontend so both backend OWL clients and any public
     # PWA scan UI emit the same beep. Self-installs by patching the
     # global fetch + XMLHttpRequest layers; default = unmuted.
-    # W035 (R8.14, 2026-06-27) — operator PIN modal + top-bar badge
-    # also bundled into BOTH backend and frontend so the operator
-    # identity follows the kiosk regardless of which Odoo surface
-    # the tablet happens to be on.
+    # W035 (R8.14, 2026-06-27) — operator PIN modal + top-bar badge.
+    # UX-P1 (2026-07-31, ux-shopfloor.md #1) — this comment used to
+    # claim the two files below were "also bundled into BOTH backend
+    # and frontend"; they were NOT actually listed in the assets dict
+    # (verified by grep before this fix), so no page ever loaded them
+    # and every floor scan was attributed anonymously. Now bundled
+    # into backend, frontend, AND web.assets_qr_floor — the floor
+    # shell (views/floor_shell_template.xml) only pulls the
+    # `web.assets_qr_floor` bundle, NOT backend/frontend, so the
+    # qr_floor entry is the load-bearing one for Bin-Scan/Load-Unit;
+    # backend+frontend keep the badge visible everywhere else the
+    # kiosk might land, matching the original intent.
     # W038 (R8.5, 2026-06-27) — Night-shift dark mode. SCSS + toggle
     # JS bundled into BOTH backend and frontend so kanban, scan modal,
     # POD page, and traveler-print preview all honour the same body
@@ -92,12 +100,16 @@ SECURITY:
             "southbrook_qr_kit/static/src/js/scan_audio_cue.js",
             "southbrook_qr_kit/static/src/js/dark_mode_toggle.js",
             "southbrook_qr_kit/static/src/scss/dark_mode.scss",
+            "southbrook_qr_kit/static/src/js/operator_pin_modal.js",
+            "southbrook_qr_kit/static/src/scss/operator_pin_modal.scss",
             "southbrook_qr_kit/static/src/js/offline_scan_queue.js",
         ],
         "web.assets_frontend": [
             "southbrook_qr_kit/static/src/js/scan_audio_cue.js",
             "southbrook_qr_kit/static/src/js/dark_mode_toggle.js",
             "southbrook_qr_kit/static/src/scss/dark_mode.scss",
+            "southbrook_qr_kit/static/src/js/operator_pin_modal.js",
+            "southbrook_qr_kit/static/src/scss/operator_pin_modal.scss",
             "southbrook_qr_kit/static/src/js/offline_scan_queue.js",
         ],
         # W073 (R8.8, 2026-06-27) — Floor companion UI (Bin Scan +
@@ -109,9 +121,17 @@ SECURITY:
         # The scan-audio + offline-queue already live in the same
         # bundle so they get reused; SCSS is body-class-scoped to
         # `.sb_floor` so no other page is restyled.
+        # UX-P1 (2026-07-31) — operator_pin_modal.js/.scss added here
+        # too: this is the ONLY bundle the floor shell template loads
+        # (floor_shell_template.xml calls `web.assets_qr_floor`, not
+        # assets_backend/assets_frontend), so without this entry the
+        # PIN modal still never appears on the actual Bin-Scan /
+        # Load-Unit tablets no matter what's in the other two bundles.
         "web.assets_qr_floor": [
             "southbrook_qr_kit/static/src/js/scan_audio_cue.js",
             "southbrook_qr_kit/static/src/js/offline_scan_queue.js",
+            "southbrook_qr_kit/static/src/js/operator_pin_modal.js",
+            "southbrook_qr_kit/static/src/scss/operator_pin_modal.scss",
             "southbrook_qr_kit/static/src/js/floor_screens.esm.js",
             "southbrook_qr_kit/static/src/scss/floor_screens.scss",
         ],

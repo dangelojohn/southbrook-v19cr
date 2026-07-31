@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+//
+// UX-P1 (2026-07-31, ux-shopfloor.md #2) — Floor Traveler scan result
+// page. Full-page, single-card, high-contrast, legible from about a
+// metre (wall/bench tablet, gloved operator, factory glare). Every
+// state colour comes from the --sb-status-* tokens defined in
+// southbrook_ui/static/src/scss/_sb_tokens.scss (pulled into the
+// SAME `web.assets_floor_traveler_scan` bundle by this addon's
+// manifest — see southbrook-design-system skill: never hardcode a
+// status colour). Non-status chrome (page background, spacing,
+// radius, shadow) uses southbrook_ui's neutral/space/corner/elevation
+// scale where one exists, with a literal fallback only as a defensive
+// second var() argument in case the bundle ever fails to load.
+
+.sb-scan-body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--sb-space-5, 24px);
+    background: var(--sb-status-neutral-bg, #f4f2f1);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    box-sizing: border-box;
+}
+
+.sb-scan-card {
+    width: min(640px, 100%);
+    border-radius: var(--sb-corner-xl, 16px);
+    border: 3px solid;
+    padding: var(--sb-space-6, 32px) var(--sb-space-5, 24px);
+    box-shadow: var(--sb-elevation-3, 0 12px 32px rgba(0, 0, 0, 0.18));
+    text-align: center;
+    box-sizing: border-box;
+}
+
+.sb-scan-badge {
+    display: inline-block;
+    font-size: 1.1rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    padding: 0.5rem 1.25rem;
+    border-radius: var(--sb-corner-pill, 999px);
+    margin-bottom: var(--sb-space-4, 16px);
+}
+
+.sb-scan-title {
+    font-size: 2.4rem;
+    line-height: 1.15;
+    font-weight: 800;
+    margin: 0 0 var(--sb-space-4, 16px);
+}
+
+.sb-scan-details {
+    text-align: left;
+    background: rgba(255, 255, 255, 0.55);
+    border-radius: var(--sb-corner-md, 8px);
+    padding: var(--sb-space-4, 16px);
+    margin-bottom: var(--sb-space-4, 16px);
+}
+
+.sb-scan-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--sb-space-3, 12px);
+    font-size: 1.15rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+
+    &:last-child {
+        border-bottom: 0;
+    }
+}
+
+.sb-scan-row-label {
+    font-weight: 600;
+    opacity: 0.75;
+}
+
+.sb-scan-row-value {
+    font-weight: 700;
+    text-align: right;
+}
+
+.sb-scan-next {
+    font-size: 1.3rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.sb-scan-next-ok {
+    opacity: 0.85;
+}
+
+// ---------------------------------------------------------------------
+// Status tokens — one class per outcome. Colour ONLY via var(), text
+// (-fg) on tint (-bg) is the exact pairing southbrook_ui's own header
+// documents as already contrast-checked (>= 4.5:1), so nothing here
+// is eyeballed.
+//
+//   ok           -> --sb-status-ok-*        (scan succeeded)
+//   info         -> --sb-status-info-*      (already_done — nothing
+//                                             is wrong, nothing left
+//                                             to do; not a rejection)
+//   blocked      -> --sb-status-blocked-*   (every hard-stop failure:
+//                                             forbidden, invalid_payload,
+//                                             not_found, wrong_step,
+//                                             expired — the endpoint
+//                                             refused to act)
+// ---------------------------------------------------------------------
+.sb-scan-token-ok {
+    background: var(--sb-status-ok-bg);
+    border-color: var(--sb-status-ok-border);
+    color: var(--sb-status-ok-fg);
+
+    .sb-scan-badge {
+        background: var(--sb-status-ok-fg);
+        color: var(--sb-status-ok-bg);
+    }
+}
+
+.sb-scan-token-info {
+    background: var(--sb-status-info-bg);
+    border-color: var(--sb-status-info-border);
+    color: var(--sb-status-info-fg);
+
+    .sb-scan-badge {
+        background: var(--sb-status-info-fg);
+        color: var(--sb-status-info-bg);
+    }
+}
+
+.sb-scan-token-blocked {
+    background: var(--sb-status-blocked-bg);
+    border-color: var(--sb-status-blocked-border);
+    color: var(--sb-status-blocked-fg);
+
+    .sb-scan-badge {
+        background: var(--sb-status-blocked-fg);
+        color: var(--sb-status-blocked-bg);
+    }
+}

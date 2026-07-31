@@ -37,6 +37,21 @@
         </div>
       </xpath>
 
+      <!-- (1b) Phase 1 sales-rep UX fix (2026-07-31) — hard-validation
+           issues surfaced WHILE building the order, not only at
+           Confirm. Reuses southbrook_hard_validation_issues() — the
+           SAME method action_confirm() calls — via a non-stored
+           compute; the Confirm-time gate itself is unchanged. Empty
+           for a clean order (field is falsy, banner hides). -->
+      <xpath expr="//sheet" position="before">
+        <field name="sb_hard_validation_issue_count" invisible="1"/>
+        <field name="sb_hard_validation_issues_html"
+               nolabel="1"
+               widget="html"
+               readonly="1"
+               invisible="not sb_hard_validation_issue_count"/>
+      </xpath>
+
       <!-- (2) Header strip: 5 cells (mock header strip). Append after
            the partner block. Channel + savings come from southbrook fields. -->
       <xpath expr="//field[@name='partner_id']" position="after">
@@ -67,6 +82,12 @@
         <field name="zone_label"
                optional="hide"
                invisible="zone != 'other'"/>
+        <!-- Phase 1 sales-rep UX fix (2026-07-31) — hidden-by-default
+             column carrying the same per-line rule-violation message
+             the order-level banner above is built from. Paired with
+             decoration-danger below so the offending row is visually
+             flagged even with the column collapsed. -->
+        <field name="sb_hard_validation_message" optional="hide"/>
       </xpath>
 
       <!-- (5) Multi-zone visual grouping — Q21 + NF9 (Richwood).
@@ -78,6 +99,10 @@
       <xpath expr="//field[@name='order_line']/list" position="attributes">
         <attribute name="default_group_by">zone</attribute>
         <attribute name="expand">1</attribute>
+        <!-- Phase 1 sales-rep UX fix (2026-07-31) — highlight any line
+             with a rule violation red, at a glance, without opening
+             the BoM/validation banner. -->
+        <attribute name="decoration-danger">sb_hard_validation_message</attribute>
       </xpath>
 
       <!-- (6) Ensure price_subtotal is aggregable (sum) for the zone group

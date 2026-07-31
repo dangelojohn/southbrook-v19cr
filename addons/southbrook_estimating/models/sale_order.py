@@ -16,7 +16,10 @@ the base pricelist_tradesperson (cost+5% floor, no tier discount).
 A soft warning is logged (not raised) so order creation isn't
 blocked but the operations team is alerted.
 """
+import html
 import logging
+
+from markupsafe import Markup
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -296,6 +299,68 @@ class SaleOrder(models.Model):
                     ),
                 })
         return issues
+
+    # ------------------------------------------------------------------
+    # Phase 1 sales-rep UX fix (2026-07-31) — surface hard-validation
+    # issues WHILE the order is being built, not only as a blocking
+    # dialog at Confirm. Persona: a rep on the phone with the customer
+    # builds a whole multi-line quote and only learns a rule was
+    # violated when they click Confirm.
+    #
+    # This is a thin, non-stored read-through onto
+    # southbrook_hard_validation_issues() above — the SAME method
+    # action_confirm() calls — so there is exactly one place the four
+    # hard rules are checked. No refactor of that method was needed:
+    # it only ever reads line.product_id.product_template_attribute_
+    # value_ids (no writes, no side effects), so it is already safe to
+    # call on an in-progress/unsaved draft order mid-onchange, not just
+    # a persisted one. The Confirm-time gate in action_confirm() below
+    # is untouched — same method, same codes, same severity.
+    # ------------------------------------------------------------------
+    sb_hard_validation_issue_count = fields.Integer(
+        string="Configuration Rule Violations",
+        compute="_compute_sb_hard_validation_issues",
+        store=False,
+        help=(
+            "How many configuration rule violations this order has "
+            "right now, as configured. Zero means every line is "
+            "buildable. This is the same check Confirm runs — "
+            "surfaced earlier so you catch it while building, not "
+            "after."
+        ),
+    )
+    sb_hard_validation_issues_html = fields.Html(
+        string="Configuration Issues",
+        compute="_compute_sb_hard_validation_issues",
+        sanitize=False,  # every tag is ours; line text is HTML-escaped below
+        store=False,
+        readonly=True,
+    )
+
+    @api.depends(
+        "order_line.product_id",
+        "order_line.product_id.product_template_attribute_value_ids",
+    )
+    def _compute_sb_hard_validation_issues(self):
+        for order in self:
+            issues = order.southbrook_hard_validation_issues()
+            order.sb_hard_validation_issue_count = len(issues)
+            if not issues:
+                order.sb_hard_validation_issues_html = False
+                continue
+            # issue["message"] is built from line.name, which is
+            # user-editable free text — escape before embedding in an
+            # unsanitized Html field.
+            rows = "".join(
+                "<li>%s</li>" % html.escape(issue["message"])
+                for issue in issues
+            )
+            order.sb_hard_validation_issues_html = Markup(
+                "<div class='alert alert-danger mb-0' role='alert'>"
+                "<strong>Fix these before you confirm this order:</strong>"
+                "<ul class='mb-0'>%s</ul>"
+                "</div>" % rows
+            )
 
     # ------------------------------------------------------------------
     # Analytics capture (NF1 — Build Spec section 8 "AI data spine")
