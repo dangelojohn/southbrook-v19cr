@@ -48,6 +48,13 @@ class TestCategoryTree(TransactionCase):
         cat_adhesives = self.env.ref(
             "southbrook_mrp_kitchen_tools.cat_adhesives")
 
+        # The adhesives subtree is no longer guaranteed empty: the
+        # 19.0.2.0.0 migration correctly classifies real chemical products
+        # into it on any DB that carries them. Its assertion below is
+        # baseline-relative for that reason; the screw branches stay
+        # absolute (nothing ships data into them).
+        adhesives_before = self._cats()[cat_adhesives.id]["count"]
+
         # Create 2 templates under cat_screw_cabinet (sibling to cat_screw_confirmat)
         # Each template creates 1 default variant automatically
         tmpl_cabinet_1 = self.env["product.template"].create({
@@ -92,8 +99,9 @@ class TestCategoryTree(TransactionCase):
             f"Euro category should have exactly 3 variants (1 per template), "
             f"got {cats[cat_euro.id]['count']}")
         self.assertEqual(
-            cats[cat_adhesives.id]["count"], 1,
-            f"Adhesives category should have exactly 1 variant, "
+            cats[cat_adhesives.id]["count"], adhesives_before + 1,
+            f"Adhesives category should have gained exactly 1 variant over "
+            f"its baseline of {adhesives_before}, "
             f"got {cats[cat_adhesives.id]['count']}")
 
         # Verify parent (cat_screws) sums siblings exactly

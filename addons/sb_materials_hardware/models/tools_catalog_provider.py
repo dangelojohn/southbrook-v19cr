@@ -701,10 +701,11 @@ class ToolsCatalogProvider(models.AbstractModel):
         Exact match, case-insensitive, on the trimmed term — "solvent" must
         not fuzzy-match "solvents" via ilike substring rules (that's a
         second, separately-seeded synonym record, not a wildcard). No
-        `.sudo()`: this model's ACL mirrors materials.catalog.facet's
-        (base.group_user read-only), so a caller who cannot see the
-        category tree cannot see synonym mappings into it either — same
-        boundary the rest of this provider already holds to.
+        privilege elevation here: this model's ACL mirrors
+        materials.catalog.facet's (base.group_user read-only), so a caller
+        who cannot see the category tree cannot see synonym mappings into
+        it either — same boundary the rest of this provider already holds
+        to (and test_access greps this file to enforce it).
         """
         needle = (term or "").strip()
         if not needle:

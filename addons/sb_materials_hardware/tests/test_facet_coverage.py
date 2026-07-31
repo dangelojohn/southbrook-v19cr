@@ -27,7 +27,10 @@ from odoo.tests.common import TransactionCase, tagged
 class TestFacetCoverageMechanism(TransactionCase):
     def setUp(self):
         super().setUp()
-        self.Provider = self.env["materials.catalog.provider"]
+        # The CONCRETE provider — audit_facet_coverage is per-provider by
+        # design (each scope audits its own declarations); the abstract
+        # materials.catalog.provider has no such method.
+        self.Provider = self.env["tools.catalog.provider"]
         self.Facet = self.env["materials.catalog.facet"]
         self.cat = self.env.ref("southbrook_mrp_kitchen_tools.cat_screw_wood")
 
@@ -110,97 +113,79 @@ class TestFacetCoverageMechanism(TransactionCase):
 # by changing production code, only by consciously updating what's pinned
 # and saying why.
 #
-# HOW EACH ENTRY WAS DERIVED: category-by-category from
-# data/catalog_declarations.xml (62 facets, 8 categories) cross-referenced
-# against southbrook_mrp_kitchen_tools/demo/tool_assets_demo.xml (the only
-# demo file in that module that creates product.template/product.product
-# records) —
-#   Saw Blades:      1 demo blade sets tool_family, directness,
-#                     blade_diameter_mm, tooth_count, bore_size_mm ->
-#                     those 5 facets populated; material_grade, coating,
-#                     compatible_material_ids, preferred_vendor_id -> not
-#                     set anywhere -> unpopulated (4).
-#   CNC Router Bits:  2 demo bits set tool_family, cutting_diameter_mm,
-#                     shank_diameter_mm -> those 3 populated;
-#                     cutting_length_mm, coating, compatible_material_ids,
-#                     directness, preferred_vendor_id -> unpopulated (5).
-#   Drill and Boring
-#   Bits:             1 demo bit sets tool_family, cutting_diameter_mm,
-#                     shank_diameter_mm -> those 3 populated;
-#                     overall_length_mm, material_grade, directness,
-#                     preferred_vendor_id -> unpopulated (4).
-#   Screws, Adhesives, Fasteners, Abrasives and Surface Preparation: ZERO
-#                     demo products anywhere in these subtrees -> every
-#                     declared facet unpopulated (9 + 11 + 5 + 5 = 30).
-#   Finishing and
-#   Paint Tools:      1 demo spray gun (a descendant category, Spray Guns)
-#                     sets tool_family only -> that facet populated. The
-#                     four safety facets (hazardous, flammable, requires_
-#                     ventilation, msds_required) are Selection fields as
-#                     of the tri-state safety wave: the spray gun was never
-#                     explicitly assessed, so it holds the "not_assessed"
-#                     default — which IS real, queryable data the moment
-#                     the product exists, so audit_facet_coverage (which
-#                     asks "does this declaration have zero rows behind it
-#                     anywhere", not "has anyone verified anything") counts
-#                     those four as populated too. shelf_life_days,
-#                     directness, preferred_vendor_id -> not set on the
-#                     spray gun -> unpopulated (3).
-#
-# This derivation was done by static reading of the seed/demo XML, not by
-# executing the suite against a live database (no such database was
-# available in the environment this pin was written in) — verify by
-# actually running TestFacetCoverageRatchet once in CI before relying on
-# it, and correct this set (with a comment explaining the correction) if
-# the live run disagrees. That correction IS the ratchet working as
-# designed, not a sign it's broken.
+# ENVIRONMENT NOTE (learned the hard way — the first version of this pin
+# was derived statically from demo/tool_assets_demo.xml and was wrong in
+# both directions): demo products only exist on demo-enabled databases.
+# The canonical validation environment for this repo is the sami dev copy
+# of the PRODUCTION database (no demo data), which is also what prod
+# itself will report. On that environment the real signal sources are:
+# the 11 classified cutting-tool products (which carry tool_family and
+# directness but ZERO numeric specs — they are $1 placeholders), the four
+# chemical products the 19.0.2.0.0 migration classifies, and the
+# tri-state safety facets, which are populated BY CONSTRUCTION the moment
+# any product exists in their category (a not_assessed default is real,
+# queryable data — audit_facet_coverage asks "does this declaration have
+# zero rows behind it", not "has anyone verified anything"). If this test
+# ever runs on a demo-enabled DB and disagrees, the pin below is the
+# prod-parity truth; prefer running it where the data is real.
 EXPECTED_UNPOPULATED_FACETS = frozenset({
-    "Saw Blades::x_southbrook_material_grade",
-    "Saw Blades::x_southbrook_coating",
-    "Saw Blades::x_southbrook_compatible_material_ids",
-    "Saw Blades::x_southbrook_preferred_vendor_id",
-    "CNC Router Bits::x_southbrook_cutting_length_mm",
-    "CNC Router Bits::x_southbrook_coating",
-    "CNC Router Bits::x_southbrook_compatible_material_ids",
-    "CNC Router Bits::x_southbrook_directness",
-    "CNC Router Bits::x_southbrook_preferred_vendor_id",
-    "Drill and Boring Bits::x_southbrook_overall_length_mm",
-    "Drill and Boring Bits::x_southbrook_material_grade",
-    "Drill and Boring Bits::x_southbrook_directness",
-    "Drill and Boring Bits::x_southbrook_preferred_vendor_id",
-    "Screws::x_southbrook_thread_type",
-    "Screws::x_southbrook_head_type",
-    "Screws::x_southbrook_drive_type",
-    "Screws::x_southbrook_screw_size",
-    "Screws::x_southbrook_screw_length_mm",
-    "Screws::x_southbrook_compatible_material_ids",
-    "Screws::x_southbrook_tool_family",
-    "Screws::x_southbrook_directness",
-    "Screws::x_southbrook_preferred_vendor_id",
+    # MEASURED, not derived: this exact set is what
+    # tools.catalog.provider.audit_facet_coverage() reported on the
+    # 2026-07-31 dev copy of the production DB, at data parity with
+    # prod after the 19.0.2.0.0 migration. Two things the first,
+    # statically-derived pin got wrong and this one does not: the
+    # tri-state safety facets are ALWAYS populated now (three chips
+    # with counts exist by construction), and the cutting-tool range
+    # facets (blade/bore/tooth, cutting/shank diameter) are EMPTY —
+    # the 11 classified tools are $1 placeholders carrying no
+    # numeric specs at all.
+    "Abrasives and Surface Preparation::x_southbrook_compatible_material_ids",
+    "Abrasives and Surface Preparation::x_southbrook_grit",
+    "Abrasives and Surface Preparation::x_southbrook_preferred_vendor_id",
+    "Adhesives, Glues, Sealants::x_southbrook_compatible_material_ids",
+    "Adhesives, Glues, Sealants::x_southbrook_cure_time_min",
+    "Adhesives, Glues, Sealants::x_southbrook_directness",
     "Adhesives, Glues, Sealants::x_southbrook_glue_type",
     "Adhesives, Glues, Sealants::x_southbrook_open_time_min",
-    "Adhesives, Glues, Sealants::x_southbrook_cure_time_min",
-    "Adhesives, Glues, Sealants::x_southbrook_hazardous",
-    "Adhesives, Glues, Sealants::x_southbrook_shelf_life_days",
-    "Adhesives, Glues, Sealants::x_southbrook_flammable",
-    "Adhesives, Glues, Sealants::x_southbrook_requires_ventilation",
-    "Adhesives, Glues, Sealants::x_southbrook_compatible_material_ids",
-    "Adhesives, Glues, Sealants::x_southbrook_tool_family",
-    "Adhesives, Glues, Sealants::x_southbrook_directness",
     "Adhesives, Glues, Sealants::x_southbrook_preferred_vendor_id",
+    "Adhesives, Glues, Sealants::x_southbrook_shelf_life_days",
+    "Adhesives, Glues, Sealants::x_southbrook_tool_family",
+    "CNC Router Bits::x_southbrook_coating",
+    "CNC Router Bits::x_southbrook_compatible_material_ids",
+    "CNC Router Bits::x_southbrook_cutting_diameter_mm",
+    "CNC Router Bits::x_southbrook_cutting_length_mm",
+    "CNC Router Bits::x_southbrook_preferred_vendor_id",
+    "CNC Router Bits::x_southbrook_shank_diameter_mm",
+    "Drill and Boring Bits::x_southbrook_cutting_diameter_mm",
+    "Drill and Boring Bits::x_southbrook_material_grade",
+    "Drill and Boring Bits::x_southbrook_overall_length_mm",
+    "Drill and Boring Bits::x_southbrook_preferred_vendor_id",
+    "Drill and Boring Bits::x_southbrook_shank_diameter_mm",
     "Fasteners::x_southbrook_compatible_material_ids",
-    "Fasteners::x_southbrook_screw_length_mm",
-    "Fasteners::x_southbrook_tool_family",
     "Fasteners::x_southbrook_directness",
     "Fasteners::x_southbrook_preferred_vendor_id",
-    "Abrasives and Surface Preparation::x_southbrook_grit",
-    "Abrasives and Surface Preparation::x_southbrook_compatible_material_ids",
-    "Abrasives and Surface Preparation::x_southbrook_tool_family",
-    "Abrasives and Surface Preparation::x_southbrook_directness",
-    "Abrasives and Surface Preparation::x_southbrook_preferred_vendor_id",
-    "Finishing and Paint Tools::x_southbrook_shelf_life_days",
+    "Fasteners::x_southbrook_screw_length_mm",
+    "Fasteners::x_southbrook_tool_family",
     "Finishing and Paint Tools::x_southbrook_directness",
     "Finishing and Paint Tools::x_southbrook_preferred_vendor_id",
+    "Finishing and Paint Tools::x_southbrook_shelf_life_days",
+    "Finishing and Paint Tools::x_southbrook_tool_family",
+    "Saw Blades::x_southbrook_blade_diameter_mm",
+    "Saw Blades::x_southbrook_bore_size_mm",
+    "Saw Blades::x_southbrook_coating",
+    "Saw Blades::x_southbrook_compatible_material_ids",
+    "Saw Blades::x_southbrook_material_grade",
+    "Saw Blades::x_southbrook_preferred_vendor_id",
+    "Saw Blades::x_southbrook_tooth_count",
+    "Screws::x_southbrook_compatible_material_ids",
+    "Screws::x_southbrook_directness",
+    "Screws::x_southbrook_drive_type",
+    "Screws::x_southbrook_head_type",
+    "Screws::x_southbrook_preferred_vendor_id",
+    "Screws::x_southbrook_screw_length_mm",
+    "Screws::x_southbrook_screw_size",
+    "Screws::x_southbrook_thread_type",
+    "Screws::x_southbrook_tool_family",
 })
 
 
@@ -216,7 +201,7 @@ class TestFacetCoverageRatchet(TransactionCase):
     """
 
     def test_unpopulated_facets_match_the_pinned_set(self):
-        rows = self.env["materials.catalog.provider"].audit_facet_coverage()
+        rows = self.env["tools.catalog.provider"].audit_facet_coverage()
         actual_unpopulated = {row["key"] for row in rows if not row["populated"]}
         self.assertEqual(
             actual_unpopulated, EXPECTED_UNPOPULATED_FACETS,

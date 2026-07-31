@@ -242,6 +242,28 @@ class TestFacets(TransactionCase):
         """
         cat = self.env.ref("southbrook_mrp_kitchen_tools.cat_adhesives")
         Tmpl = self.env["product.template"]
+
+        # BASELINE-RELATIVE on purpose: this suite runs against a shared
+        # dev DB where the 19.0.2.0.0 migration has already (correctly)
+        # classified real chemical products into this very subtree —
+        # asserting absolute counts here would re-break every time the
+        # business classifies another product, which is the behavior this
+        # whole wave exists to encourage.
+        def counts():
+            payload = self.Provider.get_catalog(
+                scope="tools", category_id=cat.id)
+            facet = {f["key"]: f
+                     for f in payload["facets"]}["x_southbrook_hazardous"]
+            self.assertEqual(facet["type"], "flag")
+            by_value = {v["value"]: v for v in facet["values"]}
+            self.assertEqual(set(by_value), {"yes", "no", "not_assessed"})
+            return by_value
+
+        before = counts()
+        self.assertEqual(before["yes"]["label"], "Yes")
+        self.assertEqual(before["no"]["label"], "No")
+        self.assertEqual(before["not_assessed"]["label"], "Not assessed")
+
         Tmpl.create({
             "name": "TEST Hazardous Adhesive",
             "x_southbrook_tool_category_id": cat.id,
@@ -260,17 +282,13 @@ class TestFacets(TransactionCase):
         })
         # facet_adh_hazard is already seeded on this category — reuse it
         # instead of creating a duplicate (category, field_name) pair.
-        payload = self.Provider.get_catalog(scope="tools", category_id=cat.id)
-        facet = {f["key"]: f for f in payload["facets"]}["x_southbrook_hazardous"]
-        self.assertEqual(facet["type"], "flag")
-        by_value = {v["value"]: v for v in facet["values"]}
-        self.assertEqual(set(by_value), {"yes", "no", "not_assessed"})
-        self.assertEqual(by_value["yes"]["count"], 1)
-        self.assertEqual(by_value["yes"]["label"], "Yes")
-        self.assertEqual(by_value["no"]["count"], 1)
-        self.assertEqual(by_value["no"]["label"], "No")
-        self.assertEqual(by_value["not_assessed"]["count"], 1)
-        self.assertEqual(by_value["not_assessed"]["label"], "Not assessed")
+        after = counts()
+        self.assertEqual(after["yes"]["count"],
+                         before["yes"]["count"] + 1)
+        self.assertEqual(after["no"]["count"],
+                         before["no"]["count"] + 1)
+        self.assertEqual(after["not_assessed"]["count"],
+                         before["not_assessed"]["count"] + 1)
 
     def test_tristate_not_assessed_chip_counts_a_bare_null_column_too(self):
         """A row that predates the tri-state migration (or was bulk-loaded
@@ -281,6 +299,17 @@ class TestFacets(TransactionCase):
         not silently drop it from every chip's count.
         """
         cat = self.env.ref("southbrook_mrp_kitchen_tools.cat_adhesives")
+
+        def counts():
+            payload = self.Provider.get_catalog(
+                scope="tools", category_id=cat.id)
+            facet = {f["key"]: f
+                     for f in payload["facets"]}["x_southbrook_hazardous"]
+            return {v["value"]: v["count"] for v in facet["values"]}
+
+        # Baseline-relative — shared dev DB carries real (correctly
+        # migrated) products in this subtree; see the sibling test.
+        before = counts()
         tmpl = self.env["product.template"].create({
             "name": "TEST Null-hazard Adhesive",
             "x_southbrook_tool_category_id": cat.id,
@@ -289,12 +318,12 @@ class TestFacets(TransactionCase):
             "UPDATE product_template SET x_southbrook_hazardous = NULL "
             "WHERE id = %s", (tmpl.id,))
         self.env.invalidate_all()
-        payload = self.Provider.get_catalog(scope="tools", category_id=cat.id)
-        facet = {f["key"]: f for f in payload["facets"]}["x_southbrook_hazardous"]
-        by_value = {v["value"]: v for v in facet["values"]}
-        self.assertEqual(by_value["not_assessed"]["count"], 1)
-        self.assertEqual(by_value["yes"]["count"], 0)
-        self.assertEqual(by_value["no"]["count"], 0)
+        after = counts()
+        self.assertEqual(after["not_assessed"], before["not_assessed"] + 1,
+                         "a bare SQL NULL must land in the not-assessed "
+                         "bucket, not vanish from every chip's count")
+        self.assertEqual(after["yes"], before["yes"])
+        self.assertEqual(after["no"], before["no"])
 
     def test_tristate_chip_filters_to_the_matching_domain_leaf(self):
         """Toggling the "yes" chip must narrow rows to exactly (field, '=',
