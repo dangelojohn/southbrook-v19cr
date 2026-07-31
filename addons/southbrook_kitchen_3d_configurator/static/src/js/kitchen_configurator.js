@@ -1266,11 +1266,17 @@ class SouthbrookKitchenConfigurator extends Component {
     }
 
     // SBK-026 — live geometry backing the Wall Cabinet Top helper text.
-    // Mirrors southbrook.kitchen.design._wall_cab_top_geometry exactly
-    // (base 34.5"/wall 30" standard carcass, fixed 18" gap) so the
-    // client-side preview never disagrees with what the next
-    // Auto-arrange/regenerate on the server will actually write. Pure
-    // getter — the template calls it directly, no state duplication.
+    // Mirrors southbrook.kitchen.design._wall_cab_top_geometry
+    // (models/kitchen_design.py) exactly for the DEFAULT 34.5"/30"
+    // carcass + fixed 18" gap case — keep the two in sync if this
+    // changes. Task 14 review, minor finding — known, accepted
+    // divergence: unlike the Python original, this getter does NOT
+    // scan state.items for an already-placed base/wall cabinet taller
+    // than the 34.5"/30" default, so it can UNDER-state the real
+    // number for such a design; the Python method (which drives the
+    // actual persisted arrange) is authoritative, this is a same-
+    // session preview only. Pure getter — the template calls it
+    // directly, no state duplication.
     _wallCabBottomGeometry() {
         const baseH = 34.5;
         const wallH = 30.0;

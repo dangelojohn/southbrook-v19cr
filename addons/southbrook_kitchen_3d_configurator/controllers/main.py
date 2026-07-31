@@ -49,6 +49,14 @@ from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import
     ROOM_DEPTH_MIN_IN, ROOM_DEPTH_MAX_IN,
     ROOM_HEIGHT_MIN_IN, ROOM_HEIGHT_MAX_IN,
 )
+# Task 14 review, finding 2 (SBK-026 fix-round) — the ONE clamp for
+# counter_thickness_in, shared by /layout and save_design below (see
+# that module's own comment for why this is a CLAMP, not a
+# ROOM_*_MIN/MAX_IN-style reject: no resource-consumption blast radius,
+# just a geometry input with a sane physical range).
+from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
+    clamp_counter_thickness_in,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -246,7 +254,12 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # same formula southbrook.kitchen.design._wall_cab_top_geometry
         # uses for the persisted arrange path, so a new-design preview
         # here and a later regenerate never disagree.
-        ctr_t  = float(counter_thickness_in or 1.5)  # countertop thickness (in)
+        # Task 14 review, finding 2 — clamped (was `float(x or 1.5)`,
+        # which let ANY negative value through unchanged since only
+        # 0/None/False are falsy in Python — a negative ctr_t would
+        # have SUBTRACTED from the industry-minimum floor instead of
+        # padding it).
+        ctr_t  = clamp_counter_thickness_in(counter_thickness_in)  # countertop thickness (in)
         gap    = 18.0   # clearance between counter surface and wall cab bottom
         min_z  = base_h + ctr_t + gap   # bottom of wall cabinet (industry minimum)
 
@@ -651,10 +664,15 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             except (TypeError, ValueError):
                 pass
         if counter_thickness_in is not None:
-            try:
-                vals["counter_thickness_in"] = max(0.0, float(counter_thickness_in))
-            except (TypeError, ValueError):
-                pass
+            # Task 14 review, finding 2 — clamped into
+            # [COUNTER_THICKNESS_MIN_IN, COUNTER_THICKNESS_MAX_IN]
+            # (was `max(0.0, float(...))`, which let e.g. 999 through
+            # untouched — no upper bound at all). Non-numeric input
+            # clamps to the 1.5in default via the shared helper rather
+            # than raising, matching this block's own "degrade safely"
+            # convention for the other three fields above.
+            vals["counter_thickness_in"] = clamp_counter_thickness_in(
+                counter_thickness_in)
 
         # D9 — Non-destructive save. Update existing lines by
         # layout_key, create only new ones, unlink only those that

@@ -60,6 +60,36 @@ ROOM_DEPTH_MAX_IN  = 480.0
 ROOM_HEIGHT_MIN_IN = 84.0
 ROOM_HEIGHT_MAX_IN = 144.0
 
+# Task 14 review, finding 2 (SBK-026 fix-round) — sane bounds for
+# counter_thickness_in, shared by controllers/main.py's save_design AND
+# /layout so an out-of-range or malformed value can't distort the Wall
+# Cabinet Top formula (or, before this fix, a negative value: `float(x
+# or 1.5)` lets ANY negative through unchanged since only 0/None/False
+# are falsy in Python). Unlike ROOM_*_MIN/MAX_IN's REJECT-the-whole-
+# save convention (room dims can blow up line counts into the
+# thousands — a genuine resource concern), this is a benign geometry
+# input with no such blast radius, so both call sites CLAMP into range
+# instead of rejecting the entire save/layout — the same "normalize,
+# don't reject" convention save_design already uses for an unrecognised
+# wall_cab_top_alignment/filler_strategy value.
+COUNTER_THICKNESS_MIN_IN = 0.25
+COUNTER_THICKNESS_MAX_IN = 6.0
+
+
+def clamp_counter_thickness_in(value, default=1.5):
+    """Coerce `value` into [COUNTER_THICKNESS_MIN_IN, COUNTER_THICKNESS_MAX_IN].
+
+    Non-numeric/None -> `default` (itself clamped, so a bad caller-
+    supplied default can't smuggle an out-of-range value through
+    either). Shared by controllers/main.py's /layout and save_design so
+    the two entry points can never disagree about what counts as valid.
+    """
+    try:
+        v = float(value) if value is not None else float(default)
+    except (TypeError, ValueError):
+        v = float(default)
+    return max(COUNTER_THICKNESS_MIN_IN, min(COUNTER_THICKNESS_MAX_IN, v))
+
 
 class _BomAutoseedDryRun(Exception):
     """Internal control-flow sentinel for `_bom_autoseed_would_resolve`
@@ -441,6 +471,17 @@ class SouthbrookKitchenDesign(models.Model):
         it silently resolves as `fixed_gap` instead of collapsing the
         wall run to the industry-minimum clearance at Y=0-ish, which
         would read as a broken layout rather than an unset setting.
+
+        Mirror: `kitchen_configurator.js`'s `_wallCabBottomGeometry()`
+        reimplements this same formula client-side (for a live, no-
+        round-trip helper text before any save) — keep the two in sync
+        if this changes. Known, accepted divergence (Task 14 review,
+        minor finding): the JS mirror always uses the 34.5"/30"
+        defaults and does NOT widen to an actual oversized base/wall
+        cabinet already in `state.items` — this method is the
+        authoritative one (it drives the actual persisted arrange), the
+        JS one is a preview that can under-state the real number for a
+        design with a taller-than-standard cabinet already placed.
         """
         self.ensure_one()
         base_h, wall_h = 34.5, 30.0
@@ -450,7 +491,12 @@ class SouthbrookKitchenDesign(models.Model):
             elif dl.cabinet_type == "wall":
                 wall_h = max(wall_h, dl.height_in or wall_h)
 
-        ctr_t = self.counter_thickness_in or 1.5
+        # Task 14 review, finding 2 — clamp here too (the ultimate
+        # consumer), not just at the two controller entry points, so a
+        # value written any other way (direct ORM/import/XML data) is
+        # equally safe. `or 1.5` alone let a negative counter_thickness_in
+        # through unchanged (only 0/None/False are falsy in Python).
+        ctr_t = clamp_counter_thickness_in(self.counter_thickness_in)
         gap = 18.0
         min_in = base_h + ctr_t + gap
         soffit_in = self.soffit_height_in or 0.0
@@ -1948,9 +1994,18 @@ class SouthbrookKitchenDesign(models.Model):
         #    text consult, so this check can never disagree with what a
         #    regenerate actually writes. `_line_ref` still wants the
         #    SPECIFIC line responsible for the tallest base/wall cabinet
-        #    (presentation only), so that lookup stays local.
+        #    (presentation only), so that lookup stays local — gated on
+        #    ACTUALLY EXCEEDING the 34.5"/30" default (the same
+        #    threshold `_wall_cab_top_geometry` itself uses to decide
+        #    whether a line widens base_h/wall_h at all). Task 14
+        #    review, minor finding — an earlier draft started the
+        #    running max at 0.0, so any line at all (even a normal 24"
+        #    base well under the 34.5" default) got attributed as "the
+        #    tallest", pointing the message's line-ref at an irrelevant
+        #    cabinet instead of at nothing when no line actually drove
+        #    the number.
         base_h_line = wall_h_line = None
-        _tallest_base = _tallest_wall = 0.0
+        _tallest_base, _tallest_wall = 34.5, 30.0
         for line in self.cabinet_line_ids:
             if line.cabinet_type == "base" and (line.height_in or 0) > _tallest_base:
                 _tallest_base, base_h_line = line.height_in, line

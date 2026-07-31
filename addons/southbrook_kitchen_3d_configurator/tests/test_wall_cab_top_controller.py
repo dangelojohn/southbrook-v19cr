@@ -118,6 +118,29 @@ class TestLayoutCounterThickness(TransactionCase):
         for it in wall_items:
             self.assertAlmostEqual(it["y_position_in"], 96.0 - 30.0, places=2)
 
+    # Task 14 review, finding 2 — /layout clamps counter_thickness_in
+    # too (was `float(counter_thickness_in or 1.5)`, which let ANY
+    # negative value straight through since only 0/None/False are
+    # falsy in Python — a negative ctr_t would have SUBTRACTED from the
+    # industry-minimum floor).
+    def test_negative_counter_thickness_is_clamped_to_the_minimum_not_passed_through(self):
+        result = self._layout(room_width_in=48, room_depth_in=96, room_height_in=96,
+                               counter_thickness_in=-5.0)
+        wall_items = [it for it in result["items"] if it["cabinet_type"] == "wall"]
+        self.assertTrue(wall_items)
+        for it in wall_items:
+            # clamped to 0.25, NOT -5.0: 34.5 + 0.25 + 18 = 52.75
+            self.assertAlmostEqual(it["y_position_in"], 52.75, places=2)
+
+    def test_oversized_counter_thickness_is_clamped_to_the_maximum(self):
+        result = self._layout(room_width_in=48, room_depth_in=96, room_height_in=96,
+                               counter_thickness_in=999)
+        wall_items = [it for it in result["items"] if it["cabinet_type"] == "wall"]
+        self.assertTrue(wall_items)
+        for it in wall_items:
+            # clamped to 6.0: 34.5 + 6.0 + 18 = 58.5
+            self.assertAlmostEqual(it["y_position_in"], 58.5, places=2)
+
 
 @tagged("post_install", "-at_install", "southbrook",
         "southbrook_kitchen_3d_configurator", "corner_remediation")
@@ -187,7 +210,16 @@ class TestSaveDesignRoundTripsWallCabTopSettings(TransactionCase):
         design = self.env["southbrook.kitchen.design"].browse(result["id"])
         self.assertEqual(design.wall_cab_top_alignment, "fixed_gap")
 
-    def test_negative_counter_thickness_is_clamped_not_persisted_negative(self):
+    # Task 14 review, finding 2 (SBK-026 fix-round) — counter_thickness_in
+    # is CLAMPED into [0.25, 6.0], not rejected: unlike ROOM_*_MIN/MAX_IN
+    # (a bad room can blow up line counts into the thousands — a real
+    # resource concern that earns save_design's structured-error REJECT
+    # convention), a bad counter thickness is just a geometry input with
+    # no such blast radius, so both save_design and /layout normalize it
+    # in place, the same "degrade safely, don't reject the whole
+    # payload" convention already used here for an unrecognised
+    # wall_cab_top_alignment/filler_strategy value.
+    def test_negative_counter_thickness_is_clamped_to_the_minimum(self):
         controller = self._controller()
         with _stubbed_request(self.env):
             result = controller.save_design(
@@ -198,4 +230,30 @@ class TestSaveDesignRoundTripsWallCabTopSettings(TransactionCase):
             )
         self.assertNotIn("error", result, result)
         design = self.env["southbrook.kitchen.design"].browse(result["id"])
-        self.assertGreaterEqual(design.counter_thickness_in, 0.0)
+        self.assertEqual(design.counter_thickness_in, 0.25)
+
+    def test_oversized_counter_thickness_is_clamped_to_the_maximum(self):
+        controller = self._controller()
+        with _stubbed_request(self.env):
+            result = controller.save_design(
+                name="T14 huge ctr",
+                room={"width_in": 96, "depth_in": 96, "height_in": 96},
+                items=[], partner_id=False, design_id=False,
+                counter_thickness_in=999,
+            )
+        self.assertNotIn("error", result, result)
+        design = self.env["southbrook.kitchen.design"].browse(result["id"])
+        self.assertEqual(design.counter_thickness_in, 6.0)
+
+    def test_non_numeric_counter_thickness_falls_back_to_the_default_not_a_500(self):
+        controller = self._controller()
+        with _stubbed_request(self.env):
+            result = controller.save_design(
+                name="T14 nan ctr",
+                room={"width_in": 96, "depth_in": 96, "height_in": 96},
+                items=[], partner_id=False, design_id=False,
+                counter_thickness_in="not-a-number",
+            )
+        self.assertNotIn("error", result, result)
+        design = self.env["southbrook.kitchen.design"].browse(result["id"])
+        self.assertEqual(design.counter_thickness_in, 1.5)

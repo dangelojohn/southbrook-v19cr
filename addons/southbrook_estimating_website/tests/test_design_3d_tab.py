@@ -266,3 +266,123 @@ class TestDesign3dSeedDimSnapping(TransactionCase):
                     value, snapped,
                     f"{item['sku']}.{key}={value} is not snapped to the "
                     "nearest 1/4in")
+
+
+@tagged("post_install", "-at_install", "southbrook", "southbrook_design_3d")
+class TestDesign3dSeedWallCabTopSelector(TransactionCase):
+    """Task 14 review, finding 1 (SBK-026, corner-remediation 2026-07-30,
+    CRITICAL) — `_southbrook_seed_design_lines` fed
+    `kitchen_layout_engine.layout` the raw `sale.order._ZONE_LAYOUT`
+    class constant (wall always at 1400mm/55.12in) even though the
+    `design` it had just created/looked up carries its own
+    `wall_cab_top_alignment` / `soffit_height_in` /
+    `counter_thickness_in` and exposes `_wall_cab_zone_layout()` for
+    exactly this. A freshly seeded design therefore landed its wall
+    cabinets at 55.12in, then jumped to a DIFFERENT elevation (e.g.
+    54.00in) the moment ANY `action_auto_arrange` next ran on that same
+    design (auto-arrange already routed through
+    `_wall_cab_zone_layout()` — Task 14's main fix) — two elevations
+    for one design, from two writers that disagreed. Fixed by routing
+    the seed path through the SAME per-design helper.
+
+    Deliberately its OWN class with self-built `product.template.
+    create()` fixtures (mirrors `TestDesign3dSeedDimSnapping` above),
+    NOT added to `TestDesign3dTab` — that class's `setUpClass` relies on
+    `env.ref("southbrook_estimating.base_1dr"/"wall_1dr")`, which
+    `TestDesign3dSeedDimSnapping`'s own docstring + Task 13's report
+    already document as erroring on this suite's dev-DB clone (those
+    demo templates carry zero `product.product` variants there) — a
+    test added to that class would never even run on this DB."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.controller = ctrl_main.SouthbrookOrderBuilderPortal()
+        cls.Design = cls.env["southbrook.kitchen.design"]
+        cls.partner = cls.env["res.partner"].create({
+            "name": "WallCabTopSeed Customer",
+            "email": "wallcabtopseed.customer@southbrook.test",
+        })
+        portal_group = cls.env.ref("base.group_portal")
+        cls.user = cls.env["res.users"].create({
+            "name": "WallCabTopSeed Customer",
+            "login": "wallcabtopseed.customer@southbrook.test",
+            "partner_id": cls.partner.id,
+            "group_ids": [(6, 0, [portal_group.id])],
+        })
+
+        base_tmpl = cls.env["product.template"].create({
+            "name":         "T14SeedTest Base Cabinet",
+            "default_code": "SB-BASE-1DR",
+            "type":         "consu",
+            "sale_ok":      True,
+            "list_price":   500.0,
+        })
+        base_tmpl.write({
+            "southbrook_is_cabinet":   True,
+            "southbrook_cabinet_type": "base",
+        })
+        cls.base_product = base_tmpl.product_variant_id
+
+        wall_tmpl = cls.env["product.template"].create({
+            "name":         "T14SeedTest Wall Cabinet",
+            "default_code": "SB-WALL-1DR",
+            "type":         "consu",
+            "sale_ok":      True,
+            "list_price":   300.0,
+        })
+        wall_tmpl.write({
+            "southbrook_is_cabinet":   True,
+            "southbrook_cabinet_type": "wall",
+        })
+        cls.wall_product = wall_tmpl.product_variant_id
+
+    def _new_order(self):
+        return self.env["sale.order"].create({
+            "partner_id": self.partner.id,
+            "order_line": [
+                (0, 0, {"product_id": self.base_product.id,
+                        "product_uom_qty": 1,
+                        "name": self.base_product.display_name,
+                        "zone": "base_run"}),
+                (0, 0, {"product_id": self.wall_product.id,
+                        "product_uom_qty": 1,
+                        "name": self.wall_product.display_name,
+                        "zone": "wall"}),
+            ],
+        })
+
+    def test_seeded_wall_cabinet_honours_fixed_gap_default_not_the_legacy_1400mm_constant(self):
+        order = self._new_order()
+        with stubbed_request(self.env, user=self.user):
+            payload = self.controller.southbrook_api_design_3d(order.id)
+        self.assertNotIn("error", payload, payload)
+        wall_item = next(i for i in payload["items"]
+                          if i["cabinet_type"] == "wall")
+        # SB-BASE-1DR seeds at height 30in (< the 34.5in default, so it
+        # does not widen base_h) + 1.5in counter (default) + 18in gap.
+        self.assertAlmostEqual(wall_item["y_position_in"], 54.0, places=2)
+        self.assertNotAlmostEqual(wall_item["y_position_in"], 55.12, places=1)
+
+    def test_seeded_wall_cabinet_honours_a_non_default_selector(self):
+        """Pre-create the design (linked to the order, zero configurator
+        lines yet) with wall_cab_top_alignment='to_ceiling' BEFORE the
+        seed runs — _southbrook_get_or_create_design finds this exact
+        record and seeds INTO it, so the seeded Y must resolve via
+        to_ceiling, not silently fall back to the fixed_gap default."""
+        order = self._new_order()
+        design = self.Design.sudo().create({
+            "name": "T14 non-default selector",
+            "sale_order_id": order.id,
+            "state": "draft",
+            "wall_cab_top_alignment": "to_ceiling",
+            **self.controller._PORTAL_NEW_DESIGN_ROOM,
+        })
+        with stubbed_request(self.env, user=self.user):
+            payload = self.controller.southbrook_api_design_3d(order.id)
+        self.assertNotIn("error", payload, payload)
+        self.assertEqual(payload["design_id"], design.id)
+        wall_item = next(i for i in payload["items"]
+                          if i["cabinet_type"] == "wall")
+        # _PORTAL_NEW_DESIGN_ROOM's room_height_in=96 - wall_h 30in = 66.0
+        self.assertAlmostEqual(wall_item["y_position_in"], 66.0, places=2)

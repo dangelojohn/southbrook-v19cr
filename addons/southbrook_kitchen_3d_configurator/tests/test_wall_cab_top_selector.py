@@ -294,3 +294,74 @@ class TestWallCabTopGeometryHelper(TransactionCase):
         geo = d._wall_cab_top_geometry()
         self.assertEqual(geo["base_h"], 40.0)
         self.assertEqual(geo["y_in"], 40.0 + 1.5 + 18.0)
+
+    # ── Task 14 review, finding 3 (SBK-026 fix-round) ──────────────────────
+    # The D12 check #6 refactor onto the shared `_wall_cab_top_geometry`
+    # helper changed real behaviour, not just deduplicated code: a
+    # to_soffit selection with an UNSET soffit_height_in used to compute
+    # `eff_top = self.soffit_height_in or 0` -> 0, and the check's own
+    # `and eff_top > 0` guard then SKIPPED it entirely — a design stuck
+    # in "to_soffit, forgot to set the height" silently got ZERO
+    # ceiling-clearance protection. The shared helper resolves that same
+    # gated case to `alignment="fixed_gap"` with `eff_ceiling=room_height_in`
+    # (the real room ceiling), so the check is now ACTIVE against the
+    # room ceiling instead of silently disabled. Reviewer verdict: KEEP
+    # this — it is strictly safer — but pin BOTH branches so a future
+    # change can't silently re-disable the gated case, and so the
+    # "checks against soffit once soffit IS set" branch stays distinct.
+    def _add_wall_line(self, design, height_in=30.0):
+        wall_prod = self.env["product.product"].create(
+            {"name": "Geo Wall", "default_code": "T14-GEO-WALL",
+             "list_price": 150.0})
+        return self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id, "product_id": wall_prod.id, "quantity": 1,
+            "price_unit": 150.0, "cabinet_type": "wall",
+            "width_in": 24.0, "height_in": height_in, "depth_in": 12.0,
+            "origin": "configurator", "layout_key": "geo-wall",
+        })
+
+    def test_to_soffit_gated_case_now_checks_against_the_room_ceiling(self):
+        """Before finding 3's fix, this shape (to_soffit selected, soffit
+        never set) raised NOTHING — the check was a silent no-op. It
+        must now flag WALL_CAB_EXCEEDS_CEILING against the room's real
+        ceiling. room_height_in=84.0 is the model's own MINIMUM
+        (ROOM_HEIGHT_MIN_IN, kitchen_design.py) — a genuinely short
+        room, not an out-of-bounds one — paired with an oversized 40in
+        wall cabinet (fixed_gap floor 54.0 + 40 = 94.0) to force the
+        overflow without needing an invalid room height."""
+        d = self._design(room_height_in=84.0, wall_cab_top_alignment="to_soffit")
+        self._add_wall_line(d, height_in=40.0)
+        self.assertEqual(d.soffit_height_in, 0.0, "unset")
+        issues = d._check_production_ready()
+        hits = [i for i in issues if i["code"] == "WALL_CAB_EXCEEDS_CEILING"]
+        self.assertEqual(len(hits), 1,
+                          "gated to_soffit must be checked against the room "
+                          "ceiling, not silently skipped")
+        self.assertIn("ceiling", hits[0]["message"])
+        self.assertIn("84.0", hits[0]["message"])
+
+    def test_to_soffit_set_case_checks_against_the_soffit_not_the_ceiling(self):
+        """A tall room (144in ceiling — ROOM_HEIGHT_MAX_IN, the model's
+        own maximum) but a LOW soffit (50in) must still flag against
+        the soffit — the room ceiling alone would never catch this
+        (fixed-gap floor 54.0 + standard 30in wall = 84.0, comfortably
+        under 144 but over the 50in soffit), proving the check reads
+        eff_ceiling from the RESOLVED alignment, not always
+        room_height_in."""
+        d = self._design(room_height_in=144.0, wall_cab_top_alignment="to_soffit",
+                          soffit_height_in=50.0)
+        self._add_wall_line(d)
+        issues = d._check_production_ready()
+        hits = [i for i in issues if i["code"] == "WALL_CAB_EXCEEDS_CEILING"]
+        self.assertEqual(len(hits), 1)
+        self.assertIn("soffit", hits[0]["message"])
+        self.assertIn("50.0", hits[0]["message"])
+
+    def test_to_soffit_gated_case_with_room_that_fits_raises_nothing(self):
+        """Non-regression: a gated to_soffit design that DOES fit under
+        the room ceiling must not spuriously flag."""
+        d = self._design(room_height_in=96.0, wall_cab_top_alignment="to_soffit")
+        self._add_wall_line(d)
+        issues = d._check_production_ready()
+        hits = [i for i in issues if i["code"] == "WALL_CAB_EXCEEDS_CEILING"]
+        self.assertEqual(hits, [])

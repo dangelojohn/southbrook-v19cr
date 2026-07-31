@@ -2459,7 +2459,21 @@ class SouthbrookOrderBuilderPortal(_SouthbrookOrderAccessMixin, CustomerPortal):
         }
         placements = kitchen_layout_engine.layout(
             cabs, room,
-            zone_layout=SaleOrder._ZONE_LAYOUT,
+            # SBK-026 (Task 14 review, finding 1) — was the raw
+            # sale.order._ZONE_LAYOUT class constant, so a freshly
+            # seeded design's wall cabinets landed at 1400mm/55.12in
+            # regardless of `design`'s own wall_cab_top_alignment /
+            # soffit_height_in / counter_thickness_in — then jumped to
+            # a DIFFERENT elevation (e.g. 54.00in) the moment the
+            # design's own action_auto_arrange next ran, since that
+            # path already consults design._wall_cab_zone_layout().
+            # `design` already exists at this point (created/looked up
+            # by the caller just above) and carries those settings —
+            # route through the SAME helper so seed and arrange can
+            # never disagree. See kitchen_design.py's
+            # _wall_cab_zone_layout docstring for what it does and does
+            # NOT override.
+            zone_layout=design._wall_cab_zone_layout(),
             worktop_cursor=SaleOrder._WORKTOP_CURSOR,
             worktop_y=SaleOrder._WORKTOP_Y_FLOOR,
         )
