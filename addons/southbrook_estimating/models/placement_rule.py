@@ -305,11 +305,43 @@ class SouthbrookPlacementRule(models.Model):
     def engine_dicts(self):
         """Plain-dict form the pure kitchen_layout_engine consumes as
         `corner_rules`. sku comes from the linked template's default_code;
-        sequence rides along for select ranking."""
+        sequence rides along for select ranking.
+
+        Task 28 (corner-remediation 2026-07-30) fix — `product_tmpl_id.
+        default_code` is Odoo's own related field, and Odoo only
+        populates it for a SINGLE-variant template
+        (`_compute_default_code`: `len(product_variant_ids) != 1` ->
+        forced False, no matter what any individual variant's own code
+        is). The corner-remediation Task 6 work made multi-variant LH/RH
+        corner templates the EXPECTED shape (see kitchen_design.py's T5
+        `_sb_resolve_corner_variant` docstring), so a template going
+        multi-variant silently blanks `sku` here -> the caller
+        (kitchen_design.py action_auto_arrange) falls back to its
+        hardcoded legacy `_CORNER_SKU` default ("SB-CORNER", the susan)
+        for EVERY rule whose template has 2+ variants, regardless of
+        which rule the leg-length gate actually picked. Live evidence:
+        prod's "Blind base corner 45/24" rule (id 2, corner_type_id
+        blind-corner-basic) resolved to template 223 "Corner Base ·
+        Blind" with `default_code=False` (variant 1104=SB-CORNER-BLIND,
+        variant 1422=no code) — a narrow room correctly SELECTED the
+        blind rule (min-leg gate passed) but PLACED SB-CORNER (susan)
+        because `sku` came back "". Falling back to a variant's own
+        default_code — preferring one that actually HAS a code, same
+        precedence `_sb_resolve_corner_variant`'s own last-resort
+        fallback uses — fixes this without touching the ORM's
+        single-variant-only `default_code` semantics."""
         out = []
         for r in self:
             d = dict(r.payload or {})
-            d.update({"rule_id": "spr-%d" % r.id, "sku": r.product_tmpl_id.default_code or "",
+            tmpl = r.product_tmpl_id
+            sku = tmpl.default_code
+            if not sku:
+                variant = tmpl.product_variant_ids.filtered(
+                    lambda v: v.default_code)[:1]
+                if not variant:
+                    variant = tmpl.product_variant_id or tmpl.product_variant_ids[:1]
+                sku = variant.default_code or ""
+            d.update({"rule_id": "spr-%d" % r.id, "sku": sku or "",
                       "tier": r.tier, "sequence": r.sequence})
             out.append(d)
         return out

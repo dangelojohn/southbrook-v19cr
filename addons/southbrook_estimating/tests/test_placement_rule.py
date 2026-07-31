@@ -112,6 +112,65 @@ class TestPlacementRule(TransactionCase):
                     "min_leg_x_mm", "min_leg_z_mm"):
             self.assertEqual(d[key], _VALID_JUNCTION_PAYLOAD[key])
 
+    def test_engine_dicts_sku_survives_multi_variant_template(self):
+        """Task 28 (corner-remediation 2026-07-30) — root-cause regression.
+
+        Live prod evidence: the blind-corner rule's product_tmpl_id had
+        gone multi-variant (an LH variant carrying the real default_code
+        plus an RH twin with none yet assigned) — Odoo's own
+        `_compute_default_code` forces `product.template.default_code`
+        to False whenever a template has more than one variant,
+        regardless of what any individual variant's code is. Before this
+        fix, `engine_dicts()` read that always-False template field
+        directly, so a perfectly-matched rule silently reported
+        `sku=""`, and the caller (kitchen_design.py) fell back to the
+        WRONG hardcoded default corner SKU. `sku` must instead resolve
+        through the template's variants, same precedence
+        `_sb_resolve_corner_variant`'s own fallback uses.
+        """
+        multi_tmpl = self.env["product.template"].create({
+            "name": "Corner Base · Blind (multi-variant fixture)",
+            "list_price": 545.0,
+        })
+        # A real Hinge Side attribute split (LH/RH) is what actually
+        # flips a corner template multi-variant on prod (Task 6, "hand-
+        # aware wall corners") — mirrors that shape exactly rather than
+        # hand-crafting a second product.product (which Odoo rejects:
+        # two variants with no distinguishing attribute collide on the
+        # same empty `combination_indices`).
+        hinge = self.env["product.attribute"].create(
+            {"name": "Hinge Side (T28 fixture)", "create_variant": "always"})
+        lh_val = self.env["product.attribute.value"].create(
+            {"name": "LH (T28 fixture)", "attribute_id": hinge.id})
+        rh_val = self.env["product.attribute.value"].create(
+            {"name": "RH (T28 fixture)", "attribute_id": hinge.id})
+        self.env["product.template.attribute.line"].create({
+            "product_tmpl_id": multi_tmpl.id, "attribute_id": hinge.id,
+            "value_ids": [(6, 0, [lh_val.id, rh_val.id])],
+        })
+        variant_with_code = multi_tmpl.product_variant_ids[:1]
+        variant_with_code.default_code = "SB-CORNER-BLIND-FIXTURE"
+        # The RH twin mirrors prod's variant 1422 — no code assigned yet.
+        multi_tmpl.invalidate_recordset(["default_code"])
+        self.assertFalse(
+            multi_tmpl.default_code,
+            "sanity: Odoo blanks template default_code once >1 variant exists")
+
+        rule = self.Rule.create({
+            "name": "Multi-variant blind fixture",
+            "product_tmpl_id": multi_tmpl.id,
+            "corner_type_id": "blind-corner-basic",
+            "anchor_class": "junction",
+            "tier": "base",
+            "sequence": 20,
+            "payload": _VALID_JUNCTION_PAYLOAD,
+        })
+        d = rule.engine_dicts()[0]
+        self.assertEqual(
+            d["sku"], "SB-CORNER-BLIND-FIXTURE",
+            "engine_dicts() must resolve a real SKU from the variant "
+            "that actually carries a code, not silently return ''")
+
     def test_seeded_susan_base_corner_rule(self):
         rule = self.Rule.search([
             ("corner_type_id", "=", "diagonal-corner-lazy-susan"),
