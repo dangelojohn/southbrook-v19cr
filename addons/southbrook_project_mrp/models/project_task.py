@@ -32,6 +32,47 @@ _REQUIRED_CABINET_SPEC_LABELS = {
     "southbrook_finish": "Finish",
 }
 
+# Stable machine key per human string returned by
+# `_southbrook_missing_production_release_items()` (below, on ProjectTask). Explicit and
+# module-level, not derived mechanically from the label, so the mapping is auditable in a
+# diff: a new gate string added to that method without a matching entry here falls through
+# to the "other" catch-all in `_southbrook_primary_blocker_key` rather than raising.
+_PRIMARY_BLOCKER_KEY_BY_MISSING_ITEM = {
+    "Final site measurements": "site_measurements",
+    "CAD approved": "cad_approved",
+    "Cutlist approved": "cutlist_approved",
+    "Door/finish/hardware specs": "specs",
+    "BoM verified": "bom_verified",
+    "Linked MOs": "linked_mos",
+    "Components available": "components_available",
+    "WOs generated": "wos_generated",
+    "Schedule work orders": "schedule_work_orders",
+    "Crew assigned/reserved": "crew_assigned",
+    "Critical equipment available": "equipment_available",
+    "Install due date confirmed": "install_due_date",
+}
+
+# `southbrook_release_primary_blocker` selection values. "none" covers a fully-satisfied
+# job; "other" is the safety valve for any missing-item string that predates or outruns
+# `_PRIMARY_BLOCKER_KEY_BY_MISSING_ITEM` above, so the compute never crashes on an
+# unmapped label.
+_PRIMARY_BLOCKER_SELECTION = [
+    ("none", "Not Blocked"),
+    ("site_measurements", "Final Site Measurements"),
+    ("cad_approved", "CAD Approved"),
+    ("cutlist_approved", "Cutlist Approved"),
+    ("specs", "Door/Finish/Hardware Specs"),
+    ("bom_verified", "BoM Verified"),
+    ("linked_mos", "Linked MOs"),
+    ("components_available", "Components Available"),
+    ("wos_generated", "WOs Generated"),
+    ("schedule_work_orders", "Schedule Work Orders"),
+    ("crew_assigned", "Crew Assigned / Reserved"),
+    ("equipment_available", "Critical Equipment Available"),
+    ("install_due_date", "Install Due Date Confirmed"),
+    ("other", "Other"),
+]
+
 
 def _first_meaningful_line(*texts):
     for text in texts:
@@ -506,6 +547,22 @@ class ProjectTask(models.Model):
         string="Production Release Reason",
         compute="_compute_southbrook_production_release",
         readonly=True,
+    )
+    southbrook_release_primary_blocker = fields.Selection(
+        _PRIMARY_BLOCKER_SELECTION,
+        string="Primary Blocker",
+        compute="_compute_southbrook_production_release",
+        # store=True + index=True: the whole point is that a Floor Manager can group,
+        # pivot, and count by WHAT is blocking instead of opening every job to read the
+        # prose in southbrook_production_release_reason (which stays a non-stored Char —
+        # it is a sentence, not a dimension). See _southbrook_primary_blocker_key for the
+        # ordering rule that picks this value out of `missing`.
+        store=True,
+        index=True,
+        readonly=True,
+        help="The single gate to act on next. Not the first missing item overall — the "
+             "first one a sign-off cannot clear, because that is the one needing shop or "
+             "planning action. 'Not Blocked' when nothing is missing.",
     )
     southbrook_release_review_since = fields.Datetime(
         string="In Review Since",
@@ -1552,6 +1609,32 @@ class ProjectTask(models.Model):
             return "review"
         return "blocked"
 
+    def _southbrook_primary_blocker_key(self, missing):
+        """Pick the ONE gate from `missing` a Floor Manager should act on next.
+
+        Ordering: the first item in `missing` that is NOT in ATTESTABLE_GATES — i.e.
+        the first gate a sign-off cannot clear. A job can carry several outstanding
+        attestable gates (CAD approved, BoM verified, ...) alongside a single
+        operational one (no linked MOs, no install date, ...); naming the attestable
+        gate first would send the Floor Manager chasing a signature while the true
+        bottleneck — the thing that actually needs shop-floor or planning action —
+        sits untouched. Only when EVERY missing item is attestable (the job is purely
+        a stretch of signatures away from ready — the `review` state, see
+        `_southbrook_release_gate_kind`) does this fall back to the first missing
+        item, since there is no non-attestable item to name instead.
+
+        The human string is translated to a stable key via the module-level
+        `_PRIMARY_BLOCKER_KEY_BY_MISSING_ITEM` map; an unmapped string (a gate added
+        to `_southbrook_missing_production_release_items` without a matching map
+        entry) falls back to "other" rather than raising, so this compute can never
+        crash the record.
+        """
+        if not missing:
+            return "none"
+        operational = [item for item in missing if item not in self.ATTESTABLE_GATES]
+        first = operational[0] if operational else missing[0]
+        return _PRIMARY_BLOCKER_KEY_BY_MISSING_ITEM.get(first, "other")
+
     def _southbrook_missing_production_release_items(self):
         self.ensure_one()
         missing = []
@@ -1660,6 +1743,8 @@ class ProjectTask(models.Model):
             missing = task._southbrook_missing_production_release_items()
             state = task._southbrook_release_gate_kind(missing)
             task.southbrook_production_release_state = state
+            task.southbrook_release_primary_blocker = (
+                task._southbrook_primary_blocker_key(missing))
             if state == "ready":
                 task.southbrook_production_release_reason = (
                     "Production release checklist is complete.")

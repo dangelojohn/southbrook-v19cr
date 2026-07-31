@@ -51,6 +51,13 @@
         <field name="arch" type="xml">
             <pivot string="Floor Manager Analytics" sample="1">
                 <field name="southbrook_production_release_state" type="row"/>
+                <!-- What is blocking, not just that a job is blocked: replaces
+                     opening each of the 12 blocked jobs to read the
+                     southbrook_production_release_reason prose one at a time.
+                     Stored + indexed (project_task.py), so this row dimension
+                     resolves the same way southbrook_production_release_state
+                     above does. -->
+                <field name="southbrook_release_primary_blocker" type="row"/>
                 <!-- Second row dimension: install-due month. Available,
                      not forced open — the Floor Manager drills into it
                      from the pivot's own field picker. -->
@@ -106,6 +113,9 @@
                     <filter name="group_release_state"
                             string="Release State"
                             context="{'group_by': 'southbrook_production_release_state'}"/>
+                    <filter name="group_primary_blocker"
+                            string="Primary Blocker"
+                            context="{'group_by': 'southbrook_release_primary_blocker'}"/>
                     <filter name="group_risk_level"
                             string="Risk Level"
                             context="{'group_by': 'risk_level'}"/>
