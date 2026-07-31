@@ -841,6 +841,22 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 "id":             product.id,
                 "product_id":     product.id,
                 "product_name":   product.display_name,
+                # Task 8 fix (corner-remediation code review) — the 3D
+                # renderer's corner-cabinet builder
+                # (canvas/corner_cabinet.esm.js) picks its style
+                # (blind/pie-cut/diagonal) off this line's product
+                # default_code prefix. Send it directly instead of
+                # requiring the client to cross-reference the
+                # /products catalog: derived corner-node lines
+                # (SB-WALL-CORNER / SB-CORNER-BLIND / SB-CORNER-*) can
+                # legitimately reference a product outside the
+                # panel-catalog's southbrook_is_cabinet=True set (that
+                # catalog gate is for droppable inventory, not for
+                # every product a line can ever point at), so a
+                # client-side catalog lookup can never be relied on to
+                # resolve these. Same access boundary as
+                # product_name/display_name above — no sudo.
+                "default_code":   product.default_code or None,
                 "layout_key":     line.layout_key,
                 "cabinet_type":   line.cabinet_type,
                 "width_in":       line.width_in,

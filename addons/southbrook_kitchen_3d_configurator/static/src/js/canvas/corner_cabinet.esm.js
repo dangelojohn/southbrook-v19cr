@@ -42,15 +42,18 @@
  *                         box (buildOtherCabinet) — never guess a
  *                         shape from an unknown SKU
  *
- * `default_code` is not present in the /load_design_lines or
- * /rearrange line payload (controllers/main.py's
- * `_serialize_design_lines` only sends `product_id`) —
- * kitchen_configurator.js's `_lineToItem` backfills it from the
- * already-loaded product catalog (`state.products`, keyed by
- * `product_id`) before handing items to this canvas, so this reads
- * `item.default_code`, falling back to `item.sku` (the field name the
- * /products and /layout endpoints already use) for the paths that
- * carry it directly (fresh drag/+Add, the /layout generator).
+ * `controllers/main.py`'s `_serialize_design_lines` (the /load_design_lines
+ * and /rearrange line payload) sends `default_code` directly per line
+ * (code-review fix, 2026-07-30) — this reads `item.default_code`,
+ * falling back to `item.sku` (the field name the /products and
+ * /layout endpoints use) for the paths that carry it that way instead
+ * (fresh drag/+Add, the /layout generator). kitchen_configurator.js's
+ * `_lineToItem` also keeps a `state.products` catalog-lookup fallback
+ * for the rare case a line dict is missing it from both sources —
+ * deliberately NOT the primary path, since a derived corner-node line
+ * can legitimately reference a product outside the
+ * `southbrook_is_cabinet=True` panel-catalog filter `/products` gates
+ * on, so a catalog-only lookup could never resolve those SKUs.
  *
  * WINDING NOTE: every new shape here is a hand-rolled convex prism
  * (explicit position/index BufferGeometry, computeVertexNormals) and
@@ -120,10 +123,27 @@ function polygonPrismGeometry(THREE, pointsXZ, y0, height) {
     return geo;
 }
 
-function scalePointsFromCentroid(points, factor) {
-    const cx = points.reduce((s, p) => s + p[0], 0) / points.length;
-    const cz = points.reduce((s, p) => s + p[1], 0) / points.length;
-    return points.map(([x, z]) => [cx + (x - cx) * factor, cz + (z - cz) * factor]);
+// Countertop overhang — DIRECTIONAL, not a uniform scale. Code-review
+// fix (2026-07-30): a uniform centroid scale pushed every edge outward
+// a few tenths of an inch, including the two straight edges (z=0
+// against the host wall; x=0/x=w against the perpendicular wall or a
+// neighbouring run) that must stay flush for footprint/neighbour
+// alignment. base_cabinet.esm.js's own countertop only overhangs the
+// open FRONT face (+0.07 scene-ft) and stays ~flush on the back/sides
+// (+0.005 total width, i.e. an even split of ~0.0025 per side) — this
+// mirrors that: only the door-chord points (the diagonal/arc "open"
+// face, identified by exact value-match against `shape.doorChord`,
+// the same array these points come from) move outward along the
+// shape's own outward door normal; every other perimeter point (the
+// three wall/neighbour-abutting corners) is left byte-identical.
+function overhangCountertopPoints(shape, frontOverhang) {
+    const chordKeys = new Set(shape.doorChord.map(([x, z]) => `${x},${z}`));
+    const [nx, nz] = shape.doorNormal;
+    return shape.points.map(([x, z]) => (
+        chordKeys.has(`${x},${z}`)
+            ? [x + nx * frontOverhang, z + nz * frontOverhang]
+            : [x, z]
+    ));
 }
 
 // Diagonal (Lazy-Susan) clip: cut the corner farthest from the host
@@ -230,8 +250,11 @@ function buildClippedCorner(THREE, mk, palette, item, style) {
     ));
 
     if (!isWall) {
+        // 0.065 scene-ft ≈ 0.78in front overhang — same magnitude as
+        // base_cabinet.esm.js's countertop front overhang; zero on the
+        // wall/neighbour-abutting edges (see overhangCountertopPoints).
         objects.push(mk(
-            polygonPrismGeometry(THREE, scalePointsFromCentroid(shape.points, 1.02), h, CTR),
+            polygonPrismGeometry(THREE, overhangCountertopPoints(shape, 0.065), h, CTR),
             palette.counter, [0, 0, 0], null,
             { cs: true, rough: 0.4, metal: 0.05, side: "double" },
         ));
@@ -326,7 +349,9 @@ function buildBlindCorner(THREE, mk, palette, item, blindNearX0) {
  * @param {object} palette
  * @param {object} item — southbrook.kitchen.design.line dict; reads
  *   default_code (falls back to sku) to pick a style, and
- *   __blindNearX0 (see withCornerBlindHint below) for blind massing.
+ *   __blindNearX0 (see cornerBlindNearX0 below, merged in by
+ *   _placeCabinetGroup's `extra` param — never a substitute item) for
+ *   blind massing.
  * @returns {{ objects: THREE.Mesh[], clickable: THREE.Mesh[] }}
  */
 export function buildCornerCabinet(THREE, mk, palette, item) {
@@ -349,24 +374,33 @@ export function buildCornerCabinet(THREE, mk, palette, item) {
  * sits in (COORDINATE_CONTRACT's anchor convention is rotation-
  * relative, not room-relative), and the wall-adjacent `zone`/`handed`
  * data the layout engine resolved this from never reaches the client
- * payload (controllers/main.py's line dict only sends product_id/
- * dims/pose — see the file docstring). This resolves it purely from
- * already-payload-available fields (position + rotation) plus the
- * room's own dimensions: compare the two local back-edge corners
- * (z=0, the edge that's always flush against the host wall) and see
- * which one lands closer to any of the room's four corners in world
- * space. Pure/no side effects; returns `item` unchanged when room
- * dimensions aren't available (falls back to blindNearX0=true in the
- * caller default).
+ * payload. This resolves it purely from already-payload-available
+ * fields (position + rotation) plus the room's own dimensions: compare
+ * the two local back-edge corners (z=0, the edge that's always flush
+ * against the host wall) and see which one lands closer to any of the
+ * room's four corners in world space. Pure/no side effects.
+ *
+ * Code-review fix (2026-07-30): this used to return a full item copy
+ * (`{...item, __blindNearX0}`) that the caller substituted for the
+ * canonical `it` passed into `_placeCabinetGroup` — since that copy is
+ * what got bound as `mesh.userData.item`, every corner cabinet's
+ * drag/pin/select operated on a disconnected clone instead of the real
+ * `state.items` entry (the exact F8 bug class kitchen_canvas.esm.js's
+ * `_placeCabinetGroup` docstring describes). Returns a bare
+ * boolean/undefined instead — the caller merges it into the builder's
+ * local-frame copy via `_placeCabinetGroup`'s `extra` param, never onto
+ * the real item.
  *
  * @param {object} item
  * @param {{width_in?: number, depth_in?: number}} room
- * @returns {object} item, or a shallow copy with __blindNearX0 set
+ * @returns {boolean|undefined} true/false once resolved; undefined
+ *   when room dimensions aren't available (buildBlindCorner's own
+ *   `!== false` check then defaults to true).
  */
-export function withCornerBlindHint(item, room) {
+export function cornerBlindNearX0(item, room) {
     const rw = (room && room.width_in) || 0;
     const rd = (room && room.depth_in) || 0;
-    if (!item || !rw || !rd || !item.width_in) return item;
+    if (!item || !rw || !rd || !item.width_in) return undefined;
     const th = ((item.rotation_deg || 0) * Math.PI) / 180;
     const c = Math.cos(th), s = Math.sin(th);
     const x0 = item.x_position_in || 0, z0 = item.z_position_in || 0;
@@ -379,5 +413,5 @@ export function withCornerBlindHint(item, room) {
     );
     const dNearX0 = distToNearestRoomCorner(worldOf(0, 0));
     const dNearXW = distToNearestRoomCorner(worldOf(item.width_in, 0));
-    return { ...item, __blindNearX0: dNearX0 <= dNearXW };
+    return dNearX0 <= dNearXW;
 }

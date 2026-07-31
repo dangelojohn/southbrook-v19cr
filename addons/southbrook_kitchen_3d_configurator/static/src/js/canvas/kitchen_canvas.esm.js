@@ -48,7 +48,7 @@ import {
     buildOtherCabinet, buildFillerPanel, buildEndCapPanel,
 } from "@southbrook_kitchen_3d_configurator/js/canvas/other_cabinets.esm";
 import {
-    buildCornerCabinet, withCornerBlindHint,
+    buildCornerCabinet, cornerBlindNearX0,
 } from "@southbrook_kitchen_3d_configurator/js/canvas/corner_cabinet.esm";
 import { ndcFromEvent }      from "@southbrook_kitchen_3d_configurator/js/canvas/pointer_helpers.esm";
 import { computeViewSpecs }  from "@southbrook_kitchen_3d_configurator/js/canvas/view_specs.esm";
@@ -294,13 +294,17 @@ export class KitchenCanvas extends Component {
             this._placeCabinetGroup(it, buildWallCabinet));
         // Task 8 (corner-remediation) — corner lines get real corner
         // massing (diagonal/pie-cut/blind) instead of falling into the
-        // generic buildOtherCabinet box below. withCornerBlindHint is a
+        // generic buildOtherCabinet box below. cornerBlindNearX0 is a
         // pure geometry helper (position + room dims only, no placement
         // change) that tells the blind-corner style which end of the
         // cell sits nearest an actual room corner; every other style
-        // ignores it.
+        // ignores it. Passed via `extra` (code-review fix, 2026-07-30)
+        // — NOT by substituting a copy for `it` — so the real state
+        // item, not a clone, is what _placeCabinetGroup binds as
+        // userData.item (drag/pin/select identity; see its docstring).
         items.filter(it => it.cabinet_type === "corner").forEach(it =>
-            this._placeCabinetGroup(withCornerBlindHint(it, room), buildCornerCabinet));
+            this._placeCabinetGroup(it, buildCornerCabinet,
+                { __blindNearX0: cornerBlindNearX0(it, room) }));
         items.filter(it => !knownTypes.has(it.cabinet_type)).forEach(it =>
             this._placeCabinetGroup(it, buildOtherCabinet));
         items.filter(it => it.cabinet_type === "filler").forEach(it =>
@@ -580,13 +584,24 @@ export class KitchenCanvas extends Component {
     // offsets zero (or reproduced locally), grp.position + local mesh
     // coordinates sum to exactly the old legacy absolute-path world
     // coordinates.
-    _placeCabinetGroup(it, builder) {
+    // `extra` (optional) — additional read-only geometry hints merged
+    // ONLY into the local-frame copy the builder sees (e.g. corner_
+    // cabinet.esm.js's __blindNearX0), never onto `it` itself and never
+    // onto the object bound as userData.item below. Task 8 code-review
+    // fix (2026-07-30): an earlier version of the corner dispatch
+    // computed such a hint by passing a NEW shallow-copied item as `it`
+    // — that copy, not the real state.items entry, is what got bound as
+    // userData.item, breaking drag/pin/select for every corner cabinet
+    // (the exact F8 bug class described below, reintroduced by that
+    // call site). `extra` fixes this at the root: `it` passed to this
+    // method is ALWAYS the real state item, unconditionally.
+    _placeCabinetGroup(it, builder, extra) {
         const THREE = this.T.THREE, scene = this.T.scene;
         const grp = new THREE.Group();
         const mkG = (geo, color, pos, rotE, opts) =>
             makeMesh(THREE, grp, geo, color, pos, rotE, opts);
         const res = builder(THREE, mkG, P,
-            { ...it, x_position_in: 0, __localFrame: true });
+            { ...it, ...(extra || null), x_position_in: 0, __localFrame: true });
         // F8 fix (2026-07-27) — the builder above ran against `{ ...it,
         // x_position_in: 0, __localFrame: true }`, a SHALLOW COPY used
         // only so the builder's local-frame geometry math (walls/panels

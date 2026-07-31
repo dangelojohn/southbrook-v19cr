@@ -516,14 +516,19 @@ class SouthbrookKitchenConfigurator extends Component {
     // builder (canvas/corner_cabinet.esm.js) picks its style (blind /
     // pie-cut / diagonal) off each design line's product default_code
     // prefix. Server line-dicts from /load_design_lines and /rearrange
-    // (controllers/main.py _serialize_design_lines) only carry
-    // product_id, not default_code/sku — backfill it here from the
-    // already-loaded product catalog (state.products, keyed by
-    // product_id) so the renderer can tell corner variants apart
-    // without any server-side change. Non-destructive: an explicit
-    // default_code already on the line (e.g. a test fixture) always
-    // wins; falls back to null (renderer degrades to the plain box)
-    // when the catalog hasn't loaded or the product isn't in it.
+    // (controllers/main.py _serialize_design_lines) now send
+    // default_code directly (code-review fix, 2026-07-30) — read that
+    // first. The state.products catalog lookup is kept only as a
+    // fallback for shapes that predate/bypass that field (e.g. a raw
+    // line dict missing it for some other reason); it is NOT relied on
+    // as the primary path any more, because /products gates on
+    // southbrook_is_cabinet=True and a derived corner-node line can
+    // legitimately reference a product outside that panel-catalog
+    // filter (e.g. SB-WALL-CORNER/SB-CORNER-BLIND before/without a
+    // catalog-visibility flag) — a catalog-only lookup would silently
+    // never resolve those. Non-destructive either way: an explicit
+    // default_code already on the line always wins; falls back to null
+    // (renderer degrades to the plain box) when neither source has it.
     _lineToItem(line) {
         let defaultCode = line.default_code || null;
         if (!defaultCode) {
