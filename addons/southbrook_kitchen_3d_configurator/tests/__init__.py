@@ -148,3 +148,8 @@ from . import test_sentinel_write_guard
 # restriction, and hand-contradiction guard (shared with the
 # validator's CORNER_HAND_MISMATCH check via _sb_corner_expected_hand).
 from . import test_corner_hand_swap
+
+# Task 25, corner-remediation (2026-07-30) — the invariant fixture suite:
+# ONE entrypoint asserting geometry/corner/reconciliation/catalogue
+# invariants for EVERY active shipped kitchen template.
+from . import test_invariant_matrix
