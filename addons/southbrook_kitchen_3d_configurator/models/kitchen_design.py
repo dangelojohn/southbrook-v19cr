@@ -1093,6 +1093,44 @@ class SouthbrookKitchenDesign(models.Model):
     # Severities: blocking (refuses quote), warning (yellow), info.
     _STD_WIDTHS_IN = (6, 9, 12, 15, 18, 21, 24, 27, 30, 36, 42, 48)
 
+    def _bom_autoseed_would_resolve(self, product):
+        """True if `_ensure_kitchen_bom` (the quotation flow's autoseed,
+        called from `action_create_quotation` before its own MISSING_BOM
+        gate) would leave `product` with a BOM satisfying the same
+        existence check the validator runs — computed READ-ONLY, without
+        calling `_ensure_kitchen_bom` or creating anything (validating
+        must never seed a BOM as a side effect).
+
+        `_ensure_kitchen_bom` unconditionally succeeds at creating a
+        fresh template-level (`product_id` unset) 'normal' BOM — the
+        dims/family/door-count it derives all fall back to sane
+        defaults and nothing in that path raises — UNLESS its own fast
+        path finds an EXISTING 'normal'-type BOM on the template first
+        and returns THAT one instead of creating the template-level
+        stub. That fast path (`product_tmpl.bom_ids.filtered(lambda b:
+        b.type == "normal")`) matches on `type` only, not on which
+        variant the BOM is scoped to. So the one real "genuinely outside
+        the auto-seed logic" case is: the template already carries a
+        'normal' BOM pinned to a SIBLING variant (`product_id` set, and
+        not this one) — autoseed's fast path hands back that sibling's
+        BOM without ever creating the template-level BOM THIS variant
+        needs, so MISSING_BOM survives the quote flow's autoseed call
+        unchanged and would still block quoting too.
+        """
+        tmpl = product.product_tmpl_id
+        if not tmpl:
+            return False
+        existing_normal = self.env["mrp.bom"].sudo().with_context(
+            active_test=False
+        ).search([
+            ("product_tmpl_id", "=", tmpl.id),
+            ("type", "=", "normal"),
+        ], limit=1)
+        if (existing_normal and existing_normal.product_id
+                and existing_normal.product_id != product):
+            return False
+        return True
+
     def _check_production_ready(self):
         self.ensure_one()
         issues = []
@@ -1325,8 +1363,24 @@ class SouthbrookKitchenDesign(models.Model):
 
         # 4) BOM presence — required for MO generation. Check both
         #    template-level and variant-level BOMs.
+        #
+        #    Task 2 (corner-remediation 2026-07-30, V2-validator.md §5's
+        #    "auto-seed nuance") — action_create_quotation ALSO runs
+        #    this same existence check (D12 gate) but only AFTER first
+        #    running _ensure_kitchen_bom for every template on the
+        #    design (kitchen_design.py ~2216), which auto-seeds a
+        #    template-level 'normal' BOM stub for free. Cold validate
+        #    has no such autoseed step, so blindly BLOCKing here on a
+        #    formality the quote flow heals unconditionally is
+        #    validator/quote-flow incoherence — live repro: design 102's
+        #    SB-WALL-CORNER. So: a missing BOM the quote flow WOULD
+        #    autoseed reports as a WARNING here (never actually seeded —
+        #    that would be a side effect of validating); a product
+        #    autoseed genuinely can't resolve
+        #    (`_bom_autoseed_would_resolve`) still BLOCKs.
         Bom = self.env["mrp.bom"]
-        missing = {}
+        missing_block = {}
+        missing_warn = {}
         for line in self.cabinet_line_ids:
             if line.cabinet_type in ("filler",):
                 continue
@@ -1339,14 +1393,28 @@ class SouthbrookKitchenDesign(models.Model):
                 ("product_tmpl_id", "=", line.product_id.product_tmpl_id.id),
                 ("product_id", "=", False),
             ], limit=1)
-            if not has_bom:
-                missing.setdefault(line.product_id.display_name, []).append(line.id)
-        if missing:
-            parts = [name + _line_ref(missing[name]) for name in sorted(missing)]
+            if has_bom:
+                continue
+            bucket = (missing_warn
+                      if self._bom_autoseed_would_resolve(line.product_id)
+                      else missing_block)
+            bucket.setdefault(line.product_id.display_name, []).append(line.id)
+        if missing_block:
+            parts = [name + _line_ref(missing_block[name])
+                     for name in sorted(missing_block)]
             issues.append({
                 "code":     "MISSING_BOM",
                 "severity": "blocking",
                 "message":  "No BOM defined: %s" % ", ".join(parts),
+            })
+        if missing_warn:
+            parts = [name + _line_ref(missing_warn[name])
+                     for name in sorted(missing_warn)]
+            issues.append({
+                "code":     "BOM_WILL_AUTOSEED",
+                "severity": "warning",
+                "message":  ("BOM will be auto-created at quotation: %s"
+                             % ", ".join(parts)),
             })
 
         # 5) Non-standard widths — soft warning. Catches data-entry

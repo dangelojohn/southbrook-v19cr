@@ -109,3 +109,10 @@ from . import test_validator_repair
 # southbrook.kitchen.design.line rows parked at the client's sentinel
 # position (design 99 prod fact: x_position_in=1,000,000).
 from . import test_debris_repair_migration
+
+# Task 2, corner-remediation (2026-07-30) — BOM-gate coherence on cold
+# validate: a missing BOM the quotation flow's autoseed would resolve
+# reports as BOM_WILL_AUTOSEED (warning), not MISSING_BOM (blocking); a
+# product genuinely outside the auto-seed logic (sibling-variant BOM
+# shadowing the template fast path) still blocks.
+from . import test_bom_gate_coherence
