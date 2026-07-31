@@ -49,7 +49,10 @@ Locks in the fixes landed across kitchen_3d_configurator 5.6.3 -> 5.6.7:
         assign the resolved partner to the calling design and return a
         client action, and partner resolution must reuse an existing
         "Walk-in Retail" / legacy "Walk-in Customer" record rather than
-        minting a duplicate.
+        minting a duplicate. Review-fix hardening: the button path must
+        never overwrite a design that already carries a real partner_id
+        -- this method is public-for-RPC and the button's
+        invisible="partner_id" is a client-side hint only, not a guard.
 
 If a future refactor regresses ANY of these, one of these tests must
 fail. Style follows the sibling `test_save_design_acl.py` (2026-07-01)
@@ -534,6 +537,44 @@ class TestTrackBEndToEnd(TransactionCase):
             "button dispatch must assign the resolved walk-in partner "
             "to the design that owns the button",
         )
+
+    def test_10b1_get_or_create_walkin_partner_button_never_overwrites_real_partner(self):
+        """Review-fix regression pin (2026-07-30, Important finding) --
+        the button is only `invisible="partner_id"` client-side; this
+        method is public-for-RPC. A stale form, a double-click racing
+        the reload, or a crafted call_button against a design that
+        already carries a REAL customer must NOT silently overwrite it
+        with the walk-in partner.
+
+        Dispatched through the real button-shape `call_kw` (args:
+        [[design.id]]), same as test_10a/test_10b, against a design
+        whose partner_id is already set to a real (non-walk-in)
+        customer."""
+        real_customer = self.Partner.create({
+            "name":  "SBK-031 Real Customer -- must not be overwritten",
+            "email": "sbk031.real@southbrook.test",
+        })
+        design = self._make_design(name="SBK-031 button guard")
+        design.partner_id = real_customer.id
+
+        result = odoo_call_kw(
+            self.env["southbrook.kitchen.design"],
+            "get_or_create_walkin_partner",
+            [[design.id]],
+            {},
+        )
+
+        self.assertEqual(
+            design.partner_id.id, real_customer.id,
+            "button dispatch must NOT overwrite a design's already-set "
+            "real partner_id with the walk-in partner",
+        )
+        self.assertIsInstance(
+            result, dict,
+            "must still return a client action, not crash or leak a "
+            "bare id, even when nothing was written",
+        )
+        self.assertEqual(result.get("type"), "ir.actions.client")
 
     def test_10c_get_or_create_walkin_partner_reuses_existing_by_either_name(self):
         """Regression pin -- reuse, never duplicate. If a walk-in

@@ -325,7 +325,12 @@ class SouthbrookKitchenDesign(models.Model):
     #      site or the button's `name=`/`type=` attributes. When present,
     #      the button path also ASSIGNS the resolved partner to the
     #      calling design(s) and reloads the form — the user is never
-    #      told to go pick a partner manually.
+    #      told to go pick a partner manually. Never overwrites a design
+    #      that already has a real partner_id (review fix, 2026-07-30) —
+    #      the button's `invisible="partner_id"` only hides it
+    #      client-side and this stays reachable by any call_button, so a
+    #      stale form / double-click / crafted call must not silently
+    #      replace a real customer with the walk-in one.
     #
     # Partner resolution — reuse, never duplicate. `southbrook_estimating`
     # demo data already seeds a real "Walk-in Retail" business partner
@@ -361,7 +366,20 @@ class SouthbrookKitchenDesign(models.Model):
                    else [design_ids])
             designs = self.env[self._name].browse(ids).exists()
             if designs:
-                designs.write({"partner_id": walkin.id})
+                # Never clobber a REAL customer already on the design.
+                # The button is only `invisible="partner_id"`
+                # client-side (kitchen_design_views.xml) — this method
+                # stays public-for-RPC, so a stale form, a double-click
+                # racing the post-assign reload, or a crafted
+                # call_button against a design that already carries a
+                # real customer must not silently overwrite it with
+                # the walk-in partner. Designs that already have a
+                # partner are left untouched; still reload (a no-op
+                # for them) rather than fall through to returning a
+                # bare id the button dispatch can't act on.
+                assignable = designs.filtered(lambda d: not d.partner_id)
+                if assignable:
+                    assignable.write({"partner_id": walkin.id})
                 return {"type": "ir.actions.client", "tag": "reload"}
 
         return walkin.id
