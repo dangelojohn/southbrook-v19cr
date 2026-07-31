@@ -73,17 +73,29 @@ own displayed/inspected shape matching the write-path guard's
 contract). Idempotency is unaffected: the WHERE clause still only ever
 matches `active = true` rows, so a second run finds nothing left to
 touch regardless of what the SET list contains.
+
+Task 9b review round 2 (2026-07-30) — the threshold VALUE now has
+exactly one definition. Previously this module carried its own literal
+`_DEBRIS_THRESHOLD_IN = 9999`, independent from controllers/main.py's
+identical-by-hand-copy constant — two numbers that happened to agree,
+not one shared source. Imports `DEBRIS_THRESHOLD_IN` from
+models/kitchen_design.py instead (same constant the write-path guard
+and all three RESET-TO-CANONICAL reactivation sites now share — see
+that constant's docstring). Safe to import here: post-migrate scripts
+run AFTER this addon's own Python/model code is loaded into the
+registry for the `-u` cycle that triggers them, so the model module is
+already fully importable by the time `migrate()` runs; the archival SQL
+itself stays entirely self-contained (raw cursor UPDATE, no ORM/model
+coupling) — only the threshold INTEGER is shared, not any model logic.
 """
 import logging
 
 from odoo import SUPERUSER_ID, api
+from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
+    DEBRIS_THRESHOLD_IN as _DEBRIS_THRESHOLD_IN,
+)
 
 _logger = logging.getLogger(__name__)
-
-# Inches. See docstring above for why this threshold is safe: it sits
-# ~2-3 orders of magnitude above any real room dimension and ~2 orders
-# of magnitude below the verified prod sentinel (1,000,000).
-_DEBRIS_THRESHOLD_IN = 9999
 
 
 def migrate(cr, version):

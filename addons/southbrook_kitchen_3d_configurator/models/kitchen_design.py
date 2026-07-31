@@ -19,6 +19,19 @@ _logger = logging.getLogger(__name__)
 # fields to the engine.
 _MM_PER_IN = 25.4
 
+# Task 9b (corner-remediation, 2026-07-30; review round 2) — single
+# source of truth for the debris/sentinel position threshold. Shared by:
+# controllers/main.py's save_design write-path guard (imports this
+# constant directly — see that file's own comment), the debris-repair
+# migration (migrations/19.0.5.34.1/post-migrate.py — imports this
+# constant too; its own archival SQL stays self-contained, only the
+# threshold VALUE is shared, per the review's explicit ask), and every
+# RESET-TO-CANONICAL reactivation site that must not resurrect a debris
+# line (SouthbrookKitchenDesignLine._is_debris_signature below, used by
+# action_auto_arrange's reset, _transform_layout's reset, and
+# controllers/main.py's save_design down-shift branch).
+DEBRIS_THRESHOLD_IN = 9999
+
 
 class _BomAutoseedDryRun(Exception):
     """Internal control-flow sentinel for `_bom_autoseed_would_resolve`
@@ -595,23 +608,24 @@ class SouthbrookKitchenDesign(models.Model):
             #     no deletions), then (b) delete derived artifacts. Order
             #     matters: never re-filter a recordset across an unlink or we
             #     touch a deleted record (MissingError). Each access is fresh.
-            # Task 9b (review fix) — EXCLUDE is_unresolved lines from this
-            # blanket reactivation. This reset exists to revive CANONICAL
+            # Task 9b (review fix; narrowed round 2) — EXCLUDE DEBRIS-
+            # SIGNATURE lines from this blanket reactivation, NOT every
+            # is_unresolved line. This reset exists to revive CANONICAL
             # cabinets that a previous arrangement run temporarily
             # superseded with a derived artifact (a real corner consuming
-            # two runs' worth of cabinets, say) — is_unresolved lines
-            # (save_design's sentinel/debris guard) were never
-            # corner-consumed canonical selections; they're archived
-            # because they were never a valid line to begin with. Without
-            # this exclusion, a save_design call that both (a) writes a
-            # sentinel line archived+unresolved+unpriced and (b) triggers
-            # action_auto_arrange in the SAME request (walls_used >= 2 —
-            # exactly the multi-wall scenario the sentinel originates
-            # from) would immediately reactivate it here and hand it a
-            # real computed pose a few lines below, defeating the guard
-            # in the one scenario it exists for.
+            # two runs' worth of cabinets, say) — a save_design
+            # sentinel/debris line was never a corner-consumed canonical
+            # selection, so it must not be swept back in here. But
+            # is_unresolved is dual-purpose: a template GHOST placeholder
+            # (Task 2) is also is_unresolved=True, active=True initially,
+            # and CAN legitimately be archived by corner-absorption —
+            # excluding it here too would permanently strand it,
+            # breaking re-arrange's idempotence contract. Key the
+            # exclusion on the full debris signature (archived +
+            # is_unresolved + at/beyond DEBRIS_THRESHOLD_IN on x or z —
+            # see _is_debris_signature), not on is_unresolved alone.
             ctx.cabinet_line_ids.filtered(
-                lambda l: not l.active and not l.is_unresolved
+                lambda l: not l.active and not l._is_debris_signature()
             ).write({"active": True})
             ctx.cabinet_line_ids.filtered(
                 lambda l: l.layout_role == "derived").unlink()
@@ -2607,14 +2621,17 @@ class SouthbrookKitchenDesign(models.Model):
                 ctx = self.with_context(active_test=False)
                 canon = ctx.cabinet_line_ids.filtered(
                     lambda l: l.layout_role == "canonical")
-                # Task 9b (review fix) — same exclusion as the
-                # action_auto_arrange reset above: an is_unresolved line
-                # (save_design's sentinel/debris guard) defaults to
-                # layout_role="canonical" but was never a real canonical
-                # selection, so it must not be swept back into "active"
-                # by this reset either.
+                # Task 9b (review fix; narrowed round 2) — same DEBRIS-
+                # SIGNATURE exclusion as the action_auto_arrange reset
+                # above (see _is_debris_signature and the round-2 note
+                # there for why is_unresolved alone is the wrong key — it
+                # would strand legitimate template GHOST placeholders,
+                # which are also is_unresolved but must remain revivable).
+                # A sentinel line defaults to layout_role="canonical" but
+                # was never a real canonical selection, so it must not be
+                # swept back into "active" by this reset either.
                 canon.filtered(
-                    lambda l: not l.active and not l.is_unresolved
+                    lambda l: not l.active and not l._is_debris_signature()
                 ).write({"active": True})
                 by_wall = {}
                 for line in canon:
@@ -2919,6 +2936,35 @@ class SouthbrookKitchenDesignLine(models.Model):
         string="Position",
         compute="_compute_position_label",
     )
+
+    # ── Task 9b (review round 2) — the DEBRIS SIGNATURE, not is_unresolved
+    # alone ────────────────────────────────────────────────────────────
+    # is_unresolved is dual-purpose: template instantiation (Task 2) also
+    # sets it on GHOST placeholder lines that are active=True, carry an
+    # ordinary cabinet_type, and legitimately PARTICIPATE in arrange —
+    # they can be archived by the corner-absorption/supersede step just
+    # like any other canonical line, and MUST be revivable by the reset
+    # steps below or re-arrange's idempotence contract (run N times ->
+    # identical state) breaks (a ghost that gets permanently stranded
+    # archived is state that never converges back).
+    #
+    # A save_design sentinel/debris line (controllers/main.py's write-
+    # path guard) is a DIFFERENT, narrower thing: archived AND
+    # is_unresolved AND parked at/beyond DEBRIS_THRESHOLD_IN on x or z.
+    # Only THAT three-part signature must be excluded from reactivation.
+    # A round-1 review fix used `not is_unresolved` alone, which over-
+    # excluded every ghost too, permanently stranding them — this method
+    # is the round-2 narrowing, used identically by all three
+    # RESET-TO-CANONICAL reactivation sites (action_auto_arrange's reset
+    # and _transform_layout's reset below, plus controllers/main.py's
+    # save_design down-shift branch) so there is exactly one definition
+    # of "is this line debris", not three ad-hoc copies.
+    def _is_debris_signature(self):
+        self.ensure_one()
+        if self.active or not self.is_unresolved:
+            return False
+        return (abs(self.x_position_in or 0) >= DEBRIS_THRESHOLD_IN
+                or abs(self.z_position_in or 0) >= DEBRIS_THRESHOLD_IN)
 
     # ── Task B3 (Materials geometry-writeback plan, Increment B) ────────
     # This line's own width_in/height_in/depth_in ARE the real per-

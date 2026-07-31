@@ -17,6 +17,18 @@ from odoo.addons.southbrook_estimating.models import kitchen_layout_engine
 from odoo.addons.southbrook_estimating.models.kitchen_layout_engine import (
     LayoutCapacityExceeded,
 )
+# Task 9b (review round 2) — the debris/sentinel threshold constant now
+# has exactly ONE definition, on the model (kitchen_design.py), shared
+# by this guard, the migration, and all three RESET-TO-CANONICAL
+# reactivation sites (the other two live on the model itself as
+# SouthbrookKitchenDesignLine._is_debris_signature; this file's own
+# elif-branch reset — save_design's down-shift path — calls that same
+# method directly on the line recordset, so only the raw threshold
+# VALUE needs importing here for the write-path guard's own
+# raw-JSON-value check below, which runs before any line record exists).
+from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
+    DEBRIS_THRESHOLD_IN as _DEBRIS_THRESHOLD_IN,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -24,11 +36,9 @@ _logger = logging.getLogger(__name__)
 # against the client's 1e6 sort-key sentinel (kitchen_configurator.js
 # `_addCabinetFromProduct`'s `sortX` fallback) leaking into a save_design
 # payload when packRow is skipped in multiWall mode (Task 9 report,
-# "producer" section). Same threshold/name as the debris-repair migration
-# (migrations/19.0.5.34.1/post-migrate.py's `_DEBRIS_THRESHOLD_IN`) —
-# comfortably above any real room dimension, comfortably below the
-# verified prod sentinel (1,000,000).
-_DEBRIS_THRESHOLD_IN = 9999
+# "producer" section). Threshold value imported from kitchen_design.py's
+# `DEBRIS_THRESHOLD_IN` (review round 2 — single source of truth; see
+# that constant's docstring for the full list of shared call sites).
 
 
 def _is_sentinel_position(value):
@@ -722,9 +732,25 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             # action_auto_arrange's own reset block (kitchen_design.py
             # ~461-477): restore archived canonical lines, then unlink the
             # derived ones.
+            #
+            # Task 9b (review round 2) — THIRD reactivation site with the
+            # same class of bug the first two had: a two-save sequence
+            # (save #1 multi-wall, creates derived corners; save #2
+            # single-wall, containing/after a guarded sentinel line) hits
+            # this elif branch and would blanket-reactivate the sentinel
+            # right along with the legitimately-superseded canonicals.
+            # Excluded via the same DEBRIS-SIGNATURE predicate the two
+            # kitchen_design.py reset sites use (archived + is_unresolved
+            # + at/beyond DEBRIS_THRESHOLD_IN on x or z —
+            # SouthbrookKitchenDesignLine._is_debris_signature) — NOT a
+            # bare `not l.is_unresolved`, which would also strand
+            # legitimate template GHOST placeholder lines (also
+            # is_unresolved=True, but ordinary active cabinets that
+            # participate in arrange and must remain revivable).
             ctx = design.with_context(active_test=False)
             ctx.cabinet_line_ids.filtered(
-                lambda l: not l.active).write({"active": True})
+                lambda l: not l.active and not l._is_debris_signature()
+            ).write({"active": True})
             design.invalidate_recordset(["cabinet_line_ids"])
             ctx.cabinet_line_ids.filtered(
                 lambda l: l.layout_role == "derived").unlink()

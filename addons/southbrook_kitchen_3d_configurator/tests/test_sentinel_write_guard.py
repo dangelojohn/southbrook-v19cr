@@ -265,9 +265,17 @@ class TestSentinelWriteGuard(TransactionCase):
     # archived line, including the sentinel THIS SAME save had just
     # archived a few lines above — then handed it a real engine pose,
     # completely undoing the guard in the one scenario it exists for.
-    # Fixed by excluding is_unresolved lines from that reactivation
-    # (same fix mirrored in `_transform_layout`'s reset for
-    # flip/rotate). Recipe (2-wall corner resolution) mirrors
+    # Fixed (round 2: narrowed to the DEBRIS SIGNATURE — archived +
+    # is_unresolved + at/beyond the sentinel position threshold, NOT
+    # is_unresolved alone, which would also strand legitimate template
+    # GHOST placeholder lines — see
+    # SouthbrookKitchenDesignLine._is_debris_signature and
+    # test_ghost_placeholder_survives_idempotent_rearrange_while_debris_
+    # does_not below) in all three RESET-TO-CANONICAL sites:
+    # action_auto_arrange's reset, `_transform_layout`'s reset
+    # (flip/rotate), and save_design's own down-shift elif branch (see
+    # test_sentinel_survives_downshift_after_multiwall_save below).
+    # Recipe (2-wall corner resolution) mirrors
     # test_wall_placement_engine.py's
     # test_save_response_includes_placed_poses_for_wall_lines fixture
     # (1 back + 1 left cabinet), which is known to trigger real corner
@@ -376,3 +384,217 @@ class TestSentinelWriteGuard(TransactionCase):
         self.assertFalse(active_rows.is_unresolved)
         self.assertEqual(active_rows.x_position_in, 30.0)
         self.assertEqual(active_rows.price_unit, 500.0)
+
+    # ── Review round 2 (Finding 1) — third reactivation site ────────────
+    # save_design's OWN down-shift elif branch (controllers/main.py
+    # ~715-731, "Fewer than 2 walls now in use but stale derived corner
+    # lines remain") mirrors action_auto_arrange's reset but is a
+    # SEPARATE code path, only reachable via a SECOND save_design call.
+    # Save #1 spans 2 walls and gets corner-absorbed (creating a derived
+    # corner + archiving the two originals as superseded CANONICAL
+    # lines — exactly what this elif branch exists to later revive).
+    # Save #2 keeps the corner's own layout_key in the payload — exactly
+    # what a real client does, since save #1's response's authoritative
+    # `lines` (which the client replaces state.items from wholesale —
+    # see PR4/C2 comments elsewhere in this file) already contains it;
+    # NOT resubmitting it would just hit the ORDINARY every-save
+    # stale-configurator-line cleanup instead (a different, unrelated
+    # code path that unlinks it before this elif's own check ever runs)
+    # — but drops to a single real wall, and adds a fresh sentinel.
+    # walls_used < 2 with the corner still present (`layout_role ==
+    # "derived"`) is exactly this elif's trigger condition. Before this
+    # fix this elif's bare `not l.active` would reactivate the fresh
+    # sentinel right along with the legitimately-superseded canonicals.
+    def test_sentinel_survives_downshift_after_multiwall_save(self):
+        result1, _active1, all_lines1 = self._save([
+            {
+                "product_id":    self.product.id,
+                "layout_key":    "sentinel-ds-left",
+                "x_position_in": 999.0,
+                "z_position_in": 0.0,
+                "wall":          "left",
+            },
+            {
+                "product_id":    self.product.id,
+                "layout_key":    "sentinel-ds-back",
+                "x_position_in": 5.0,
+                "z_position_in": 0.0,
+                "wall":          "back",
+            },
+        ])
+        self.assertNotIn("error", result1, result1)
+        self.assertTrue(result1.get("relaid"), result1)
+        corner1 = all_lines1.filtered(lambda l: l.cabinet_type == "corner")
+        self.assertTrue(
+            corner1, "save #1 must have corner-absorbed the two walls — "
+            "fixture didn't reach the down-shift branch's precondition: "
+            "%r" % result1)
+
+        # Save #2 — drop the "back" key (single real wall: "left"),
+        # round-trip the corner's own key/product so it survives the
+        # ordinary stale-cleanup and is still present for the elif
+        # branch to find, and add a fresh sentinel.
+        result2, _active2, all_lines2 = self._save([
+            {
+                "product_id":    self.product.id,
+                "layout_key":    "sentinel-ds-left",
+                "x_position_in": 999.0,
+                "z_position_in": 0.0,
+                "wall":          "left",
+            },
+            {
+                "product_id":    corner1.product_id.id,
+                "layout_key":    corner1.layout_key,
+                "x_position_in": corner1.x_position_in,
+                "z_position_in": corner1.z_position_in,
+                "wall":          corner1.wall,
+            },
+            {
+                "product_id":    self.product.id,
+                "layout_key":    "sentinel-ds-debris",
+                "x_position_in": 1000000.0,
+                "z_position_in": 0.0,
+            },
+        ])
+        self.assertNotIn("error", result2, result2)
+        self.assertTrue(
+            result2.get("relaid"),
+            "expected the down-shift elif branch to have run (stale "
+            "derived corner + walls_used < 2) — fixture didn't reach "
+            "the code path under test: %r" % result2)
+        sentinel = self._line_by_key(all_lines2, "sentinel-ds-debris")
+        self.assertFalse(
+            sentinel.active,
+            "sentinel must still be archived after save_design's "
+            "down-shift elif branch, not reactivated")
+        self.assertTrue(sentinel.is_unresolved)
+        self.assertEqual(sentinel.price_unit, 0.0)
+        self.assertEqual(
+            sentinel.x_position_in, 1000000.0,
+            "sentinel must never have been handed a real pose")
+
+    # ── Review round 2 (Finding 2) — both directions of the narrowed
+    # exclusion, proven behaviorally through real action_auto_arrange runs
+    def test_ghost_placeholder_survives_idempotent_rearrange_while_debris_does_not(self):
+        """is_unresolved is dual-purpose. A template GHOST placeholder
+        (Task 2: an unresolved slot, product =
+        product_tmpl_unresolved_slot, is_unresolved=True) can be
+        legitimately corner-absorbed (archived, superseded) exactly like
+        a real cabinet, and MUST be revivable by every re-arrange run or
+        the idempotence contract (run N times -> identical state)
+        breaks. A save_design sentinel/debris line must NOT be revived.
+        Proven by running action_auto_arrange TWICE: if the ghost were
+        wrongly excluded (the round-1 `not is_unresolved` bug), the
+        SECOND run's canonical cab list would silently lose it forever
+        and the corner could never re-form the same way twice — an
+        observable idempotence break, not just an internal flag check."""
+        unresolved_product = self.env.ref(
+            "southbrook_kitchen_3d_configurator.product_tmpl_unresolved_slot"
+        ).product_variant_id
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "Ghost-vs-debris idempotence test",
+            "partner_id": self.partner.id,
+            "room_width_in": 144,
+            "room_depth_in": 96,
+            "room_height_in": 96,
+        })
+        Line = self.env["southbrook.kitchen.design.line"]
+        ghost = Line.create({
+            "design_id":     design.id,
+            "product_id":    unresolved_product.id,
+            "quantity":      1,
+            "price_unit":    0.0,
+            "cabinet_type":  "base",
+            "width_in":      24.0,
+            "height_in":     34.5,
+            "depth_in":      24.0,
+            "x_position_in": 999.0,
+            "wall":          "left",
+            "origin":        "configurator",
+            "layout_role":   "canonical",
+            "layout_key":    "ghost-idem-left",
+            "is_unresolved": True,
+        })
+        real = Line.create({
+            "design_id":     design.id,
+            "product_id":    self.product.id,
+            "quantity":      1,
+            "price_unit":    500.0,
+            "cabinet_type":  "base",
+            "width_in":      24.0,
+            "height_in":     34.5,
+            "depth_in":      24.0,
+            "x_position_in": 5.0,
+            "wall":          "back",
+            "origin":        "configurator",
+            "layout_role":   "canonical",
+            "layout_key":    "ghost-idem-back",
+            "is_unresolved": False,
+        })
+        # A pre-existing debris line, co-resident on the SAME design —
+        # simulates what the write-path guard already produced in an
+        # earlier save. Never part of the corner scenario at all.
+        debris = Line.create({
+            "design_id":     design.id,
+            "product_id":    self.product.id,
+            "quantity":      1,
+            "price_unit":    0.0,
+            "cabinet_type":  "base",
+            "width_in":      24.0,
+            "height_in":     34.5,
+            "depth_in":      24.0,
+            "x_position_in": 1000000.0,
+            "wall":          "back",
+            "origin":        "configurator",
+            "layout_role":   "canonical",
+            "layout_key":    "ghost-idem-debris",
+            "is_unresolved": True,
+            "active":        False,
+        })
+
+        # ── Run 1 ──
+        design.action_auto_arrange(sync=True)
+        design.invalidate_recordset()
+        ghost.invalidate_recordset()
+        real.invalidate_recordset()
+        debris.invalidate_recordset()
+
+        corner_r1 = design.cabinet_line_ids.filtered(
+            lambda l: l.cabinet_type == "corner")
+        self.assertTrue(corner_r1, "run 1 must corner-absorb the two walls")
+        self.assertFalse(ghost.active, "ghost must be superseded (archived)")
+        self.assertTrue(ghost.is_unresolved)
+        self.assertFalse(real.active, "real cabinet must be superseded too")
+        # The pre-existing debris line must be completely untouched by
+        # run 1's reset step (it was never a candidate for reactivation).
+        self.assertFalse(debris.active)
+        self.assertTrue(debris.is_unresolved)
+        self.assertEqual(debris.x_position_in, 1000000.0)
+
+        # ── Run 2 (idempotence) ──
+        design.action_auto_arrange(sync=True)
+        design.invalidate_recordset()
+        ghost.invalidate_recordset()
+        real.invalidate_recordset()
+        debris.invalidate_recordset()
+
+        corner_r2 = design.cabinet_line_ids.filtered(
+            lambda l: l.cabinet_type == "corner")
+        self.assertTrue(
+            corner_r2,
+            "run 2 must reform the SAME corner from the SAME 2 "
+            "canonicals — if the ghost had been wrongly excluded from "
+            "reactivation, only 1 canonical (real) would remain in the "
+            "candidate list and no corner could form the second time")
+        self.assertFalse(
+            ghost.active,
+            "ghost must have been REVIVED by run 2's reset step then "
+            "re-absorbed into the re-derived corner — same converged "
+            "state as run 1 (idempotence)")
+        self.assertTrue(ghost.is_unresolved)
+        self.assertFalse(real.active)
+        # The debris line must STILL be untouched after a second run.
+        self.assertFalse(debris.active)
+        self.assertTrue(debris.is_unresolved)
+        self.assertEqual(debris.price_unit, 0.0)
+        self.assertEqual(debris.x_position_in, 1000000.0)
