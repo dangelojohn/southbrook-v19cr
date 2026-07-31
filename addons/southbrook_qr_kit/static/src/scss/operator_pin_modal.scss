@@ -43,7 +43,21 @@
     color: #222;
     border-radius: 12px;
     padding: 24px;
-    width: min(360px, 92vw);
+    // Capital Min() ON PURPOSE — do not "tidy" this to lowercase.
+    // Odoo 19 ships libsass 3.6.5, which binds lowercase min()/max()/
+    // clamp() to the SCSS BUILT-IN numeric function and evaluates it at
+    // compile time. 360px vs 92vw cannot be compared, so the compile
+    // aborts with "Incompatible units: 'vw' and 'px'" — and because one
+    // failing file takes down the WHOLE web.assets_web bundle, the
+    // entire database renders as unstyled HTML.
+    // SCSS function names are case-sensitive, so Min() is not bound to
+    // the built-in and passes straight through to the browser as CSS
+    // min(). Same workaround Odoo core uses in mail/chatter.scss, and
+    // the convention already documented in sb_materials_hardware and
+    // southbrook_premium_orchestration.
+    // This line was dormant for months because the file was in NO asset
+    // bundle; bundling it (2026-07-31) is what detonated it.
+    width: Min(360px, 92vw);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 
     h2 {
