@@ -609,10 +609,27 @@ class CatalogExpansion(models.AbstractModel):
             # survives on the freshly-spawned variant(s). Touch every
             # variant directly since the template-level write doesn't
             # always cascade to all variants when there are multiple.
+            #
+            # Wizard-variant hardening (2026-07-31, same class as the
+            # corner_sku_repair deploy-gate): on a config_ok template
+            # OCA suppresses variant auto-spawn entirely, so a
+            # code-less variant on a MULTI-variant config template was
+            # never spawned by this builder — it is a customer's
+            # wizard-configured row (live prod: variants 1422/1423),
+            # and stamping the catalog SKU onto it mislabels user data
+            # and mints duplicate bare codes. Stamp the sole variant
+            # (the seed this comment has always been about), and
+            # multi-variant only on non-config templates whose spawn
+            # this builder actually caused.
             tmpl.write({"default_code": sku})
-            for variant in tmpl.product_variant_ids:
-                if not variant.default_code:
-                    variant.default_code = sku
+            variants = tmpl.product_variant_ids
+            if len(variants) == 1:
+                if not variants.default_code:
+                    variants.default_code = sku
+            elif not tmpl.config_ok:
+                for variant in variants:
+                    if not variant.default_code:
+                        variant.default_code = sku
 
         # After templates are created, the tactical price_extras seed
         # should be re-run so the new PTAVs get their deltas.

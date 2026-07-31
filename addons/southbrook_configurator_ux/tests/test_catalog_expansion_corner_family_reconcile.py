@@ -296,3 +296,34 @@ class TestCatalogExpansionCornerFamilyReconcile(TransactionCase):
             "build_catalog() must never overwrite an existing "
             "template's name on a reconcile pass — name is "
             "create-time only")
+
+    def test_build_catalog_never_stamps_wizard_variants(self):
+        """Wizard-variant hardening (2026-07-31, same class as the
+        corner_sku_repair deploy-gate): a customer's code-less dynamic
+        config variant on a config_ok catalog template must NOT get the
+        catalog SKU stamped onto it by build_catalog's post-attribute-
+        line default_code re-write (prod: variants 1422/1423). OCA
+        suppresses auto-spawn on config templates, so any code-less
+        row on a multi-variant config template is user data."""
+        repair_corner_family_skus(self.env)
+        blind = self._tmpl("SB-CORNER-BLIND")
+        if not blind.config_ok:
+            self.skipTest("blind template not config_ok here.")
+        src = blind.product_variant_ids[:1]
+        ptavs = src.product_template_attribute_value_ids
+        if len(ptavs) < 2:
+            self.skipTest(
+                "not enough attribute values for a distinct wizard combo.")
+        wizard = self.Product.create({
+            "product_tmpl_id": blind.id,
+            "product_template_attribute_value_ids":
+                [(6, 0, ptavs[:-1].ids)],
+        })
+        self.assertFalse(wizard.default_code or "")
+
+        self.Expansion.build_catalog()
+
+        self.assertFalse(
+            wizard.default_code or "",
+            "build_catalog stamped the catalog SKU onto a customer's "
+            "wizard-configured variant (got %r)" % wizard.default_code)
