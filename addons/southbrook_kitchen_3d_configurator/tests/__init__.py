@@ -103,3 +103,9 @@ from . import test_u_shape_template
 # CABINET_COLLISION rewrite (wall/zone-grouped, real footprints), new
 # OUT_OF_ROOM_BOUNDS and CORNER_HAND_MISMATCH checks.
 from . import test_validator_repair
+
+# Task 9, corner-remediation (2026-07-30) — debris repair migration
+# (migrations/19.0.5.34.1/post-migrate.py): archives (active=False)
+# southbrook.kitchen.design.line rows parked at the client's sentinel
+# position (design 99 prod fact: x_position_in=1,000,000).
+from . import test_debris_repair_migration
