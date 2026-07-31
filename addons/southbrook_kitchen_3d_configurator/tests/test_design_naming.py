@@ -21,7 +21,7 @@ Two halves are pinned here:
    byte-for-byte unchanged.
 
 2. `TestStaleAutoNameBackfillMigration` —
-   migrations/19.0.5.35.1/post-migrate.py, the one-time backfill for
+   migrations/19.0.5.35.2/post-migrate.py, the one-time backfill for
    rows that went stale BEFORE the write-path fix existed. Loads the
    migration module directly (Odoo migration folders are not a
    regular importable package — same technique as the sibling
@@ -58,7 +58,7 @@ def stubbed_request(env, user=None):
 
 def _load_migration_module():
     path = os.path.join(
-        os.path.dirname(__file__), "..", "migrations", "19.0.5.35.1",
+        os.path.dirname(__file__), "..", "migrations", "19.0.5.35.2",
         "post-migrate.py",
     )
     spec = importlib.util.spec_from_file_location(
@@ -197,7 +197,7 @@ class TestDesignAutoNameRegeneration(TransactionCase):
 @tagged("post_install", "-at_install", "southbrook",
         "southbrook_kitchen_3d_configurator", "design_naming")
 class TestStaleAutoNameBackfillMigration(TransactionCase):
-    """migrations/19.0.5.35.1/post-migrate.py — the one-time backfill
+    """migrations/19.0.5.35.2/post-migrate.py — the one-time backfill
     for designs that went stale before the write-path fix existed."""
 
     @classmethod
