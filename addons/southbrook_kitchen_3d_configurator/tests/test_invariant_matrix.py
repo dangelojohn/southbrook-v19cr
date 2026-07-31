@@ -75,10 +75,16 @@ def _footprint(line):
 
 def _footprint_layer(line):
     """Base vs. wall(upper) vertical placement plane — mirrors kitchen_
-    design.py's own nested `_footprint_layer` (check #3)/`_line_layer`
-    (check #7) helpers verbatim: a corner line's layer comes from its
-    ZONE (C8: the wall-layer corner is zone='wall'), since the upper
-    corner shares the base corner's x/z cell at a different elevation."""
+    design.py's own nested `_footprint_layer` helper verbatim (defined
+    ahead of check #3; check #7, kitchen_design.py:1731, REUSES that
+    SAME helper for its own layer grouping — it does not define a
+    second one). `_line_layer` is a DIFFERENT, unrelated local defined
+    later, inside the check #12/#13 (motion-envelope / demanded-corner-
+    filler) block — same base-vs-wall logic, but a separate function,
+    not the one check #7 (or this test) uses. A corner line's layer
+    comes from its ZONE (C8: the wall-layer corner is zone='wall'),
+    since the upper corner shares the base corner's x/z cell at a
+    different elevation."""
     if line.cabinet_type == "wall" or (
             line.cabinet_type == "corner" and line.zone == "wall"):
         return "wall"
@@ -426,12 +432,21 @@ class TestInvariantMatrix(TransactionCase):
                     # e.g. layout_role or is_unresolved (both real
                     # historical bug classes elsewhere in this suite)
                     # would have passed undetected. sale_order_line_id
-                    # is included too: action_auto_arrange never writes
-                    # it (only southbrook.design.reconcile does, which
-                    # this test never invokes), so it is False before
-                    # AND after here — genuinely stable, not silently
-                    # omitted; kept in the tuple as a live tripwire in
-                    # case that ever changes.
+                    # is included too — round-2 correction: action_
+                    # auto_arrange(sync=True) DOES synchronously invoke
+                    # southbrook.design.reconcile._reconcile_one on
+                    # every call (kitchen_design.py:1031-1043), which
+                    # WRITES sale_order_line_id on every configurator-
+                    # origin line (reconcile.py:311-312/:326) — it is
+                    # not "never written" here; action_instantiate has
+                    # already triggered this before the "before"
+                    # snapshot below is even taken. The field is stable
+                    # run-over-run because the reconcile mirror is
+                    # IDEMPOTENT BY sb_layout_key (reconcile.py:300-309
+                    # reuses/re-finds the SAME already-mirrored SO line
+                    # by that key instead of creating a new one), not
+                    # because the write path is unreached — kept in the
+                    # tuple as a live tripwire on THAT idempotency.
                     return sorted(
                         (l.layout_key, l.product_id.id, l.quantity,
                          round(l.price_unit, 4), round(l.width_in or 0, 3),
