@@ -35,6 +35,22 @@ Locks in the fixes landed across kitchen_3d_configurator 5.6.3 -> 5.6.7:
         - Unlink guard on state in ('quoted', 'ordered').
         - Recent-partners picker feed returns rich dicts.
 
+  * P0 * SBK-031 walk-in button crash (corner-remediation 2026-07-30)
+        `get_or_create_walkin_partner` is `@api.model` but is invoked
+        from TWO dispatch paths Odoo treats differently: JS call_kw
+        sends `args: []`; the form's "Walk-in" object button ALWAYS
+        sends `args: [[active_id, ...]]` (Odoo's button dispatch does
+        this for every object button, regardless of the target
+        method's decorator). Before this fix the method only accepted
+        `self`, so the button crashed 100% of the time with "takes 1
+        positional argument but 2 were given". Regression pin: BOTH
+        shapes must dispatch cleanly through the real `call_kw` service
+        (not a bare Python call) — the button shape must additionally
+        assign the resolved partner to the calling design and return a
+        client action, and partner resolution must reuse an existing
+        "Walk-in Retail" / legacy "Walk-in Customer" record rather than
+        minting a duplicate.
+
 If a future refactor regresses ANY of these, one of these tests must
 fail. Style follows the sibling `test_save_design_acl.py` (2026-07-01)
 and `southbrook_estimating/tests/test_bom_math.py`.
@@ -42,6 +58,7 @@ and `southbrook_estimating/tests/test_bom_math.py`.
 from unittest.mock import patch
 
 from odoo.exceptions import UserError
+from odoo.service.model import call_kw as odoo_call_kw
 from odoo.tests import TransactionCase, tagged
 
 
@@ -423,23 +440,157 @@ class TestTrackBEndToEnd(TransactionCase):
     # 5.6.7 * walk-in partner singleton
     # ==================================================================
     def test_10_get_or_create_walkin_partner_is_singleton(self):
-        """Regression pin -- Walk-in Customer is lazily created ONCE
+        """Regression pin -- the walk-in partner is lazily created ONCE
         and every subsequent call returns the same id. Powers the
-        anonymous-quote path from the 3D canvas customer picker."""
-        first_id = self.Design.get_or_create_walkin_partner()
-        second_id = self.Design.get_or_create_walkin_partner()
+        anonymous-quote path from the 3D canvas customer picker.
+
+        Dispatched through the real `call_kw` service with `args: []`
+        (SBK-031) -- the exact shape kitchen_configurator.js's
+        `_useWalkInCustomer` sends -- not a bare Python method call, so
+        this also pins the `@api.model` no-extra-positional-arg path.
+        SBK-031 (2026-07-30) -- newly-minted partners are now named
+        "Walk-in Retail" (the real business-record name already seeded
+        by southbrook_estimating demo data), not the old "Walk-in
+        Customer" placeholder.
+        """
+        model = self.env["southbrook.kitchen.design"]
+        first_id = odoo_call_kw(model, "get_or_create_walkin_partner", [], {})
+        second_id = odoo_call_kw(model, "get_or_create_walkin_partner", [], {})
         self.assertEqual(
             first_id, second_id,
             "get_or_create_walkin_partner must return the same id on "
             "repeat calls",
         )
-        matches = self.Partner.search([
-            ("name", "=", "Walk-in Customer"),
-            ("is_company", "=", True),
-        ])
+        matches = self.Partner.search([("name", "=", "Walk-in Retail")])
         self.assertEqual(
             len(matches), 1,
-            "exactly one 'Walk-in Customer' company partner must exist",
+            "exactly one 'Walk-in Retail' partner must exist",
+        )
+        legacy = self.Partner.search([("name", "=", "Walk-in Customer")])
+        self.assertFalse(
+            legacy,
+            "must not also mint the legacy 'Walk-in Customer' name",
+        )
+
+    # ==================================================================
+    # SBK-031 -- object-button invocation crash (corner-remediation
+    # 2026-07-30)
+    # ==================================================================
+    def test_10a_get_or_create_walkin_partner_button_dispatch_no_crash(self):
+        """Regression pin -- the "Walk-in" form button
+        (kitchen_design_views.xml, name="get_or_create_walkin_partner"
+        type="object") must not crash.
+
+        Odoo's object-button dispatch ALWAYS sends `args: [[resId]]`
+        (addons/web/static/src/webclient/actions/action_service.js,
+        `doActionButton`: `let args = params.resId ? [[params.resId]] :
+        [params.resIds]`) -- regardless of the target method's
+        decorator. Reproduced here via the real `call_kw` service
+        (odoo/service/model.py) so the test exercises Odoo's actual
+        dispatch semantics, not a bare Python call that would never
+        have caught SBK-031 (the old signature only broke when the
+        extra positional arg from `call_kw` was present).
+
+        Pre-fix this raised:
+            TypeError: get_or_create_walkin_partner() takes 1
+            positional argument but 2 were given
+        """
+        design = self._make_design(name="SBK-031 button dispatch")
+        design.partner_id = False
+
+        result = odoo_call_kw(
+            self.env["southbrook.kitchen.design"],
+            "get_or_create_walkin_partner",
+            [[design.id]],
+            {},
+        )
+
+        self.assertIsInstance(
+            result, dict,
+            "the button path must return a client action dict, not a "
+            "bare partner id the user has to act on manually",
+        )
+        self.assertEqual(result.get("type"), "ir.actions.client")
+
+    def test_10b_get_or_create_walkin_partner_button_assigns_partner(self):
+        """Regression pin -- the button path doesn't just resolve the
+        walk-in partner, it ASSIGNS it to the calling design(s) so the
+        rep isn't told to go pick a partner manually (brief AC)."""
+        design = self._make_design(name="SBK-031 button assigns")
+        design.partner_id = False
+        self.assertFalse(design.partner_id)
+
+        odoo_call_kw(
+            self.env["southbrook.kitchen.design"],
+            "get_or_create_walkin_partner",
+            [[design.id]],
+            {},
+        )
+
+        walkin = self.Partner.search([("name", "=", "Walk-in Retail")], limit=1)
+        self.assertTrue(walkin, "walk-in partner must have been created")
+        self.assertEqual(
+            design.partner_id.id, walkin.id,
+            "button dispatch must assign the resolved walk-in partner "
+            "to the design that owns the button",
+        )
+
+    def test_10c_get_or_create_walkin_partner_reuses_existing_by_either_name(self):
+        """Regression pin -- reuse, never duplicate. If a walk-in
+        partner already exists under either the real business-record
+        name ("Walk-in Retail", seeded by southbrook_estimating demo
+        data / possibly already present in a live DB) or the legacy
+        name this method used to mint ("Walk-in Customer"), the method
+        must reuse it and must NOT create a second one under the other
+        name."""
+        existing = self.Partner.create({
+            "name": "Walk-in Retail",
+            "is_company": False,
+            "channel": "retail",
+        })
+
+        resolved_id = odoo_call_kw(
+            self.env["southbrook.kitchen.design"],
+            "get_or_create_walkin_partner", [], {},
+        )
+        self.assertEqual(
+            resolved_id, existing.id,
+            "must reuse the pre-existing 'Walk-in Retail' partner",
+        )
+        self.assertEqual(
+            len(self.Partner.search([("name", "=", "Walk-in Retail")])), 1,
+            "must not duplicate 'Walk-in Retail'",
+        )
+        self.assertFalse(
+            self.Partner.search([("name", "=", "Walk-in Customer")]),
+            "must not mint 'Walk-in Customer' when 'Walk-in Retail' "
+            "already exists",
+        )
+
+    def test_10d_get_or_create_walkin_partner_reuses_legacy_name(self):
+        """Companion to test_10c -- a pre-existing DB that only has the
+        legacy "Walk-in Customer" partner (created by this method
+        before SBK-031) must keep resolving to that same record, not
+        fork into a second "Walk-in Retail" partner."""
+        legacy = self.Partner.create({
+            "name": "Walk-in Customer",
+            "is_company": True,
+            "customer_rank": 1,
+        })
+
+        resolved_id = odoo_call_kw(
+            self.env["southbrook.kitchen.design"],
+            "get_or_create_walkin_partner", [], {},
+        )
+        self.assertEqual(
+            resolved_id, legacy.id,
+            "must reuse the pre-existing legacy 'Walk-in Customer' "
+            "partner instead of minting a new 'Walk-in Retail' one",
+        )
+        self.assertFalse(
+            self.Partner.search([("name", "=", "Walk-in Retail")]),
+            "must not duplicate under the new canonical name when a "
+            "legacy-named record already exists",
         )
 
     # ==================================================================

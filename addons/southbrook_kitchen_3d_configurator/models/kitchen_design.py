@@ -291,29 +291,79 @@ class SouthbrookKitchenDesign(models.Model):
         return out
 
     # ── Walk-in customer partner ───────────────────────────────────────────────
-    # 2026-07-01 task #48 — anonymous / walk-in quote support. Called
-    # by Agent C's frontend when the rep picks "Walk-in" from the
-    # customer picker; returns the id of the singleton "Walk-in
-    # Customer" partner (created lazily on first use). Kept as a
-    # company partner + customer_rank=1 so it resolves the retail
-    # pricelist correctly and shows up in customer searches.
+    # 2026-07-01 task #48 — anonymous / walk-in quote support.
     # v19.0.5.6.7 — public name for RPC accessibility (see get_recent_partners
     # comment above).
+    #
+    # SBK-031 fix (P0, corner-remediation 2026-07-30) — this method is
+    # reached via TWO different dispatch paths that Odoo's ORM treats
+    # differently even though it stays `@api.model`:
+    #
+    #   1. JS call_kw (kitchen_configurator.js `_useWalkInCustomer`, the
+    #      3D-canvas customer picker) — sends `args: []`. `call_kw`
+    #      (odoo/service/model.py) sees `_api_model=True` and hands the
+    #      bare, id-less recordset straight to `method(recs)` — no extra
+    #      positional argument. This path just wants the partner id back
+    #      so JS can `_setCustomer()` client-side.
+    #
+    #   2. The form "Walk-in" object button (kitchen_design_views.xml,
+    #      `name="get_or_create_walkin_partner" type="object"`) — Odoo's
+    #      button dispatch ALWAYS sends `args: [[active_id, ...]]`
+    #      regardless of the target method's decorator (see
+    #      addons/web/static/src/webclient/actions/action_service.js
+    #      `doActionButton`: `let args = params.resId ? [[params.resId]]
+    #      : [params.resIds]`). Because this method stays `@api.model`,
+    #      `call_kw` does NOT strip that array off as "ids to browse" the
+    #      way it would for a non-`@api.model` method — it forwards it
+    #      untouched as a second positional argument. The old
+    #      `def get_or_create_walkin_partner(self):` only accepted
+    #      `self`, so every click crashed with "takes 1 positional
+    #      argument but 2 were given" (SBK-031, 100% repro in prod).
+    #
+    #      Accepting that array as an optional `design_ids` parameter
+    #      reconciles both dispatch paths without touching the JS call
+    #      site or the button's `name=`/`type=` attributes. When present,
+    #      the button path also ASSIGNS the resolved partner to the
+    #      calling design(s) and reloads the form — the user is never
+    #      told to go pick a partner manually.
+    #
+    # Partner resolution — reuse, never duplicate. `southbrook_estimating`
+    # demo data already seeds a real "Walk-in Retail" business partner
+    # (demo/southbrook_demo_partners.xml, channel=retail, for the Q7
+    # smoke-test customer-switch). Search for that name first; fall back
+    # to the legacy "Walk-in Customer" name this method used to mint, so
+    # any pre-existing showroom data keeps resolving to the same record.
+    # Only mint a brand-new partner — named "Walk-in Retail" going
+    # forward, matching the real business record and the
+    # channel="Retail (Walk-in)" label — when NEITHER already exists.
     @api.model
-    def get_or_create_walkin_partner(self):
+    def get_or_create_walkin_partner(self, design_ids=None):
         Partner = self.env["res.partner"]
-        walkin = Partner.search([
-            ("name", "=", "Walk-in Customer"),
-            ("is_company", "=", True),
-        ], limit=1)
+        walkin = Partner.search([("name", "=", "Walk-in Retail")], limit=1)
+        if not walkin:
+            walkin = Partner.search([("name", "=", "Walk-in Customer")], limit=1)
         if not walkin:
             walkin = Partner.create({
-                "name": "Walk-in Customer",
+                "name": "Walk-in Retail",
                 "is_company": True,
                 "customer_rank": 1,
+                "channel": "retail",
                 "comment": "Generic partner for showroom walk-in quotes. "
                            "Replace with the real customer once identified.",
             })
+
+        # Object-button path: `design_ids` is the `[[active_id, ...]]`
+        # array Odoo's button dispatch always sends. Assign + reload
+        # instead of returning a bare id the user can't act on.
+        if design_ids:
+            ids = (list(design_ids)
+                   if isinstance(design_ids, (list, tuple))
+                   else [design_ids])
+            designs = self.env[self._name].browse(ids).exists()
+            if designs:
+                designs.write({"partner_id": walkin.id})
+                return {"type": "ir.actions.client", "tag": "reload"}
+
         return walkin.id
 
     # ── Open linked Sale Order (Agent B smart button target) ───────────────────
@@ -1056,14 +1106,19 @@ class SouthbrookKitchenDesign(models.Model):
         # from "Select a customer before quoting (needed for pricelist
         # resolution)." to a customer-safe phrasing that surfaces the
         # Walk-in escape hatch (the picker Agent C wires into the 3D
-        # canvas resolves 'Walk-in' via _get_or_create_walkin_partner).
+        # canvas resolves 'Walk-in' via get_or_create_walkin_partner).
+        # SBK-031 (2026-07-30) — copy now names the button as it actually
+        # reads on the form ("Walk-in", not a partner-picker option) and
+        # doesn't hardcode a partner name, since the method may resolve
+        # an existing "Walk-in Retail" OR legacy "Walk-in Customer"
+        # record depending on what's already in the database.
         if not self.partner_id:
             issues.append({
                 "code":     "MISSING_CUSTOMER",
                 "severity": "blocking",
                 "message":  "This design needs a customer before it can become a quote. "
-                            "Assign a Customer at the top of the form (or, for a walk-in, "
-                            "pick 'Walk-in Customer').",
+                            "Assign a Customer at the top of the form (or click the "
+                            "'Walk-in' button to one-click assign a walk-in customer).",
             })
 
         # 3) Collision detection — grouped by (wall, zone), comparing REAL

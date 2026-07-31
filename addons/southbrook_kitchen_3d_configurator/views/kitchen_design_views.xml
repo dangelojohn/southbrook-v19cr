@@ -296,7 +296,14 @@
                          open. Walk-in fallback button one-clicks in
                          a generic partner for rare unnamed walk-ins
                          (calls Agent A's get_or_create_walkin_partner
-                         helper). Hidden once a partner is set. -->
+                         helper). Hidden once a partner is set.
+                         SBK-031 (2026-07-30) — the helper now accepts
+                         the ids array Odoo's object-button dispatch
+                         always sends, assigns the resolved partner to
+                         THIS design, and reloads — no XML change
+                         needed here, this note documents why the same
+                         method name also works from the JS call_kw
+                         picker with a different arg shape. -->
                     <group>
                         <group>
                             <field name="partner_id"
