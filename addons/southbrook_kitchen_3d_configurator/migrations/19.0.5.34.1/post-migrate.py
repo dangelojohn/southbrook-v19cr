@@ -24,8 +24,9 @@ Task 1 shipped an OUT_OF_ROOM_BOUNDS validator (kitchen_design.py, action-
 confirm-gated) that now BLOCKS this class of line going forward. It does
 not retroactively clean up rows that predate it (or rows on designs that
 never reach action_confirm). This migration is that retroactive repair:
-archive (active=False) any design line whose abs(x_position_in) or
-abs(z_position_in) is >= 9999in — comfortably above any real room
+archive (active=False, is_unresolved=True, price_unit=0.0 — see the
+Task 9b review-round note below) any design line whose abs(x_position_in)
+or abs(z_position_in) is >= 9999in — comfortably above any real room
 dimension (rooms top out in the low hundreds of inches) and an order of
 magnitude below the verified 1,000,000 sentinel, so the threshold only
 ever catches debris, never a legitimate placement.
@@ -53,6 +54,25 @@ this task exists to close. Fix: after the archival UPDATE, explicitly
 recompute `_compute_totals()` for every design touched (collected from the
 same GROUP BY used for logging) and flush, forcing a fresh read of
 cabinet_line_ids (now correctly excluding the newly-archived debris).
+
+Task 9b review round (2026-07-30) — flag-shape alignment with the
+write-path guard: Task 9b's server-side save_design guard (controllers/
+main.py) archives a NEWLY incoming sentinel line with three fields, not
+one — `active=False`, `is_unresolved=True`, `price_unit=0.0` — so an
+admin who unarchives a debris row to inspect it sees an honest,
+unpriced, flagged-as-unresolved placeholder rather than something that
+still LOOKS like a real, priced $999 cabinet. This migration originally
+set only `active=False`, leaving existing debris rows (already in the
+DB before this migration ever runs) in that stale, misleading shape
+even after archival. Extended the same UPDATE to also set
+`is_unresolved = true, price_unit = 0.0` on every row it archives — no
+behavioral change to totals (rows are already excluded from
+`cabinet_line_ids` by `active=False` alone, so `_compute_totals` was
+already correct without this; this is purely about the archived row's
+own displayed/inspected shape matching the write-path guard's
+contract). Idempotency is unaffected: the WHERE clause still only ever
+matches `active = true` rows, so a second run finds nothing left to
+touch regardless of what the SET list contains.
 """
 import logging
 
@@ -127,14 +147,18 @@ def _archive_debris_lines(cr):
     cr.execute(
         """
         UPDATE southbrook_kitchen_design_line
-           SET active = false
+           SET active = false,
+               is_unresolved = true,
+               price_unit = 0.0
          WHERE active = true
            AND (abs(x_position_in) >= %(t)s OR abs(z_position_in) >= %(t)s)
         """,
         {"t": _DEBRIS_THRESHOLD_IN},
     )
     _logger.info(
-        "5.34.1 post-migrate: archived %d debris design line(s).",
+        "5.34.1 post-migrate: archived %d debris design line(s) "
+        "(active=false, is_unresolved=true, price_unit=0.0 — aligned "
+        "with the Task 9b write-path guard's flag shape).",
         cr.rowcount,
     )
     return [design_id for design_id, _count in rows if design_id]

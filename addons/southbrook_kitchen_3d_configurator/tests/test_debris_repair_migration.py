@@ -164,6 +164,45 @@ class TestDebrisRepairMigration(TransactionCase):
             "post-migration: 0 rows should match the discriminator "
             "(6 -> 0 acceptance check, since they're now active=False)")
 
+    def test_archived_rows_flagged_unresolved_and_unpriced(self):
+        """Task 9b review round — flag-shape alignment with the
+        write-path guard (controllers/main.py's save_design sentinel
+        guard archives a NEWLY incoming sentinel with active=False,
+        is_unresolved=True, price_unit=0.0, not just active=False). An
+        admin unarchiving an OLD debris row to inspect it must see the
+        same honest, unpriced, flagged shape, not something that still
+        looks like a real $999 cabinet. In-bounds siblings must be
+        completely untouched (price kept, is_unresolved stays False)."""
+        design = self._make_design("Task9b flag-shape design")
+        debris = self._make_design_line(
+            design, "t9b-flagshape-debris", 1_000_000.0, 0.0)
+        debris.price_unit = 999.0
+        normal = self._make_design_line(
+            design, "t9b-flagshape-normal", 24.0, 0.0)
+        normal.price_unit = 500.0
+
+        self.env.flush_all()
+        self.migration.migrate(self.env.cr, "19.0.5.34.0")
+
+        debris.invalidate_recordset()
+        normal.invalidate_recordset()
+
+        self.assertFalse(debris.active)
+        self.assertTrue(
+            debris.is_unresolved,
+            "archived debris must be flagged is_unresolved, matching "
+            "the write-path guard's flag shape")
+        self.assertEqual(
+            debris.price_unit, 0.0,
+            "archived debris must be zeroed out, matching the "
+            "write-path guard's flag shape")
+
+        self.assertTrue(normal.active)
+        self.assertFalse(normal.is_unresolved)
+        self.assertEqual(
+            normal.price_unit, 500.0,
+            "in-bounds sibling's price must be completely untouched")
+
     def test_exact_threshold_boundary(self):
         """abs(...) >= 9999 is inclusive at exactly 9999 and excludes
         9998.99 — a real room is never anywhere near this range, but

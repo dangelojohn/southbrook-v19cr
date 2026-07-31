@@ -595,8 +595,24 @@ class SouthbrookKitchenDesign(models.Model):
             #     no deletions), then (b) delete derived artifacts. Order
             #     matters: never re-filter a recordset across an unlink or we
             #     touch a deleted record (MissingError). Each access is fresh.
+            # Task 9b (review fix) — EXCLUDE is_unresolved lines from this
+            # blanket reactivation. This reset exists to revive CANONICAL
+            # cabinets that a previous arrangement run temporarily
+            # superseded with a derived artifact (a real corner consuming
+            # two runs' worth of cabinets, say) — is_unresolved lines
+            # (save_design's sentinel/debris guard) were never
+            # corner-consumed canonical selections; they're archived
+            # because they were never a valid line to begin with. Without
+            # this exclusion, a save_design call that both (a) writes a
+            # sentinel line archived+unresolved+unpriced and (b) triggers
+            # action_auto_arrange in the SAME request (walls_used >= 2 —
+            # exactly the multi-wall scenario the sentinel originates
+            # from) would immediately reactivate it here and hand it a
+            # real computed pose a few lines below, defeating the guard
+            # in the one scenario it exists for.
             ctx.cabinet_line_ids.filtered(
-                lambda l: not l.active).write({"active": True})
+                lambda l: not l.active and not l.is_unresolved
+            ).write({"active": True})
             ctx.cabinet_line_ids.filtered(
                 lambda l: l.layout_role == "derived").unlink()
             design.invalidate_recordset(["cabinet_line_ids"])
@@ -2591,7 +2607,15 @@ class SouthbrookKitchenDesign(models.Model):
                 ctx = self.with_context(active_test=False)
                 canon = ctx.cabinet_line_ids.filtered(
                     lambda l: l.layout_role == "canonical")
-                canon.filtered(lambda l: not l.active).write({"active": True})
+                # Task 9b (review fix) — same exclusion as the
+                # action_auto_arrange reset above: an is_unresolved line
+                # (save_design's sentinel/debris guard) defaults to
+                # layout_role="canonical" but was never a real canonical
+                # selection, so it must not be swept back into "active"
+                # by this reset either.
+                canon.filtered(
+                    lambda l: not l.active and not l.is_unresolved
+                ).write({"active": True})
                 by_wall = {}
                 for line in canon:
                     by_wall.setdefault(line.wall or "back", []).append(line)
