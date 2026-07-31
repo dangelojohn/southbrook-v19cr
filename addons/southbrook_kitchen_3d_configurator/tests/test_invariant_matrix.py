@@ -73,6 +73,18 @@ def _footprint(line):
     return E.footprint_from_anchor_mm(_cab_mm(line), _place_mm(line))
 
 
+def _footprint_layer(line):
+    """Base vs. wall(upper) vertical placement plane — mirrors kitchen_
+    design.py's own nested `_footprint_layer` (check #3)/`_line_layer`
+    (check #7) helpers verbatim: a corner line's layer comes from its
+    ZONE (C8: the wall-layer corner is zone='wall'), since the upper
+    corner shares the base corner's x/z cell at a different elevation."""
+    if line.cabinet_type == "wall" or (
+            line.cabinet_type == "corner" and line.zone == "wall"):
+        return "wall"
+    return "base"
+
+
 def _merge_intervals(intervals):
     """Union length (mm) covered by a list of (lo, hi) intervals. Generic
     interval-merge arithmetic over footprints the engine itself already
@@ -186,6 +198,38 @@ class TestInvariantMatrix(TransactionCase):
                                 % (tpl.code, wall, zone, la.layout_key,
                                    lb.layout_key))
 
+                # -- geometry: no same-LAYER overlap (Task 25 review
+                #    Finding 1a) -- the (wall, zone) sweep above has a
+                #    real blind spot: sale.order._ZONE_LAYOUT maps
+                #    base_run/tall/accessory all onto the SAME "ground"
+                #    cursor (an appliance-space line, zone='accessory',
+                #    can physically sit flush against a base_run
+                #    cabinet on the SAME wall), so two DIFFERENT-zone
+                #    lines that genuinely overlap would never even be
+                #    compared above. Production's own backstop for
+                #    exactly this is check #7 (kitchen_design.py) --
+                #    wall-AGNOSTIC, grouped by LAYER only, using the
+                #    OBB-aware solid_overlap_from_anchor_mm primitive.
+                #    Mirrored verbatim here (never a parallel model).
+                by_layer = {}
+                for line in lines:
+                    if line.cabinet_type in ("filler", "panel"):
+                        continue
+                    by_layer.setdefault(
+                        _footprint_layer(line), []).append(line)
+                for layer, members in by_layer.items():
+                    for i in range(len(members)):
+                        for j in range(i + 1, len(members)):
+                            a, b = members[i], members[j]
+                            self.assertFalse(
+                                E.solid_overlap_from_anchor_mm(
+                                    _cab_mm(a), _place_mm(a),
+                                    _cab_mm(b), _place_mm(b)),
+                                "%s layer=%s: %s overlaps %s (check #7's "
+                                "own wall-agnostic sweep)"
+                                % (tpl.code, layer, a.layout_key,
+                                   b.layout_key))
+
                 # -- geometry: adjacency by footprint -------------------
                 # A physical run is (wall, CURSOR) — not (wall, zone):
                 # kitchen_layout_engine._cabinet_run_key + sale.order.
@@ -216,6 +260,19 @@ class TestInvariantMatrix(TransactionCase):
                         (_, hi_a), la = spans[i]
                         (lo_b, _), lb = spans[i + 1]
                         gap = lo_b - hi_a
+                        # Task 25 review Finding 1b — `gap` was only
+                        # bounded ABOVE; a NEGATIVE gap (a real overlap
+                        # between two consecutive run members) trivially
+                        # satisfied "<= tolerance" and passed silently.
+                        # Bound below too so an overlap fails loudly
+                        # here as well, not just in the two overlap
+                        # sweeps above.
+                        self.assertGreaterEqual(
+                            gap, -_EPS_MM,
+                            "%s wall=%s cursor=%s: %s overlaps %s by "
+                            "%.1fmm in the run walk"
+                            % (tpl.code, wall, cursor, la.layout_key,
+                               lb.layout_key, -gap))
                         self.assertLessEqual(
                             gap, _RUN_GAP_TOLERANCE_MM,
                             "%s wall=%s cursor=%s: unexplained %.1fmm gap "
@@ -364,6 +421,17 @@ class TestInvariantMatrix(TransactionCase):
                 # -- corner: regenerate-twice byte-identical (modulo
                 #    ids/timestamps) ---------------------------------
                 def _snapshot(design=design):
+                    # Task 25 review Finding 2 — the allowlist was
+                    # incomplete: a regenerate that silently flipped
+                    # e.g. layout_role or is_unresolved (both real
+                    # historical bug classes elsewhere in this suite)
+                    # would have passed undetected. sale_order_line_id
+                    # is included too: action_auto_arrange never writes
+                    # it (only southbrook.design.reconcile does, which
+                    # this test never invokes), so it is False before
+                    # AND after here — genuinely stable, not silently
+                    # omitted; kept in the tuple as a live tripwire in
+                    # case that ever changes.
                     return sorted(
                         (l.layout_key, l.product_id.id, l.quantity,
                          round(l.price_unit, 4), round(l.width_in or 0, 3),
@@ -371,7 +439,10 @@ class TestInvariantMatrix(TransactionCase):
                          round(l.x_position_in or 0, 3),
                          round(l.y_position_in or 0, 3),
                          round(l.z_position_in or 0, 3), l.rotation_deg or 0,
-                         l.wall, l.zone, l.cabinet_type)
+                         l.wall, l.zone, l.cabinet_type,
+                         l.is_unresolved, l.layout_role,
+                         l.template_slot_code, l.appliance_type, l.origin,
+                         l.pinned, l.sale_order_line_id.id)
                         for l in design.cabinet_line_ids)
                 before = _snapshot()
                 design.action_auto_arrange(sync=True)
@@ -384,12 +455,29 @@ class TestInvariantMatrix(TransactionCase):
     # ── catalogue invariants (repaired-catalogue state, not per-design) ─
 
     def test_engine_placeable_corner_skus_are_panel_visible(self):
-        """Every active corner-family variant (SB-CORNER[-R],
-        SB-WALL-CORNER[-R], SB-CORNER-BLIND[-R], SB-CORNER-DIAG[-R] —
-        `corner_sku_repair._is_corner_family_code`) must satisfy the
-        /products drag-panel contract post-repair: sale_ok=True AND its
-        template is southbrook_is_cabinet=True (controllers/main.py's
-        catalog contract, ~line 504-507)."""
+        """CORNER-FAMILY SCOPE ONLY, deliberately (Task 25 review minor
+        — the brief's own wording is "engine-placeable CORNER SKUs",
+        not a general engine-placeable-superset claim; not broadened
+        to every cabinet type the engine can ever write, e.g. base/
+        wall/appliance lines resolved through `_resolve_slot`, which
+        earlier tasks' suites already cover their own way).
+
+        "Engine-placeable" here means structurally addressable by the
+        corner-placement machinery: carries a default_code `corner_
+        sku_repair._is_corner_family_code` recognizes, which is exactly
+        the vocabulary `_sb_resolve_corner_variant`'s exact-code lookup
+        + hand-override table consults. It does NOT assert that some
+        `southbrook.placement.rule` currently targets each one (BLIND/
+        DIAG may have zero active rules on a given DB and so never get
+        engine-PLACED in practice despite being catalogue-addressable
+        and panel-visible — that is rules-as-data seeding, out of this
+        invariant's scope).
+
+        Every active corner-family variant (SB-CORNER[-R], SB-WALL-
+        CORNER[-R], SB-CORNER-BLIND[-R], SB-CORNER-DIAG[-R]) must
+        satisfy the /products drag-panel contract post-repair:
+        sale_ok=True AND its template is southbrook_is_cabinet=True
+        (controllers/main.py's catalog contract, ~line 504-507)."""
         Product = self.env["product.product"]
         corner_variants = Product.search([("active", "=", True)]).filtered(
             lambda p: _is_corner_family_code(p.default_code))
@@ -419,11 +507,12 @@ class TestInvariantMatrix(TransactionCase):
         self.assertTrue(cabinet_variants, "no cabinet variants found")
         codes = []
         for v in cabinet_variants:
-            code = (v.default_code or "").strip()
-            self.assertTrue(
-                code, "cabinet variant id=%s (%s) has an empty "
-                "default_code post-repair" % (v.id, v.display_name))
-            codes.append(code)
+            with self.subTest(variant=v.display_name, id=v.id):
+                code = (v.default_code or "").strip()
+                self.assertTrue(
+                    code, "cabinet variant id=%s (%s) has an empty "
+                    "default_code post-repair" % (v.id, v.display_name))
+                codes.append(code)
         dupes = {c: n for c, n in Counter(codes).items() if n > 1}
         self.assertFalse(
             dupes, "duplicate cabinet default_code(s) post-repair: %s"
@@ -442,22 +531,28 @@ class TestInvariantMatrix(TransactionCase):
         evidence rather than either deleting the check or "fixing"
         production code from a test file.
         """
+        # subTest here groups per-template diagnostics for readability
+        # (Task 25 review minor); the actual pass/skip verdict is a
+        # single decision made AFTER the full sweep below (skipTest
+        # can't be scoped per-subTest -- it always ends the whole test
+        # method, so it deliberately stays outside the loop).
         mismatches = []
         checked = 0
         for tpl in self.templates:
-            design = tpl.action_instantiate(partner_id=self.partner.id)
-            for line in design.cabinet_line_ids:
-                variant_w = _variant_width_in(line.product_id)
-                if variant_w is None:
-                    continue
-                checked += 1
-                if abs((line.width_in or 0) - variant_w) > 0.05:
-                    mismatches.append(
-                        "%s/%s (product %s): placed width_in=%.2f vs "
-                        "variant Width attribute=%.2f"
-                        % (tpl.code, line.layout_key,
-                           line.product_id.default_code,
-                           line.width_in or 0, variant_w))
+            with self.subTest(template=tpl.code):
+                design = tpl.action_instantiate(partner_id=self.partner.id)
+                for line in design.cabinet_line_ids:
+                    variant_w = _variant_width_in(line.product_id)
+                    if variant_w is None:
+                        continue
+                    checked += 1
+                    if abs((line.width_in or 0) - variant_w) > 0.05:
+                        mismatches.append(
+                            "%s/%s (product %s): placed width_in=%.2f vs "
+                            "variant Width attribute=%.2f"
+                            % (tpl.code, line.layout_key,
+                               line.product_id.default_code,
+                               line.width_in or 0, variant_w))
         if mismatches:
             self.skipTest(
                 "KNOWN OPEN TICKET — variant Width attribute not wired to "
