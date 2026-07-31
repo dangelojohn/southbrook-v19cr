@@ -230,3 +230,11 @@ from . import test_validator_copy
 # by its real placed width (`placed_width_in`, the SBK-024 helper) and
 # picks the closest/exact match; pin precedence is untouched.
 from . import test_slot_variant_width
+# Task 26, corner-remediation (2026-07-30) — action_create_quotation's
+# mirror loop now stamps sb_layout_key/sb_layout_origin on each created
+# SO line and writes sale_order_line_id back onto the design line, so
+# the reconcile cron's own idempotency search matches instead of
+# create()ing a duplicate set of SO lines on its next tick. Proven
+# against a real U-shape design pre-fix (14 -> 28 SO lines after one
+# reconcile tick); this file reproduces the shape synthetically.
+from . import test_quote_reconcile_dedup

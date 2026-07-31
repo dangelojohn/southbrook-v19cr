@@ -40,7 +40,9 @@ migration reads/writes existing before touching anything, following
 the same style as the 19.0.5.34.1 debris-repair migration in this
 same addon.
 
-Fires on 19.0.5.35.0 -> 19.0.5.35.1 upgrade.
+Fires on the 19.0.5.35.2 upgrade. (Was authored for 19.0.5.35.1, but a
+concurrent session shipped its own 5.35.1 to prod first — an equal version
+never re-runs migrations, so this was moved up to 5.35.2 to actually fire.)
 """
 import datetime
 import logging

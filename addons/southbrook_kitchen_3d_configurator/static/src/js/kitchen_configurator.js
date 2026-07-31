@@ -1826,7 +1826,27 @@ class SouthbrookKitchenConfigurator extends Component {
 
     // Product swap: replace cabinet at the same position with the
     // new product's payload, keeping position + layout_key + dimensions.
-    _swapSelectedProduct(rawProductId) {
+    //
+    // Task 27 (corner-remediation 2026-07-30, opportunity-trace.md §1)
+    // — a DERIVED CORNER line used to go through nothing but the
+    // client-only merge below + save_design's plain line.write(),
+    // which only re-validates the catalog contract (sale_ok/
+    // is_cabinet) — NONE of action_swap_product's Task-6 corner
+    // governance (corner-only restriction, junction footprint-fit,
+    // hand re-derive/refusal — models/kitchen_design.py
+    // action_swap_product / _swap_derived_corner). A rep could swap a
+    // junction cell for an oversized or wrong-hand corner SKU with
+    // zero pushback. Corner lines now route through that server
+    // method via call_kw before touching state; every other
+    // cabinet_type (and any corner line the server doesn't know about
+    // yet) is UNCHANGED — still the pure client merge + debounced
+    // /save.
+    // `selectEl` (the real <select> DOM node, passed from the template's
+    // `ev.target`) is OPTIONAL — every non-DOM caller (tests, any future
+    // programmatic swap) can omit it — but is required to fix review
+    // Finding 2: see the corner refusal paths in
+    // _swapCornerProductOnServer for why it's needed.
+    async _swapSelectedProduct(rawProductId, selectEl) {
         const pid = parseInt(rawProductId, 10);
         if (!Number.isFinite(pid)) return;
         const product = (this.state.products || []).find(p => p.product_id === pid);
@@ -1838,8 +1858,28 @@ class SouthbrookKitchenConfigurator extends Component {
         if (idx < 0) return;
         this._markUserAction();   // T7 gate
         const oldItem = this.state.items[idx];
+
+        // Corner governance only makes sense once the design (and
+        // therefore this line) is actually persisted server-side —
+        // this.state.designId unset means an in-session design that
+        // has never been saved, so there is no server-side line row
+        // for action_swap_product to act on yet. That case (and any
+        // resolve-miss below, e.g. a save still in flight) falls back
+        // to the same client-only merge every other cabinet_type
+        // always uses.
+        if (oldItem.cabinet_type === "corner" && this.state.designId) {
+            return this._swapCornerProductOnServer(idx, oldItem, product, selectEl);
+        }
+
         // Preserve position + layout_key + current width (user may have
         // dialed in a custom width; swapping product shouldn't reset it).
+        this._applyClientSwap(idx, oldItem, product);
+    }
+
+    // Shared by the legacy (non-corner, or not-yet-persisted-corner)
+    // swap path — pure client-side state merge, unchanged from the
+    // pre-Task-27 behaviour of _swapSelectedProduct itself.
+    _applyClientSwap(idx, oldItem, product) {
         const merged = {
             ...product,
             layout_key:    oldItem.layout_key,
@@ -1852,6 +1892,158 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.selected = merged;
         this._recomputeLayoutFromItems();
         this._queueAutoSave();    // D5
+    }
+
+    // Task 27 — corner-line swap, routed through the server's
+    // action_swap_product (models/kitchen_design.py) instead of the
+    // client-only merge above: that method enforces the corner-only
+    // restriction, the junction footprint-fit check, and the hand
+    // re-derive/refusal from the T6 remediation, none of which
+    // save_design's catalog gate ever did.
+    //
+    // Two-hop plain ORM call via /web/dataset/call_kw — the same
+    // generic-ORM pattern _refreshPicker / _useWalkInCustomer /
+    // _createAndConfirm already use in this file (see those for the
+    // established RPC + toast-on-refusal conventions) — because
+    // state.items never carries the design LINE's own DB id: every
+    // server line-dict this file consumes (controllers/main.py
+    // _serialize_design_lines) keys "id"/"product_id" off the
+    // PRODUCT, not the line (Task 8's corner-style dispatch relies on
+    // that same product id being there). search_read resolves
+    // layout_key -> the real line id first (every Southbrook Kitchen
+    // group has read access to this model —
+    // security/ir.model.access.csv), then action_swap_product is
+    // called on that id.
+    async _swapCornerProductOnServer(idx, oldItem, product, selectEl) {
+        // Review Finding 3 — a pending debounced autosave armed by an
+        // earlier, UNRELATED edit (e.g. a width tweak on a different
+        // cabinet) can otherwise fire mid-swap: it posts the CURRENT
+        // (pre-swap) state.items to /save, whose keyed line.write()
+        // would silently revert the server's just-applied swap the
+        // instant that timer lands. Flush it FIRST — cancel the timer
+        // and run the save now, synchronously ahead of the swap RPCs —
+        // so no stale write can ever land after the swap starts.
+        // Nothing pending is lost; it's just sent now instead of in
+        // ~3s, same payload either way.
+        if (this._autoSaveTimer) {
+            clearTimeout(this._autoSaveTimer);
+            this._autoSaveTimer = null;
+            await this._autoSave();
+        }
+
+        let rows;
+        try {
+            rows = await rpc("/web/dataset/call_kw", {
+                model:  "southbrook.kitchen.design.line",
+                method: "search_read",
+                args: [
+                    [["design_id", "=", this.state.designId],
+                     ["layout_key", "=", oldItem.layout_key]],
+                    ["id"],
+                ],
+                kwargs: { limit: 1 },
+            });
+        } catch (e) {
+            // Review Finding 1 — a THROWN exception here (network
+            // blip, timeout, 500, ACL error) is NOT the same thing as
+            // "this line legitimately has no server row yet". The
+            // bare catch this used to be treated BOTH cases
+            // identically and fell back to the ungoverned client-only
+            // merge — a transient failure would silently reopen the
+            // exact corner-governance gap this task closes. Fail
+            // CLOSED instead, exactly like the action_swap_product hop
+            // below: toast the failure, abort, leave state untouched.
+            const msg = e && (e.message || String(e))
+                || "Couldn't verify this cabinet with the server — swap refused.";
+            this._toast(msg, { type: "danger", sticky: true });
+            // Review Finding 2 — see the identical revert below for
+            // the full rationale; this fail-closed path leaves
+            // state.selected unchanged too, so the same DOM correction
+            // applies here.
+            if (selectEl) selectEl.value = String(oldItem.product_id);
+            return;
+        }
+        const lineId = rows && rows[0] && rows[0].id;
+        if (!lineId) {
+            // A clean, successful lookup that found NO row — this is
+            // the genuine "not persisted yet" case (e.g. a save is
+            // still in-flight when the rep swaps again): no
+            // server-side line exists to govern the swap, so fall back
+            // to the same client-only merge every unsaved line uses.
+            this._applyClientSwap(idx, oldItem, product);
+            return;
+        }
+        try {
+            await rpc("/web/dataset/call_kw", {
+                model:  "southbrook.kitchen.design.line",
+                method: "action_swap_product",
+                args:   [[lineId], product.product_id],
+                kwargs: {},
+            });
+        } catch (e) {
+            // action_swap_product raises UserError with an actionable
+            // refusal message (wrong hand / oversized-for-the-cell /
+            // not a corner product) — surface it exactly via the toast
+            // store, same convention as every other server refusal in
+            // this file (_saveDesign/_createAndConfirm). Nothing above
+            // this point mutated state.items, so a refused swap leaves
+            // state completely unchanged.
+            const msg = e && (e.message || String(e)) || "Swap refused.";
+            this._toast(msg, { type: "danger", sticky: true });
+            // Review Finding 2 — the native <select> already flipped
+            // to the refused option visually (a browser applies a
+            // <select> value change before firing 'change', ahead of
+            // this handler ever running); state.selected.product_id
+            // stays exactly as it was, so OWL's vdom diff sees nothing
+            // to patch on that attribute and leaves the wrong option
+            // showing selected. Force the control back to the truth
+            // explicitly — least-invasive fix that doesn't require a
+            // render-nonce/key bump anywhere else in the template.
+            if (selectEl) selectEl.value = String(oldItem.product_id);
+            return;
+        }
+        // Success — the server is authoritative for this line's
+        // product/price/dimensions now (_swap_derived_corner can
+        // change any of width/height/depth/price_unit; the rarer
+        // canonical-corner branch can re-run the full auto-arrange).
+        // Re-pull just this line via the existing read-side route
+        // (/load_design_lines) and patch it in place — NOT a wholesale
+        // state.items replacement like _applyRelaidResult uses for a
+        // full /save response: that would also discard any other
+        // in-session cabinet the rep added but hasn't saved yet, which
+        // this single-line RPC never touched.
+        await this._reloadOneLineAfterCornerSwap(oldItem.layout_key);
+        this._toast("Cabinet swapped", { type: "success", sticky: false });
+    }
+
+    async _reloadOneLineAfterCornerSwap(layoutKey) {
+        try {
+            const resp = await rpc(
+                "/southbrook_kitchen/configurator/load_design_lines",
+                { design_id: this.state.designId },
+            );
+            const lines = (resp && resp.lines) || [];
+            const fresh = lines.find(l => l.layout_key === layoutKey);
+            if (!fresh) return;
+            const merged = this._lineToItem(fresh);
+            const freshIdx = this.state.items.findIndex(
+                it => it.layout_key === layoutKey);
+            if (freshIdx < 0) return;
+            this.state.items[freshIdx] = merged;
+            if (this.state.selected
+                    && this.state.selected.layout_key === layoutKey) {
+                this.state.selected = merged;
+            }
+            this._recomputeLayoutFromItems();
+        } catch (e) {
+            // The swap already succeeded server-side; a refresh
+            // failure just leaves the client's view stale until the
+            // next save/reload — non-fatal, matches _refreshPicker's
+            // "non-fatal" catch convention elsewhere in this file.
+            console.warn(
+                "[SouthbrookKitchenConfigurator] post-swap line refresh "
+                + "failed:", e);
+        }
     }
 
     // Remove the selected cabinet entirely.
@@ -3640,7 +3832,7 @@ SouthbrookKitchenConfigurator.template = xml`
             <span>Product</span>
             <select class="o_sbk_edit_select"
                     t-att-value="state.selected.product_id"
-                    t-on-change="(ev) => this._swapSelectedProduct(ev.target.value)">
+                    t-on-change="(ev) => this._swapSelectedProduct(ev.target.value, ev.target)">
               <option t-foreach="_sameTypeProducts(state.selected.cabinet_type)"
                       t-as="p" t-key="p.product_id"
                       t-att-value="p.product_id"
