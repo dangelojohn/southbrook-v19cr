@@ -49,14 +49,20 @@ _SEED_RULES = [
         "tier": "base",
         "sequence": 10,
         "payload": {
-            "leg_x_mm": 914.0,
-            "leg_z_mm": 914.0,
+            # Task 3 (2026-07-30, corner-remediation) — 914.4mm = 36in
+            # exactly (25.4 * 36). The prior 914.0 was a round-metric
+            # approximation of an inch-native leg dimension; see
+            # .superpowers/sdd/corner-verify/V1-geometry.md for the
+            # drift math this caused on persisted design lines.
+            "leg_x_mm": 914.4,
+            "leg_z_mm": 914.4,
             "height_mm": 876.0,
             "min_leg_x_mm": 1143.0,
             "min_leg_z_mm": 1143.0,
             # M4 — bifold door swing / tray access in front of the cell
             # (ESTIMATE per docs 04/06; surfaces as a blocking
-            # MOTION_ENVELOPE_COLLISION when violated).
+            # MOTION_ENVELOPE_COLLISION when violated). Metric spec
+            # value — not an inch-native leg dimension, left as-is.
             "clearance_front_mm": 500.0,
         },
     },
@@ -68,15 +74,18 @@ _SEED_RULES = [
         "tier": "base",
         "sequence": 20,
         "payload": {
-            "leg_x_mm": 610.0,
+            # Task 3 — 609.6mm = 24in exactly (25.4 * 24).
+            "leg_x_mm": 609.6,
             "leg_z_mm": 1143.0,
             "height_mm": 876.0,
             # M3 — the 3in blind-corner filler on the X-wall run
             # (docs 02/06 `filler-blind-corner-min`): min_leg_x must
             # cover leg + filler.
             "filler_x_mm": 76.2,
-            "min_leg_x_mm": 686.2,
-            "min_leg_z_mm": 1372.0,
+            # Task 3 — 685.8mm = 27in exactly (609.6 leg + 76.2
+            # filler); 1371.6mm = 54in exactly (25.4 * 54).
+            "min_leg_x_mm": 685.8,
+            "min_leg_z_mm": 1371.6,
             "host_leg": "z",
             "clearance_front_mm": 450.0,
         },
@@ -89,8 +98,9 @@ _SEED_RULES = [
         "tier": "wall",
         "sequence": 10,
         "payload": {
-            "leg_x_mm": 610.0,
-            "leg_z_mm": 610.0,
+            # Task 3 — 609.6mm = 24in exactly (25.4 * 24).
+            "leg_x_mm": 609.6,
+            "leg_z_mm": 609.6,
             "height_mm": 762.0,
             "min_leg_x_mm": 762.0,
             "min_leg_z_mm": 762.0,
@@ -108,14 +118,28 @@ _SEED_PAYLOADS_LEGACY = {
     ("diagonal-corner-lazy-susan", "base"): [
         {"leg_x_mm": 914.0, "leg_z_mm": 914.0, "height_mm": 876.0,
          "min_leg_x_mm": 1143.0, "min_leg_z_mm": 1143.0},
+        # M4 factory state, pre-Task-3 (round-metric 914.0 legs).
+        {"leg_x_mm": 914.0, "leg_z_mm": 914.0, "height_mm": 876.0,
+         "min_leg_x_mm": 1143.0, "min_leg_z_mm": 1143.0,
+         "clearance_front_mm": 500.0},
     ],
     ("blind-corner-basic", "base"): [
         {"leg_x_mm": 610.0, "leg_z_mm": 1143.0, "height_mm": 876.0,
          "min_leg_x_mm": 610.0, "min_leg_z_mm": 1372.0, "host_leg": "z"},
+        # M3/M4 factory state, pre-Task-3 (round-metric 610.0/686.2/
+        # 1372.0 legs).
+        {"leg_x_mm": 610.0, "leg_z_mm": 1143.0, "height_mm": 876.0,
+         "filler_x_mm": 76.2, "min_leg_x_mm": 686.2,
+         "min_leg_z_mm": 1372.0, "host_leg": "z",
+         "clearance_front_mm": 450.0},
     ],
     ("pie-cut-wall-corner", "wall"): [
         {"leg_x_mm": 610.0, "leg_z_mm": 610.0, "height_mm": 762.0,
          "min_leg_x_mm": 762.0, "min_leg_z_mm": 762.0},
+        # M4 factory state, pre-Task-3 (round-metric 610.0 legs).
+        {"leg_x_mm": 610.0, "leg_z_mm": 610.0, "height_mm": 762.0,
+         "min_leg_x_mm": 762.0, "min_leg_z_mm": 762.0,
+         "clearance_front_mm": 300.0},
     ],
 }
 
@@ -242,7 +266,12 @@ class SouthbrookPlacementRule(models.Model):
                                   ("leg_z_mm", "filler_z_mm",
                                    "min_leg_z_mm")):
                 fw = payload.get(fill) or 0
-                if fw and payload[mn] < payload[leg] + fw:
+                # Task 3 (corner-remediation) — 1e-6mm epsilon: inch-
+                # exact mm values (e.g. 609.6 + 76.2 = 685.8) are not
+                # exactly representable in IEEE-754 double, so a bare
+                # `<` here false-positives on a payload that is exactly
+                # at the boundary (609.6 + 76.2 == 685.8000000000001).
+                if fw and payload[mn] < payload[leg] + fw - 1e-6:
                     raise ValidationError(
                         self.env._(
                             "Placement rule '%(name)s': %(mn)s (%(m)r) "

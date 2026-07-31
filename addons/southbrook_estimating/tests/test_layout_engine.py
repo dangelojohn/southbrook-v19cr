@@ -576,16 +576,19 @@ class TestCornerRulesAsData(TransactionCase):
     rule-driven SKU + per-leg (asymmetric) corner consumption, with
     byte-identical legacy fallback when no rules are given / none fit."""
 
+    # Task 3 (corner-remediation, 2026-07-30) — inch-exact mm:
+    # 914.4=36in, 609.6=24in, 1371.6=54in (25.4 * inches). Mirrors the
+    # real seed in models/placement_rule.py._SEED_RULES post-fix.
     RULES = [
         {"rule_id": "susan", "sku": "SB-CORNER", "tier": "base",
-         "sequence": 10, "leg_x_mm": 914.0, "leg_z_mm": 914.0,
+         "sequence": 10, "leg_x_mm": 914.4, "leg_z_mm": 914.4,
          "height_mm": 876.0, "min_leg_x_mm": 1143.0, "min_leg_z_mm": 1143.0},
         {"rule_id": "blind", "sku": "SB-CORNER-BLIND", "tier": "base",
-         "sequence": 20, "leg_x_mm": 610.0, "leg_z_mm": 1143.0,
-         "height_mm": 876.0, "min_leg_x_mm": 610.0, "min_leg_z_mm": 1372.0,
+         "sequence": 20, "leg_x_mm": 609.6, "leg_z_mm": 1143.0,
+         "height_mm": 876.0, "min_leg_x_mm": 609.6, "min_leg_z_mm": 1371.6,
          "host_leg": "z"},
         {"rule_id": "wallpie", "sku": "SB-WALL-CORNER", "tier": "wall",
-         "sequence": 10, "leg_x_mm": 610.0, "leg_z_mm": 610.0,
+         "sequence": 10, "leg_x_mm": 609.6, "leg_z_mm": 609.6,
          "height_mm": 762.0, "min_leg_x_mm": 762.0, "min_leg_z_mm": 762.0},
     ]
 
@@ -637,7 +640,7 @@ class TestCornerRulesAsData(TransactionCase):
         wall = nodes["corner-back-left-wall"]
         self.assertEqual(base["sku"], "SB-CORNER")
         self.assertEqual(base["rule_id"], "susan")
-        self.assertEqual((base["width_mm"], base["depth_mm"]), (914.0, 914.0))
+        self.assertEqual((base["width_mm"], base["depth_mm"]), (914.4, 914.4))
         # The wall corner is now a REAL 24x24 upper cell, not the legacy
         # 36in square — the whole point of per-product rules.
         self.assertEqual(wall["sku"], "SB-WALL-CORNER")
@@ -661,7 +664,7 @@ class TestCornerRulesAsData(TransactionCase):
         self.assertEqual(node["__pose"]["rotation_deg"], 90)
         # width runs along the host (Z) wall; depth is the X consumption.
         self.assertEqual((node["width_mm"], node["depth_mm"]),
-                         (1143.0, 610.0))
+                         (1143.0, 609.6))
         place = {p["id"]: p for p in r["placements"]}
         x0, x1, z0, z1 = E.footprint_mm(node, place[node["id"]])
         self.assertEqual((round(x0), round(x1), round(z0), round(z1)),
@@ -708,10 +711,11 @@ class TestCornerFillersM3(TransactionCase):
     reservation extends past corner + filler, zero-filler rules and the
     legacy path emit none."""
 
+    # Task 3 — inch-exact mm: 609.6=24in, 685.8=27in (609.6+76.2 filler).
     BLIND = {"rule_id": "blind", "sku": "SB-CORNER-BLIND", "tier": "base",
-             "sequence": 10, "leg_x_mm": 610.0, "leg_z_mm": 1143.0,
+             "sequence": 10, "leg_x_mm": 609.6, "leg_z_mm": 1143.0,
              "height_mm": 876.0, "filler_x_mm": 76.2,
-             "min_leg_x_mm": 686.2, "min_leg_z_mm": 1372.0,
+             "min_leg_x_mm": 685.8, "min_leg_z_mm": 1371.6,
              "host_leg": "z"}
 
     @staticmethod
@@ -735,18 +739,18 @@ class TestCornerFillersM3(TransactionCase):
         self.assertEqual(f["wall"], "back")
         self.assertAlmostEqual(f["width_mm"], 76.2)
         place = {p["id"]: p for p in r["placements"]}
-        # Strip sits exactly between the corner cell (x ends 610) and
-        # the back run start (686.2).
+        # Strip sits exactly between the corner cell (x ends 609.6) and
+        # the back run start (685.8) — Task 3 inch-exact mm.
         fx0, fx1, fz0, fz1 = E.footprint_mm(f, place[f["id"]])
-        self.assertAlmostEqual(fx0, 610.0)
-        self.assertAlmostEqual(fx1, 686.2)
+        self.assertAlmostEqual(fx0, 609.6)
+        self.assertAlmostEqual(fx1, 685.8)
         # Back run survivors start past corner + filler.
         back_starts = [E.footprint_mm(c, place[c["id"]])[0]
                        for c in r["cabinets"]
                        if c.get("wall") == "back"
                        and not c.get("corner_cabinet")
                        and not c.get("corner_filler")]
-        self.assertTrue(all(x0 >= 686.2 - 1 for x0 in back_starts),
+        self.assertTrue(all(x0 >= 685.8 - 1 for x0 in back_starts),
                         back_starts)
         # Fillers are solid members: no same-layer overlap anywhere.
         cabs_all = r["cabinets"]
@@ -760,7 +764,7 @@ class TestCornerFillersM3(TransactionCase):
 
     def test_zero_filler_rules_emit_none(self):
         susan = {"rule_id": "susan", "sku": "SB-CORNER", "tier": "base",
-                 "sequence": 10, "leg_x_mm": 914.0, "leg_z_mm": 914.0,
+                 "sequence": 10, "leg_x_mm": 914.4, "leg_z_mm": 914.4,
                  "height_mm": 876.0, "min_leg_x_mm": 1143.0,
                  "min_leg_z_mm": 1143.0}
         cabs = ([self._cab(i, "back", i) for i in range(3)]
