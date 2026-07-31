@@ -112,8 +112,20 @@ class TestPlacedWidthIn(TransactionCase):
         self._saved_width_fallback_logged_ids = set(
             _kd._WIDTH_FALLBACK_LOGGED_IDS)
         _kd._WIDTH_FALLBACK_LOGGED_IDS.clear()
+        # Gate-harness guard — the gate runs odoo with --log-level=warn,
+        # which sets `_kd._logger`'s EFFECTIVE level to WARNING; records
+        # logged at INFO are dropped at the LOGGER itself, before they
+        # ever reach the hand-rolled handler `test_fallback_logs_once_
+        # per_product` attaches (a handler only sees what the logger's
+        # own level lets through). My isolated verification runs used a
+        # more verbose harness level, which masked this. Force this
+        # logger to INFO for the duration of each test, restore
+        # whatever it was afterward.
+        self._saved_kd_logger_level = _kd._logger.level
+        _kd._logger.setLevel(logging.INFO)
 
     def tearDown(self):
+        _kd._logger.setLevel(self._saved_kd_logger_level)
         _kd._WIDTH_FALLBACK_LOGGED_IDS.clear()
         _kd._WIDTH_FALLBACK_LOGGED_IDS.update(
             self._saved_width_fallback_logged_ids)
