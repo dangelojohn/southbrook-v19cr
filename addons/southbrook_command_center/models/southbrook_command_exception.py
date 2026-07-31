@@ -31,10 +31,22 @@ is provided as a documented starting point for whoever implements that
 method next, so the mapping table doesn't have to be re-derived.
 """
 import logging
+from datetime import timedelta
 
 from odoo import _, api, fields, models
 
 _logger = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------
+# Chronic threshold (2026-07-31). A condition is "chronic" once it has
+# been open this many days — see days_persisting on the model below for
+# why days-open replaced occurrence_count (sweep-count) as the signal.
+# NOTE: XML views cannot import this constant — the `chronic` search
+# filter and its decoration-danger expression in command_center_views.xml
+# hardcode the same number (7). Keep them in sync if this changes.
+# ------------------------------------------------------------------
+CHRONIC_DAYS_THRESHOLD = 7
 
 
 # Per-source severity vocabularies harmonized onto this model's own
@@ -286,6 +298,78 @@ class SouthbrookCommandException(models.Model):
         copy=False,
         help="When this business condition was most recently observed.",
     )
+
+    # ------------------------------------------------------------------
+    # Days persisting (2026-07-31) — replaces occurrence_count as the
+    # "how bad is this" signal driving the `chronic` search filter and
+    # the list's decoration-danger.
+    #
+    # Why: the MI sweep cron runs every 15 minutes and increments
+    # occurrence_count each time it re-observes a still-open condition,
+    # so occurrence_count counts SWEEPS, not distinct incidents. Measured
+    # production 2026-07-31: cutlist_divergence occurrence_count=2486
+    # across 9 rows, mi_blocker=2380 across 8 rows, quality_ncr=90,
+    # breakdown_alert=90 — every one persisting ~26.5-26.7 days. At one
+    # sweep per 15 minutes, ~2,500 is just what a MONTH-OLD open row
+    # looks like; the number says nothing about severity or duration.
+    # days_persisting is the actual signal: how long the underlying
+    # condition has gone unresolved.
+    #
+    # store=False (deliberately): this value advances continuously with
+    # wall-clock time — it is not the product of a discrete write event
+    # the way occurrence_count/last_seen are. A stored copy would be
+    # correct only at the instant it was last computed and would grow
+    # permanently stale in between (worse: stale in the specific
+    # direction that makes a truly chronic row look fresher than it is).
+    # So it is computed on read, and made filterable via
+    # `_search_days_persisting` below rather than a stored value.
+    # ------------------------------------------------------------------
+    days_persisting = fields.Float(
+        compute="_compute_days_persisting",
+        search="_search_days_persisting",
+        store=False,
+        digits=(16, 1),
+        string="Days Persisting",
+        help="How long this condition has been open: "
+             "(last_seen - create_date) in days. 0.0 while last_seen is unset.",
+    )
+
+    @api.depends("create_date", "last_seen")
+    def _compute_days_persisting(self):
+        for rec in self:
+            if not rec.last_seen or not rec.create_date:
+                rec.days_persisting = 0.0
+            else:
+                delta = rec.last_seen - rec.create_date
+                rec.days_persisting = delta.total_seconds() / 86400.0
+
+    def _search_days_persisting(self, operator, value):
+        """Make the unstored ``days_persisting`` filterable (e.g. by the
+        `chronic` search filter) by translating a days threshold into a
+        ``create_date`` cutoff — SQL-side, so it works at any row count.
+
+        days_persisting is (last_seen - create_date) in days, and a
+        condition still being re-observed by the sweep has last_seen
+        pinned near "now", so filtering on days_persisting is
+        equivalent to filtering on the age of create_date. MORE days
+        persisting means an OLDER create_date, so the comparison
+        direction inverts across the translation:
+
+            days_persisting >= value  <=>  create_date <= now - value days
+            days_persisting >  value  <=>  create_date <  now - value days
+            days_persisting <= value  <=>  create_date >= now - value days
+            days_persisting <  value  <=>  create_date >  now - value days
+
+        Any other operator (e.g. '=', '!=') isn't meaningful against a
+        continuously-advancing float, so it returns a domain matching
+        nothing rather than raising.
+        """
+        inverted = {">=": "<=", ">": "<", "<=": ">=", "<": ">"}
+        sql_operator = inverted.get(operator)
+        if sql_operator is None:
+            return [(0, "=", 1)]
+        cutoff = fields.Datetime.now() - timedelta(days=value)
+        return [("create_date", sql_operator, cutoff)]
 
     # ------------------------------------------------------------------
     # Create: sequence-backed name (falls back gracefully if no
