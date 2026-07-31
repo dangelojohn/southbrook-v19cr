@@ -25,7 +25,14 @@ manufacturing logic (BoMs, work orders, routings, costing all stay in mrp).
 Reuses the custom MO tabs (CAD / Intelligence / Production Costs / Shop Floor)
 rather than duplicating them — material/BoM/cost are pulled FROM the linked MO.
 """,
-    "version": "19.0.1.6.1",
+    # 1.7.0 sits above origin/main's signoff-gating line (1.6.0, patched to
+    # 1.6.1), whose code is merged in below. Two different contents sharing one
+    # version number means Odoo no-ops whichever lands second — it compares the
+    # manifest against ir_module_module.latest_version — so the floor-manager
+    # pack takes the next increment rather than reusing theirs. Production
+    # already runs 1.7.0 from this branch; the 1.6.1 patch is pure code with no
+    # migration, so an explicit -u carries it without a further bump.
+    "version": "19.0.1.7.0",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry / OdooIQ",
     "category": "Services/Project",
