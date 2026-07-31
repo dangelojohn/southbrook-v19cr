@@ -12,3 +12,5 @@ from . import test_readiness
 from . import test_consumption
 # Commit 6 — production rollup + cron + demo
 from . import test_production_cost
+# 19.0.2.0.0 — safety three-state remediation
+from . import test_safety_three_state

@@ -177,6 +177,49 @@ export class MaterialsHardwareCatalog extends Component {
         return chosen.includes(value);
     }
 
+    // Chip class for one facet value: selection highlight plus a distinct
+    // look for the tri-state safety facets' "not assessed" chip, so an
+    // unassessed bucket never reads visually the same as a real yes/no
+    // value (finding: tri-state facet rendering).
+    chipClass(key, val) {
+        const classes = ["o_matcat_chip"];
+        if (this.isSelected(key, val.value)) {
+            classes.push("o_on");
+        }
+        if (val.value === "not_assessed") {
+            classes.push("o_chip_unset");
+        }
+        return classes.join(" ");
+    }
+
+    // Badges are server-driven {label, kind} pairs (kind: danger|ok|unset)
+    // as of the tri-state safety wave. A plain string badge (a stale
+    // client bundle talking to a server that hasn't restarted, or vice
+    // versa) is tolerated rather than crashing: it renders with its own
+    // text and the default "danger" kind, matching the pre-existing
+    // single-style badge look.
+    badgeLabel(badge) {
+        return typeof badge === "string" ? badge : badge.label;
+    }
+
+    badgeKind(badge) {
+        if (!badge || typeof badge === "string") {
+            return "danger";
+        }
+        return badge.kind || "danger";
+    }
+
+    badgeClass(badge) {
+        const classes = ["o_matcat_badge"];
+        const kind = this.badgeKind(badge);
+        if (kind === "ok") {
+            classes.push("o_badge_ok");
+        } else if (kind === "unset") {
+            classes.push("o_badge_unset");
+        }
+        return classes.join(" ");
+    }
+
     isRowSelected(productId) {
         return this.state.selectedProductId === productId;
     }

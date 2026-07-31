@@ -67,4 +67,12 @@
               action="action_product_southbrook_tools"
               sequence="80"/>
 
+    <!-- Safety three-state remediation, 19.0.2.0.0 — data-quality
+         worklist, right next to the main tools/consumables list. -->
+    <menuitem id="menu_southbrook_tools_dq_unclassified"
+              name="Data Quality — Unclassified Consumables"
+              parent="stock.menu_stock_inventory_control"
+              action="action_dq_unclassified_consumables"
+              sequence="81"/>
+
 </odoo>

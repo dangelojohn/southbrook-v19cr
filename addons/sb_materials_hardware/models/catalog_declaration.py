@@ -66,3 +66,39 @@ class CatalogColumn(models.Model):
     _cat_field_uniq = models.Constraint(
         "unique(category_id, field_name)",
         "A column for this field already exists on this category.")
+
+
+class CatalogSearchSynonym(models.Model):
+    _name = "materials.catalog.search.synonym"
+    _description = "Catalog search synonym"
+    _order = "term"
+    _rec_name = "term"
+
+    # This is itself a declaration, same "declarations are data"
+    # philosophy as the facet/column mixin above — but it does not inherit
+    # that mixin: a synonym has no field_name, no facet_type, and its
+    # target is a SET of categories (category_ids), not one category_id it
+    # applies "at and below". It widens the free-text row search in
+    # tools_catalog_provider._rows() when a typed word matches `term`
+    # exactly (case-insensitive, trimmed) — see that method's comment for
+    # why: the category tree deliberately has no "Solvents" node, so
+    # "solvent" would otherwise search-miss entirely even though the
+    # categories that answer it (Thinner / Reducer / Catalyst, Degreaser /
+    # Surface Cleaner) already exist.
+    term = fields.Char(
+        required=True, index=True,
+        help="The word a person actually types, e.g. 'solvent'. Matched "
+             "case-insensitively and exactly (not a substring) against the "
+             "search box.")
+    category_ids = fields.Many2many(
+        "southbrook.tool.category",
+        "materials_catalog_search_synonym_category_rel",
+        "synonym_id", "category_id",
+        string="Widens search to",
+        help="Rows whose tool category falls under any of these (and "
+             "their descendants) are included when `term` is searched, in "
+             "addition to the ordinary name/reference match.")
+    active = fields.Boolean(default=True)
+
+    _term_uniq = models.Constraint(
+        "unique(term)", "This search term is already mapped to categories.")

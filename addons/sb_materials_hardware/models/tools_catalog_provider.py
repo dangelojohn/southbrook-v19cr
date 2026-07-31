@@ -14,7 +14,9 @@ _logger = logging.getLogger(__name__)
 
 PROVENANCE = (
     "Read-only view of the tool and consumable master. Specs are optional — "
-    "an absent value is shown as a dash, never as zero."
+    "an absent value is shown as a dash, never as zero. Safety flags are "
+    "three-state — \"not assessed\" is the default truth, and it is never "
+    "rendered as safe."
 )
 
 GENERIC_COLUMNS = [
@@ -79,6 +81,31 @@ BADGE_FIELDS = [
     ("x_southbrook_requires_ventilation", "Ventilation required"),
     ("x_southbrook_expiry_required", "Expiry tracked"),
 ]
+
+# The four safety fields carry a tri-state Selection on product.template
+# (southbrook_mrp_kitchen_tools: "yes" / "no" / "not_assessed", default
+# "not_assessed" — see that module's product_template.py). Unlike every
+# other BADGE_FIELDS entry, these must NEVER be silently omitted: omitting
+# the badge for a not-yet-assessed product is exactly the "absence renders
+# as safe" failure this wave exists to close. `label` is the existing
+# danger-style label for "yes"; `negative_label` is a distinct, still-worth-
+# stating label for a verified "no" — "Non-flammable" is information, not
+# nothing, so it gets its own badge rather than being folded into silence.
+# "not_assessed" (or a bare False/None, for a column not-yet-migrated to
+# the selection shape — see _safety_badge) renders as "<label>: not
+# assessed" in the unset style.
+SAFETY_BADGE_FIELDS = [
+    ("x_southbrook_hazardous", "Hazardous", "Non-hazardous"),
+    ("x_southbrook_flammable", "Flammable", "Non-flammable"),
+    ("x_southbrook_msds_required", "MSDS required", "No MSDS required"),
+    ("x_southbrook_requires_ventilation", "Ventilation required",
+     "No ventilation required"),
+]
+SAFETY_BADGE_NEGATIVE_LABELS = {
+    field_name: negative_label
+    for field_name, _label, negative_label in SAFETY_BADGE_FIELDS
+}
+SAFETY_BADGE_FIELD_NAMES = set(SAFETY_BADGE_NEGATIVE_LABELS)
 
 ENGINEERING_FIELDS = [
     ("x_southbrook_preferred_vendor_id", "Preferred vendor"),
@@ -339,10 +366,22 @@ class ToolsCatalogProvider(models.AbstractModel):
                 entry["min"] = raw_min if raw_min is not False else None
                 entry["max"] = raw_max if raw_max is not False else None
             elif dec.facet_type == "flag":
-                entry["values"] = [{"value": True, "label": dec.name,
-                                    "count": Product.search_count(
-                                        variant_domain +
-                                        [(variant_field, "=", True)])}]
+                if field.type == "selection":
+                    # The tri-state safety shape (and any other Selection
+                    # field someone declares as a "flag" facet): one chip
+                    # per declared selection value, not one chip for
+                    # "true". A plain Boolean flag field falls through to
+                    # the single-chip branch below unchanged — this branch
+                    # only fires once the underlying column has actually
+                    # been migrated to Selection (see coordination note on
+                    # _selection_flag_values).
+                    entry["values"] = self._selection_flag_values(
+                        Product, variant_domain, variant_field, field)
+                else:
+                    entry["values"] = [{"value": True, "label": dec.name,
+                                        "count": Product.search_count(
+                                            variant_domain +
+                                            [(variant_field, "=", True)])}]
             else:
                 # Odoo 17+ API: list of (group_value, count) tuples.
                 # Grouped over product.product via the product_tmpl_id.*
@@ -377,6 +416,42 @@ class ToolsCatalogProvider(models.AbstractModel):
         return out
 
     @api.model
+    def _selection_flag_values(self, Product, variant_domain, variant_field,
+                                field):
+        """One chip per Selection value, counts always present — zeros
+        included — for a facet declared `facet_type == "flag"` whose
+        underlying field has been converted from Boolean to Selection.
+
+        This is what makes a "flag" facet honest for the three-state safety
+        fields: the old single-chip flag branch above only ever asked "how
+        many are true", so "not assessed" (and "no") had no chip and no
+        count at all — the exact "absence renders as good" failure this
+        wave exists to close. Every value the field declares gets a chip
+        here, in the field's own declared order (typically yes / no /
+        not_assessed), each carrying its own count.
+
+        `not_assessed`'s count treats a bare SQL NULL the same as the
+        literal string "not_assessed": a Selection field's falsy value is
+        already `False` (not a genuine third option), so a row that has
+        never been migrated to the three-state shape, or was bulk-loaded
+        without the field set, is NULL/empty in Postgres rather than
+        holding the literal default — and it must still land in the
+        "not assessed" bucket, not vanish from every chip's count.
+        """
+        values = []
+        for value, label in field._description_selection(self.env):
+            domain = variant_domain + [(variant_field, "=", value)]
+            if value == "not_assessed":
+                domain = variant_domain + [
+                    "|", (variant_field, "=", "not_assessed"),
+                    (variant_field, "=", False)]
+            values.append({
+                "value": value, "label": label,
+                "count": Product.search_count(domain),
+            })
+        return values
+
+    @api.model
     def _order_values(self, raw, alpha=False):
         """Order facet values for display.
 
@@ -395,6 +470,79 @@ class ToolsCatalogProvider(models.AbstractModel):
         numbered.sort(key=lambda pair: pair[0])
         unnumbered.sort(key=lambda pair: str(pair[1]["label"]))
         return [item for _n, item in numbered] + [item for _n, item in unnumbered]
+
+    @api.model
+    def audit_facet_coverage(self):
+        """Read-only data-quality audit: which declared facets have ANY
+        data behind them, anywhere in this install.
+
+        The taxonomy (southbrook.tool.category) and the facet declarations
+        that ride on it are seeded ahead of real product data — that's the
+        whole point of "declarations are data" (see the module README):
+        adding a facet is a data change, not a code change, so it's cheap
+        to declare one long before anyone has classified a product into it.
+        Cheap declaration has a cost, though: nothing forces a declared
+        facet to ever be backed by a real value, and the catalog UI itself
+        stays silent about a facet that quietly renders zero chips forever.
+        This method is the mechanism that makes that gap visible — see
+        tests/test_facet_coverage.py for the ratchet that turns it into an
+        actual, enforced check rather than a method nobody calls.
+
+        Deliberately reuses `_facets(category)` — the exact function that
+        builds the live payload — for every declaration's OWN category,
+        rather than a second, parallel counting query. A facet's uniqueness
+        constraint is scoped to (category_id, field_name), so a
+        declaration is always the nearest-winning entry at its own
+        category (nothing else can be declared at the identical pair) —
+        `_facets(dec.category_id)` is therefore guaranteed to include an
+        entry keyed on `dec.field_name`, short of the field having been
+        removed from product.template entirely (the `matched is None`
+        branch below covers that edge defensively; the mixin's own
+        `_check_field_exists` constraint should already make it
+        unreachable in practice).
+
+        "populated" is deliberately generic, not safety-aware: a tri-state
+        safety flag's `not_assessed` default is real, queryable data (a
+        genuine SQL value on a genuine row) the moment ANY product exists
+        in that category subtree, so such a facet reports populated as
+        soon as data exists at all — whether or not anyone has actually
+        assessed anything. That "has anyone looked yet" question is
+        answered elsewhere (the badges in _build_detail, which never omit
+        a not_assessed field); this audit only answers "does this
+        DECLARATION have zero rows behind it anywhere", the same question
+        for every facet type, safety or not.
+
+        Returns a list of {key, category, field_name, populated,
+        distinct_count} dicts, one per active facet declaration. `key` is
+        "<category name>::<field_name>" — unique because the underlying DB
+        constraint already guarantees that (category_id, field_name) pair
+        is unique. Pure read: creates nothing, writes nothing.
+        """
+        out = []
+        for dec in self.env["materials.catalog.facet"].search(
+                [("active", "=", True)]):
+            category = dec.category_id
+            entries = self._facets(category)
+            matched = next(
+                (e for e in entries if e["key"] == dec.field_name), None)
+            if matched is None:
+                populated, distinct_count = False, 0
+            elif matched["type"] == "range":
+                populated = (matched.get("min") is not None
+                             or matched.get("max") is not None)
+                distinct_count = 2 if populated else 0
+            else:
+                values = matched.get("values") or []
+                distinct_count = len(values)
+                populated = any(v.get("count") for v in values)
+            out.append({
+                "key": "%s::%s" % (category.name, dec.field_name),
+                "category": category.name,
+                "field_name": dec.field_name,
+                "populated": populated,
+                "distinct_count": distinct_count,
+            })
+        return out
 
     @api.model
     def _facet_domain(self, facets, category=None):
@@ -547,6 +695,25 @@ class ToolsCatalogProvider(models.AbstractModel):
         return term.translate(self._LIKE_ESCAPE_TABLE)
 
     @api.model
+    def _synonym_category_ids(self, term):
+        """Category ids a search term should also widen the row search to.
+
+        Exact match, case-insensitive, on the trimmed term — "solvent" must
+        not fuzzy-match "solvents" via ilike substring rules (that's a
+        second, separately-seeded synonym record, not a wildcard). No
+        `.sudo()`: this model's ACL mirrors materials.catalog.facet's
+        (base.group_user read-only), so a caller who cannot see the
+        category tree cannot see synonym mappings into it either — same
+        boundary the rest of this provider already holds to.
+        """
+        needle = (term or "").strip()
+        if not needle:
+            return []
+        synonyms = self.env["materials.catalog.search.synonym"].search(
+            [("active", "=", True), ("term", "=ilike", needle)])
+        return synonyms.category_ids.ids
+
+    @api.model
     def _null_mask(self, tmpl_ids, keys):
         """Which (template id, key) pairs are SQL NULL, for numeric keys.
 
@@ -643,8 +810,24 @@ class ToolsCatalogProvider(models.AbstractModel):
             # Postgres's own (default) backslash-escape convention makes the
             # match literal again.
             escaped = self._escape_like_term(search)
-            domain += ["|", ("name", "ilike", escaped),
-                       ("default_code", "ilike", escaped)]
+            name_leaf = ("name", "ilike", escaped)
+            code_leaf = ("default_code", "ilike", escaped)
+            # "Solvent" is deliberately not a taxonomy node (see the seed
+            # tree's own README section on why) — it's the word a shop-floor
+            # operator actually types. materials.catalog.search.synonym is
+            # itself a declaration: a seeded row widens this one search into
+            # an OR against the categories that already hold the answer,
+            # rather than inventing a first-class category to name it. Only
+            # the row search widens — the facet chips and the category rail
+            # answer a different question ("what does THIS category
+            # contain") and must not be perturbed by a synonym match.
+            synonym_category_ids = self._synonym_category_ids(search)
+            if synonym_category_ids:
+                domain += ["|", name_leaf, "|", code_leaf,
+                           ("product_tmpl_id.x_southbrook_tool_category_id",
+                            "child_of", synonym_category_ids)]
+            else:
+                domain += ["|", name_leaf, code_leaf]
 
         total = Product.search_count(domain)
         products = Product.search(domain, offset=offset, limit=limit,
@@ -758,8 +941,19 @@ class ToolsCatalogProvider(models.AbstractModel):
                        for field_name, label in ENGINEERING_FIELDS
                        if field_name in tmpl._fields]
 
-        badges = [label for field_name, label in BADGE_FIELDS
-                  if field_name in tmpl._fields and tmpl[field_name]]
+        badges = []
+        for field_name, label in BADGE_FIELDS:
+            if field_name not in tmpl._fields:
+                continue
+            field = tmpl._fields[field_name]
+            if field_name in SAFETY_BADGE_FIELD_NAMES and field.type == "selection":
+                badges.append(self._safety_badge(tmpl, field_name, label))
+            elif tmpl[field_name]:
+                # Non-safety badge fields (and a safety field not yet
+                # migrated off Boolean — the defensive fallback for a -u
+                # that hasn't converted both modules in one transaction)
+                # keep the original omit-if-falsy behaviour.
+                badges.append({"label": label, "kind": "danger"})
 
         return {
             "ok": True,
@@ -770,6 +964,27 @@ class ToolsCatalogProvider(models.AbstractModel):
             "engineering": engineering,
             "badges": badges,
         }
+
+    @api.model
+    def _safety_badge(self, tmpl, field_name, label):
+        """One {label, kind} badge for a tri-state safety field.
+
+        kind is server-driven — the client only maps kind to a CSS class,
+        it never re-derives danger/ok/unset from the raw value. "yes" is
+        the existing danger badge; "no" is a genuine, distinctly-labelled
+        "ok" badge (a verified negative is information, not nothing);
+        "not_assessed", *or a bare falsy value* (a column that hasn't
+        actually been migrated to the selection shape yet — belt-and-
+        braces, since BADGE_FIELDS already gates this branch on
+        `field.type == "selection"`), renders "unset" and never omits.
+        """
+        value = tmpl[field_name]
+        if value == "yes":
+            return {"label": label, "kind": "danger"}
+        if value == "no":
+            return {"label": SAFETY_BADGE_NEGATIVE_LABELS[field_name],
+                    "kind": "ok"}
+        return {"label": "%s: not assessed" % label, "kind": "unset"}
 
     @api.model
     def _detail_value(self, tmpl, data, key, nulls=None):

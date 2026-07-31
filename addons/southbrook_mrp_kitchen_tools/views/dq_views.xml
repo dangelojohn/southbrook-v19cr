@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Safety three-state remediation, 19.0.2.0.0 — data-quality worklist +
+  reverse substrate lens.
+
+  Two independent pieces:
+
+  1. "Data Quality — Unclassified Consumables" — an act_window that
+     finds product.template records sitting in a base Odoo Product
+     Category named Adhesives/Finishing (or on the generic root
+     category) but never assigned a x_southbrook_tool_category_id.
+     Those products carry none of this module's safety/chemistry/
+     replenishment data and are invisible to the release-gate
+     constraint in product_template.py (which only fires for products
+     that DO have a gated tool category) — this is the proactive
+     worklist for finding them before they need releasing.
+
+  2. The reverse substrate lens — a smart button on the base
+     product.category form showing how many Southbrook consumables
+     have declared that category as a compatible material
+     (x_southbrook_compatible_material_ids). Honest-empty: no
+     compatibility data is seeded, so this reads 0 everywhere today.
+-->
+<odoo>
+
+    <!-- ─── Search view: category-name ilike + "no category" filter ─── -->
+    <record id="view_product_template_search_dq" model="ir.ui.view">
+        <field name="name">product.template.search.dq.unclassified</field>
+        <field name="model">product.template</field>
+        <field name="arch" type="xml">
+            <search string="Unclassified Consumables">
+                <field name="name"/>
+                <field name="categ_id"/>
+                <group>
+                    <!-- Resolved by NAME at runtime via a plain ilike on
+                         the related base product.category's
+                         complete_name — not by env.ref()-ing a specific
+                         category id. This module never seeds a plain
+                         "Adhesives"/"Finishing" product.category record
+                         (those live in base Odoo's Inventory category
+                         tree, a completely different model from
+                         southbrook.tool.category); an id-based reference
+                         would be DB-specific and could silently fail to
+                         resolve on a fresh install. ilike on
+                         complete_name also gives child_of-like coverage
+                         for free, since a child category's complete_name
+                         embeds every ancestor's name in its own path
+                         (e.g. "All / Adhesives / Sealants"). This is the
+                         arch-safe form: a static XML domain, no server
+                         action required. -->
+                    <filter name="categ_adhesives_finishing"
+                            string="Base Category: Adhesives / Finishing"
+                            domain="['|',
+                                     ('categ_id.complete_name', 'ilike', 'Adhesives'),
+                                     ('categ_id.complete_name', 'ilike', 'Finishing')]"/>
+                    <!-- "categ_id is the root": rather than hardcoding
+                         product.category_all's xml_id (which assumes
+                         every DB's top-level category is named "All"
+                         with that exact id), this matches ANY category
+                         with no parent — the generic definition of
+                         "root" that holds regardless of how a given
+                         install's category tree is named. -->
+                    <filter name="categ_root_only" string="No Category At All"
+                            domain="[('categ_id.parent_id', '=', False)]"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_dq_unclassified_consumables" model="ir.actions.act_window">
+        <field name="name">Data Quality — Unclassified Consumables</field>
+        <field name="res_model">product.template</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_product_template_search_dq"/>
+        <!-- Hard domain: never classified as a Southbrook tool/consumable
+             at all. The two search filters above narrow WHICH flavour of
+             "never classified" the user is hunting — base-category
+             Adhesives/Finishing by default, or "no category whatsoever"
+             as an alternate/additional scope (same filter group, so
+             selecting both ORs them together). -->
+        <field name="domain">[('x_southbrook_tool_category_id', '=', False)]</field>
+        <field name="context">{'search_default_categ_adhesives_finishing': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No unclassified adhesives or finishing consumables found.
+            </p>
+            <p>
+                Products here sit in a base Product Category named
+                "Adhesives" or "Finishing" (or have no category at all)
+                but have never been assigned a Southbrook Tool Category —
+                so they carry none of this module's safety, chemistry, or
+                replenishment data, and the release-gate constraint has
+                nothing to check on them.
+            </p>
+        </field>
+    </record>
+
+    <!-- ─── Reverse substrate lens: smart button on product.category ─── -->
+    <record id="view_product_category_form_inherit_tools" model="ir.ui.view">
+        <field name="name">product.category.form.inherit.southbrook.tools</field>
+        <field name="model">product.category</field>
+        <field name="inherit_id" ref="product.product_category_form_view"/>
+        <field name="arch" type="xml">
+            <!-- Targeting //sheet position="inside" (append) rather than
+                 a specific existing button_box div: the stock CE
+                 product.category form is not guaranteed to already have
+                 one, and //sheet is guaranteed to exist on any standard
+                 form view. Appending our own oe_button_box div at the
+                 end of the sheet is functionally correct (button renders,
+                 click works, count is real) even if it is not
+                 pixel-identical to a top-of-sheet button rail. -->
+            <xpath expr="//sheet" position="inside">
+                <div class="oe_button_box" name="southbrook_tools_button_box">
+                    <button name="action_view_approved_consumables"
+                            type="object"
+                            class="oe_stat_button"
+                            icon="fa-flask">
+                        <field name="x_southbrook_approved_consumable_count"
+                               widget="statinfo"
+                               string="Approved Adhesives &amp; Finishes"/>
+                    </button>
+                </div>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

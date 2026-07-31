@@ -3,3 +3,5 @@ access_materials_catalog_facet_user,materials.catalog.facet.user,model_materials
 access_materials_catalog_facet_manager,materials.catalog.facet.manager,model_materials_catalog_facet,base.group_system,1,1,1,1
 access_materials_catalog_column_user,materials.catalog.column.user,model_materials_catalog_column,base.group_user,1,0,0,0
 access_materials_catalog_column_manager,materials.catalog.column.manager,model_materials_catalog_column,base.group_system,1,1,1,1
+access_materials_catalog_search_synonym_user,materials.catalog.search.synonym.user,model_materials_catalog_search_synonym,base.group_user,1,0,0,0
+access_materials_catalog_search_synonym_manager,materials.catalog.search.synonym.manager,model_materials_catalog_search_synonym,base.group_system,1,1,1,1

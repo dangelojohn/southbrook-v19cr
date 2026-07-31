@@ -31,6 +31,7 @@ tool category surface stay invisible — the form view's
 admin opts a product in.
 """
 from odoo import _, api, fields, models
+from odoo.exceptions import ValidationError
 
 from .tool_category import TOOL_FAMILY_SELECTION, DIRECTNESS_SELECTION
 
@@ -98,6 +99,34 @@ THREAD_TYPE_SELECTION = [
     ("euro", "Euro"),
     ("machine", "Machine"),
     ("other", "Other"),
+]
+
+# Three-state safety assessment (safety three-state remediation,
+# 19.0.2.0.0). A plain Boolean cannot distinguish "assessed and
+# confirmed" from "nobody has ever looked at this product" — both
+# collapse to False and render identically: an unchecked box on the
+# form, a missing badge/chip in the catalog, a search filter that
+# silently excludes it. That is exactly backwards for safety data.
+# Governing rule (BlindSpot review): "Absence of data never renders as
+# good." 'not_assessed' is therefore the explicit default — never
+# False, never blank — so every renderer (form, search filter, the
+# release-readiness gate below, sb_materials_hardware's catalog badges
+# and facets) has a real value to draw a distinct, honest state from.
+SAFETY_ASSESSMENT_SELECTION = [
+    ("yes", "Yes"),
+    ("no", "No"),
+    ("not_assessed", "Not assessed"),
+]
+
+# Coverage-rate unit of measure. Deliberately unseeded (no default) —
+# the rate itself is vendor spec-sheet data nobody has entered yet;
+# forcing a UoM choice without a rate to go with it would just be a
+# different flavour of the same "looks complete, isn't" problem this
+# wave exists to fix.
+COVERAGE_UOM_SELECTION = [
+    ("g_per_lm", "g / linear m"),
+    ("ml_per_m2", "ml / m²"),
+    ("g_per_m2", "g / m²"),
 ]
 
 # Adhesive / glue families
@@ -266,13 +295,43 @@ class ProductTemplate(models.Model):
         help="Readiness check blocks the work order if no in-date lot is "
              "available.",
     )
-    x_southbrook_hazardous = fields.Boolean(string="Hazardous")
-    x_southbrook_msds_required = fields.Boolean(string="MSDS Required")
+    x_southbrook_hazardous = fields.Selection(
+        SAFETY_ASSESSMENT_SELECTION,
+        string="Hazardous",
+        default="not_assessed",
+        tracking=True,
+        help="Is this product classified as a hazardous material? "
+             "'Not assessed' is the honest default until someone "
+             "actually checks — it is not the same thing as 'No', and "
+             "must never render or filter as if it were.",
+    )
+    x_southbrook_msds_required = fields.Selection(
+        SAFETY_ASSESSMENT_SELECTION,
+        string="MSDS Required",
+        default="not_assessed",
+        tracking=True,
+        help="Does this product require a Material Safety Data Sheet "
+             "on file? 'Not assessed' means nobody has checked — "
+             "distinct from a confirmed 'No'.",
+    )
 
     # Additional safety flags (commit 4 surfaces in operator panel)
-    x_southbrook_flammable = fields.Boolean(string="Flammable")
-    x_southbrook_requires_ventilation = fields.Boolean(
+    x_southbrook_flammable = fields.Selection(
+        SAFETY_ASSESSMENT_SELECTION,
+        string="Flammable",
+        default="not_assessed",
+        tracking=True,
+        help="Is this product flammable? 'Not assessed' means nobody "
+             "has checked — distinct from a confirmed 'No'.",
+    )
+    x_southbrook_requires_ventilation = fields.Selection(
+        SAFETY_ASSESSMENT_SELECTION,
         string="Requires Ventilation",
+        default="not_assessed",
+        tracking=True,
+        help="Does using this product require active ventilation? "
+             "'Not assessed' means nobody has checked — distinct from "
+             "a confirmed 'No'.",
     )
     x_southbrook_ppe_required = fields.Char(
         string="PPE Required",
@@ -298,6 +357,24 @@ class ProductTemplate(models.Model):
     )
     x_southbrook_issue_uom_id = fields.Many2one(
         "uom.uom", string="Issue UoM",
+    )
+    x_southbrook_coverage_rate = fields.Float(
+        string="Coverage Rate",
+        help="Consumption per unit of application — e.g. grams per "
+             "linear metre of edge adhesive, millilitres per square "
+             "metre of finish. 0.0 means NOT ENTERED, not 'zero "
+             "consumption': this is vendor spec-sheet data nobody has "
+             "keyed in yet. Renderers must say 'no coverage rate in "
+             "data' for 0.0 — never '0 g/lm' — the numeric-falsy trap "
+             "this field is named to avoid (same failure mode as the "
+             "boolean safety flags above).",
+    )
+    x_southbrook_coverage_uom = fields.Selection(
+        COVERAGE_UOM_SELECTION,
+        string="Coverage Rate UoM",
+        help="Unit the coverage rate above is expressed in. Optional "
+             "and unseeded on purpose — deferred to whichever owner "
+             "actually has the vendor spec sheet in hand.",
     )
     x_southbrook_estimated_life_qty = fields.Float(string="Estimated Life Qty")
     x_southbrook_estimated_life_unit = fields.Selection(
@@ -355,10 +432,19 @@ class ProductTemplate(models.Model):
             # Inherit reusable / consumable flags.
             rec.x_southbrook_is_reusable_tool = cat.reusable
             rec.x_southbrook_is_consumable_tool = cat.consumable
-            # Inherit safety + expiry flags.
+            # Inherit safety + expiry flags. The category's hazardous /
+            # msds_required flags are policy *assertions* ("this whole
+            # category is hazardous") — they can justify setting 'yes',
+            # but their absence proves nothing about this one product,
+            # so a falsy category flag must NEVER auto-set 'no' here.
+            # Leaving the field at its 'not_assessed' default in that
+            # case is the honest behaviour; a real 'no' has to come
+            # from someone actually assessing the product.
             rec.x_southbrook_expiry_required = cat.has_expiry_date
-            rec.x_southbrook_hazardous = cat.hazardous
-            rec.x_southbrook_msds_required = cat.msds_required
+            if cat.hazardous:
+                rec.x_southbrook_hazardous = "yes"
+            if cat.msds_required:
+                rec.x_southbrook_msds_required = "yes"
             # Replenishment defaults.
             if cat.default_uom_id and not rec.uom_id:
                 rec.uom_id = cat.default_uom_id
@@ -371,3 +457,120 @@ class ProductTemplate(models.Model):
             # Linkage defaults.
             if cat.default_workcenter_ids and not rec.x_southbrook_default_workcenter_ids:
                 rec.x_southbrook_default_workcenter_ids = [(6, 0, cat.default_workcenter_ids.ids)]
+
+    # ──────────────────────────────────────────────────────────────────
+    # Constraint — block release of unassessed adhesive / finishing
+    # chemicals (safety three-state remediation, 19.0.2.0.0)
+    # ──────────────────────────────────────────────────────────────────
+    # "Released / in-service" gate value(s): {"available", "new"}.
+    # x_southbrook_tool_lifecycle_state shares its 11-value selection
+    # (TOOL_LIFECYCLE_SELECTION, above) with southbrook.tool.asset
+    # .lifecycle_state — and tool_asset.py's own
+    # _compute_is_available already treats exactly
+    # ready_states = {"available", "new"} as "cleared for use"; that is
+    # the one existing precedent in this module for what "released"
+    # means, so the gate starts from it rather than inventing a new
+    # notion of "released" — and then also covers "in_use" and
+    # "checked_out": a Selection write can jump straight to any value,
+    # so gating only the earliest ready states would leave a one-write
+    # bypass ("set it to In Use directly") around the exact stop this
+    # constraint exists to be. Out-of-service states (needs_*, under_
+    # maintenance, broken, retired, scrapped) stay ungated on purpose —
+    # parking an unassessed chemical as retired/broken is legitimate
+    # and blocking it would train users to ignore the error.
+    _RELEASED_LIFECYCLE_STATES = frozenset(
+        {"new", "available", "in_use", "checked_out"})
+
+    # The four fields this constraint watches, paired with the label
+    # used in the error message. Order matches the form view's Safety
+    # group.
+    _SAFETY_ASSESSMENT_FIELDS = (
+        ("x_southbrook_hazardous", "Hazardous"),
+        ("x_southbrook_flammable", "Flammable"),
+        ("x_southbrook_requires_ventilation", "Requires Ventilation"),
+        ("x_southbrook_msds_required", "MSDS Required"),
+    )
+
+    @api.constrains(
+        "x_southbrook_tool_lifecycle_state",
+        "x_southbrook_tool_category_id",
+        "x_southbrook_hazardous",
+        "x_southbrook_flammable",
+        "x_southbrook_requires_ventilation",
+        "x_southbrook_msds_required",
+    )
+    def _check_safety_assessed_before_release(self):
+        """A product cannot be marked released/in-service
+        (lifecycle state 'available' or 'new' — see
+        ``_RELEASED_LIFECYCLE_STATES`` above) while any of the four
+        safety fields is still 'not_assessed', if its tool category
+        sits inside the cat_adhesives or cat_finishing subtree — the
+        two category roots the recon confirmed actually carry
+        meaningful chemical-safety data (glues, sealants, paints,
+        thinners, degreasers). Cutting tooling, fasteners, screws,
+        etc. are never gated by this constraint even if released: an
+        unassessed MSDS flag on a saw blade is not a live safety
+        question, so blocking it would just train users to ignore the
+        error.
+
+        Governing rule: "Absence of data never renders as good." This
+        is the one place in the module that turns that rule into an
+        actual hard stop rather than just a rendering convention.
+        """
+        Category = self.env["southbrook.tool.category"]
+        adhesives_root = self.env.ref(
+            "southbrook_mrp_kitchen_tools.cat_adhesives",
+            raise_if_not_found=False)
+        finishing_root = self.env.ref(
+            "southbrook_mrp_kitchen_tools.cat_finishing",
+            raise_if_not_found=False)
+        gated_roots = (adhesives_root or Category.browse()) | (
+            finishing_root or Category.browse())
+        if not gated_roots:
+            # Seed data not loaded (e.g. a stripped-down test DB with
+            # this module's models but not its data/ fixtures) —
+            # nothing to gate against. Fail open rather than raise on
+            # a missing xml_id that has nothing to do with the record
+            # actually being saved.
+            return
+
+        state_labels = dict(TOOL_LIFECYCLE_SELECTION)
+
+        for rec in self:
+            if (rec.x_southbrook_tool_lifecycle_state
+                    not in self._RELEASED_LIFECYCLE_STATES):
+                continue
+            cat = rec.x_southbrook_tool_category_id
+            if not cat:
+                continue
+            # child_of semantics via parent_path (southbrook.tool.category
+            # is _parent_store=True): a category's own parent_path always
+            # starts with each of its ancestors' parent_path, including
+            # itself — so this also matches products classified directly
+            # on cat_adhesives / cat_finishing, not just their children.
+            in_gated_subtree = any(
+                cat.parent_path and root.parent_path
+                and cat.parent_path.startswith(root.parent_path)
+                for root in gated_roots
+            )
+            if not in_gated_subtree:
+                continue
+
+            unassessed = [
+                label for field_name, label in self._SAFETY_ASSESSMENT_FIELDS
+                if rec[field_name] == "not_assessed"
+            ]
+            if unassessed:
+                raise ValidationError(_(
+                    "%(product)s cannot be released (lifecycle state "
+                    "\"%(state)s\") with unassessed safety data: "
+                    "%(fields)s. Set each one to Yes or No before "
+                    "releasing an adhesive or finishing product — "
+                    "absence of data never renders as good."
+                ) % {
+                    "product": rec.display_name,
+                    "state": state_labels.get(
+                        rec.x_southbrook_tool_lifecycle_state,
+                        rec.x_southbrook_tool_lifecycle_state),
+                    "fields": ", ".join(unassessed),
+                })

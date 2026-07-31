@@ -75,3 +75,44 @@ class TestDeclarations(TransactionCase):
             for rec in self.env[model].search([]):
                 self.assertIn(rec.field_name, tmpl_fields,
                               "%s declares missing field %s" % (model, rec.field_name))
+
+
+@tagged("post_install", "-at_install", "southbrook", "sbk_mathw")
+class TestSearchSynonymDeclaration(TransactionCase):
+    """materials.catalog.search.synonym itself — creation, uniqueness and
+    the seeded "solvent" mapping. Search-time integration (does typing
+    "solvent" actually widen get_catalog's rows) lives in
+    tests/test_search_synonym.py, not here.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.thinner = self.env.ref(
+            "southbrook_mrp_kitchen_tools.cat_paint_thinner")
+        self.degreaser = self.env.ref(
+            "southbrook_mrp_kitchen_tools.cat_paint_degreaser")
+
+    def test_synonym_created(self):
+        syn = self.env["materials.catalog.search.synonym"].create({
+            "term": "TEST thinner-ish",
+            "category_ids": [(6, 0, [self.thinner.id])],
+        })
+        self.assertTrue(syn.active)
+        self.assertEqual(syn.display_name, "TEST thinner-ish")
+
+    @mute_logger("odoo.sql_db")
+    def test_synonym_term_unique(self):
+        vals = {"term": "TEST duplicate-term",
+                "category_ids": [(6, 0, [self.thinner.id])]}
+        self.env["materials.catalog.search.synonym"].create(vals)
+        with self.assertRaises(IntegrityError):
+            with self.env.cr.savepoint():
+                self.env["materials.catalog.search.synonym"].create(dict(vals))
+
+    def test_solvent_synonym_seeded_with_both_forms_and_both_categories(self):
+        Synonym = self.env["materials.catalog.search.synonym"]
+        for term in ("solvent", "solvents"):
+            syn = Synonym.search([("term", "=", term)])
+            self.assertTrue(syn, "expected a seeded synonym for %r" % term)
+            self.assertEqual(set(syn.category_ids.ids),
+                              {self.thinner.id, self.degreaser.id})

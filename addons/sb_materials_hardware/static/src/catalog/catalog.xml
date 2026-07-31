@@ -67,8 +67,7 @@
               <t t-if="facet.type !== 'range'">
                 <div class="o_matcat_chips">
                   <t t-foreach="facet.values" t-as="val" t-key="val.value">
-                    <button class="o_matcat_chip"
-                            t-att-class="{ o_on: isSelected(facet.key, val.value) }"
+                    <button t-att-class="chipClass(facet.key, val)"
                             t-on-click="() => this.toggleFacet(facet.key, val.value)">
                       <t t-esc="val.label"/>
                     </button>
@@ -149,8 +148,8 @@
               </div>
               <h4>Safety flags</h4>
               <div class="o_matcat_badges">
-                <t t-foreach="state.detail.badges" t-as="badge" t-key="badge">
-                  <span class="o_matcat_badge" t-esc="badge"/>
+                <t t-foreach="state.detail.badges" t-as="badge" t-key="badge_index">
+                  <span t-att-class="badgeClass(badge)" t-esc="badgeLabel(badge)"/>
                 </t>
               </div>
             </div>

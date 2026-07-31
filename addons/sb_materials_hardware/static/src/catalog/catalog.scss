@@ -26,6 +26,8 @@
     --mc-accent: #b8242a;
     --mc-accent-2: #8a1a1f;
     --mc-accent-soft: #fbeced;
+    --mc-ok: #1f7a3d;
+    --mc-ok-soft: #e6f4ea;
     --mc-row-hover: #fff8e1;
     --mc-flag: #fff3d6;
     --mc-link: #1851a8;
@@ -44,6 +46,8 @@
         --mc-accent: #e2686c;
         --mc-accent-2: #f0898c;
         --mc-accent-soft: #2e1c1e;
+        --mc-ok: #6fcf87;
+        --mc-ok-soft: #163821;
         --mc-row-hover: #2a2418;
         --mc-flag: #2e2718;
         --mc-link: #7aa6e8;
@@ -128,6 +132,14 @@
         font-size: 11.5px; font-family: var(--mc-mono); color: var(--mc-text-soft);
         &:hover { border-color: var(--mc-accent); }
         &.o_on { background: var(--mc-accent); border-color: var(--mc-accent); color: #fff; font-weight: 700; }
+        // Tri-state safety facets' "not assessed" chip: dashed/italic,
+        // same "this is a real state, not silence, but distinctly unsure"
+        // treatment as .o_badge_unset below — never rendered as the plain
+        // default (which would read as just another ordinary value).
+        &.o_chip_unset {
+            border-style: dashed; font-style: italic; color: var(--mc-text-mute);
+            &.o_on { background: var(--mc-text-mute); border-color: var(--mc-text-mute); }
+        }
     }
     .o_matcat_range {
         display: flex; align-items: center; gap: 6px;
@@ -259,6 +271,20 @@
         font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
         border: 1px solid var(--mc-accent);
         background: var(--mc-accent-soft); color: var(--mc-accent);
+
+        // Server-driven kind (danger|ok|unset) — default (no modifier
+        // class) IS the danger style above, unchanged from before the
+        // tri-state wave.
+        &.o_badge_ok {
+            border-color: var(--mc-ok); background: var(--mc-ok-soft);
+            color: var(--mc-ok);
+        }
+        &.o_badge_unset {
+            border-style: dashed; font-style: italic; font-weight: 600;
+            text-transform: none; letter-spacing: 0;
+            border-color: var(--mc-line); background: var(--mc-surface);
+            color: var(--mc-text-mute);
+        }
     }
 
     .o_matcat_provenance {
@@ -292,6 +318,8 @@
     --mc-accent: #e2686c;
     --mc-accent-2: #f0898c;
     --mc-accent-soft: #2e1c1e;
+    --mc-ok: #6fcf87;
+    --mc-ok-soft: #163821;
     --mc-row-hover: #2a2418;
     --mc-flag: #2e2718;
     --mc-link: #7aa6e8;
@@ -309,6 +337,8 @@
     --mc-accent: #b8242a;
     --mc-accent-2: #8a1a1f;
     --mc-accent-soft: #fbeced;
+    --mc-ok: #1f7a3d;
+    --mc-ok-soft: #e6f4ea;
     --mc-row-hover: #fff8e1;
     --mc-flag: #fff3d6;
     --mc-link: #1851a8;

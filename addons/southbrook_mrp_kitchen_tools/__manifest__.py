@@ -39,12 +39,33 @@ requirements + kits (3), work-order readiness + checkout + maintenance
 (4), consumption + cost + usage logging (5), and QC + downtime + reports
 + demo + docs (6).
 
+19.0.2.0.0 — Safety three-state remediation
+--------------------------------------------
+
+* The four safety flags (``x_southbrook_hazardous``, ``_flammable``,
+  ``_requires_ventilation``, ``_msds_required``) convert from Boolean to
+  a three-state Selection (Yes / No / Not assessed, default Not
+  assessed) — a plain boolean cannot distinguish "verified" from
+  "never looked at", and both used to render identically as an
+  unchecked box. Migration backfills existing data (prod: all rows
+  land on Not assessed, since nothing was ever set True) and drops the
+  legacy boolean columns.
+* New release-gate constraint blocks marking an adhesive/finishing
+  product available/new while any of the four is still Not assessed.
+* New consumption fields ``x_southbrook_coverage_rate`` /
+  ``_coverage_uom`` (vendor spec-sheet data, unseeded).
+* New "Data Quality — Unclassified Consumables" worklist + a reverse
+  substrate-lens smart button on the base Product Category form.
+* Classifies four chemical products that shipped with no tool category
+  (PUR Glue, EVA Glue Cartridge, Cabinet Paint White, Spray Booth
+  Filter).
+
 Compatible with Odoo 19.0 Community Edition. No Enterprise-only deps.
     """,
     "author": "Southbrook Cabinetry / OdooIQ",
     "license": "LGPL-3",
     "category": "Manufacturing",
-    "version": "19.0.1.0.0",
+    "version": "19.0.2.0.0",
     "depends": [
         "mrp",
         "stock",
@@ -70,6 +91,7 @@ Compatible with Odoo 19.0 Community Edition. No Enterprise-only deps.
         "data/crons.xml",
         "views/tool_category_views.xml",
         "views/product_template_views.xml",
+        "views/dq_views.xml",
         "views/tool_crib_views.xml",
         "views/tool_asset_views.xml",
         "views/workcenter_tool_requirement_views.xml",

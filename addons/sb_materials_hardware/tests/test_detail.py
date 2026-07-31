@@ -25,7 +25,7 @@ class TestDetail(TransactionCase):
             "name": "TEST PVA Type II",
             "x_southbrook_tool_category_id": self.cat.id,
             "x_southbrook_open_time_min": 8.0,
-            "x_southbrook_hazardous": True,
+            "x_southbrook_hazardous": "yes",
             "x_southbrook_min_stock_qty": 4.0,
             "x_southbrook_preferred_vendor_id": self.vendor.id,
             "x_southbrook_issue_uom_id": self.uom.id,
@@ -40,17 +40,53 @@ class TestDetail(TransactionCase):
         self.assertEqual(labels["Open time (min)"], 8.0)
 
     def test_hazard_badge_present(self):
-        """Only x_southbrook_hazardous is set on this fixture — assert the
-        other badge fields are absent too, not just that the set one shows
-        up. Without the negative assertion, a regression to
-        "show every badge whose field exists" would pass unnoticed.
+        """x_southbrook_hazardous is "yes" on this fixture: it renders as
+        the existing danger-style badge, {label, kind}.
         """
         detail = self.Provider.get_detail(self.product.id)
-        self.assertIn("Hazardous", detail["badges"])
-        self.assertNotIn("Flammable", detail["badges"])
-        self.assertNotIn("MSDS required", detail["badges"])
-        self.assertNotIn("Ventilation required", detail["badges"])
-        self.assertNotIn("Expiry tracked", detail["badges"])
+        by_label = {b["label"]: b for b in detail["badges"]}
+        self.assertEqual(by_label["Hazardous"]["kind"], "danger")
+
+    def test_safety_badges_never_omitted(self):
+        """The four safety fields are tri-state (see
+        southbrook_mrp_kitchen_tools's safety-flag conversion) and must
+        NEVER be silently omitted from the badges list — omitting "not
+        assessed" is exactly the "absence renders as safe" failure this
+        wave exists to close. Only x_southbrook_hazardous is explicitly
+        "yes" on this fixture; the other three safety fields were never
+        touched and default to "not_assessed", but they must still show up
+        as their own distinct "unset" badge, not silently disappear the
+        way the old omit-if-falsy behaviour would have dropped them.
+        Expiry tracked (x_southbrook_expiry_required) is NOT one of the
+        four safety fields and keeps the original omit-if-falsy badge
+        behaviour — it must stay absent here.
+        """
+        detail = self.Provider.get_detail(self.product.id)
+        by_label = {b["label"]: b for b in detail["badges"]}
+        self.assertEqual(by_label["Hazardous"]["kind"], "danger")
+        self.assertEqual(by_label["Flammable: not assessed"]["kind"], "unset")
+        self.assertEqual(
+            by_label["MSDS required: not assessed"]["kind"], "unset")
+        self.assertEqual(
+            by_label["Ventilation required: not assessed"]["kind"], "unset")
+        self.assertNotIn("Expiry tracked", by_label)
+
+    def test_safety_badge_no_gets_its_own_ok_badge(self):
+        """A verified "no" is real information, not nothing — it gets its
+        own distinctly labelled "ok"-kind badge, never the same label as a
+        genuine "yes" and never folded into silence the way a plain
+        Boolean False would have been omitted.
+        """
+        tmpl = self.env["product.template"].create({
+            "name": "TEST Verified Non-hazardous Adhesive",
+            "x_southbrook_tool_category_id": self.cat.id,
+            "x_southbrook_hazardous": "no",
+        })
+        detail = self.Provider.get_detail(tmpl.product_variant_ids[0].id)
+        by_label = {b["label"]: b for b in detail["badges"]}
+        self.assertEqual(by_label["Non-hazardous"]["kind"], "ok")
+        self.assertNotIn("Hazardous", by_label)
+        self.assertNotIn("Hazardous: not assessed", by_label)
 
     def test_engineering_rail_includes_min_stock(self):
         detail = self.Provider.get_detail(self.product.id)

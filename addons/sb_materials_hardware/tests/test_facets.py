@@ -194,30 +194,129 @@ class TestFacets(TransactionCase):
         self.assertIn("x_southbrook_screw_length_mm", payload["reason"])
 
     def test_flag_facet_reports_single_chip_with_count(self):
+        """Plain Boolean flag facets keep the original single-chip
+        behaviour. x_southbrook_hazardous (and the other three safety
+        fields) is no longer Boolean as of the tri-state safety wave — see
+        test_tristate_flag_facet_reports_one_chip_per_selection_value below
+        for that shape — so this uses x_southbrook_expiry_required, which
+        the safety wave deliberately leaves as a plain Boolean, to prove
+        the single-chip branch still exists and still works.
+        """
         cat = self.env.ref("southbrook_mrp_kitchen_tools.cat_screw_wood")
         Tmpl = self.env["product.template"]
         Tmpl.create({
-            "name": "TEST Hazardous Wood Screw 1",
+            "name": "TEST Expiry-tracked Wood Screw 1",
             "x_southbrook_tool_category_id": cat.id,
-            "x_southbrook_hazardous": True,
+            "x_southbrook_expiry_required": True,
         })
         Tmpl.create({
-            "name": "TEST Hazardous Wood Screw 2",
+            "name": "TEST Expiry-tracked Wood Screw 2",
             "x_southbrook_tool_category_id": cat.id,
-            "x_southbrook_hazardous": True,
+            "x_southbrook_expiry_required": True,
         })
         Tmpl.create({
-            "name": "TEST Non-Hazardous Wood Screw",
+            "name": "TEST Non-expiry Wood Screw",
             "x_southbrook_tool_category_id": cat.id,
-            "x_southbrook_hazardous": False,
+            "x_southbrook_expiry_required": False,
         })
         self.Facet.create({
-            "name": "Hazardous", "category_id": cat.id,
-            "field_name": "x_southbrook_hazardous", "facet_type": "flag",
+            "name": "Expiry required", "category_id": cat.id,
+            "field_name": "x_southbrook_expiry_required", "facet_type": "flag",
         })
         payload = self.Provider.get_catalog(scope="tools", category_id=cat.id)
-        facet = {f["key"]: f for f in payload["facets"]}["x_southbrook_hazardous"]
+        facet = {f["key"]: f for f in payload["facets"]}[
+            "x_southbrook_expiry_required"]
         self.assertEqual(facet["type"], "flag")
         self.assertEqual(len(facet["values"]), 1)
         self.assertEqual(facet["values"][0]["value"], True)
         self.assertEqual(facet["values"][0]["count"], 2)
+
+    def test_tristate_flag_facet_reports_one_chip_per_selection_value(self):
+        """The four safety fields are Selection('yes'/'no'/'not_assessed')
+        as of southbrook_mrp_kitchen_tools's tri-state safety wave (see
+        CONTRACT_tools_consumables.md B1 item 1). A facet declared
+        facet_type="flag" over such a field must report one chip per
+        selection value — including "not_assessed" — with its own count,
+        never the old single-True-chip shape. Absence must never silently
+        vanish from the count it belongs to.
+        """
+        cat = self.env.ref("southbrook_mrp_kitchen_tools.cat_adhesives")
+        Tmpl = self.env["product.template"]
+        Tmpl.create({
+            "name": "TEST Hazardous Adhesive",
+            "x_southbrook_tool_category_id": cat.id,
+            "x_southbrook_hazardous": "yes",
+        })
+        Tmpl.create({
+            "name": "TEST Non-hazardous Adhesive",
+            "x_southbrook_tool_category_id": cat.id,
+            "x_southbrook_hazardous": "no",
+        })
+        Tmpl.create({
+            "name": "TEST Unassessed Adhesive",
+            "x_southbrook_tool_category_id": cat.id,
+            # x_southbrook_hazardous intentionally left unset -> default
+            # 'not_assessed'.
+        })
+        # facet_adh_hazard is already seeded on this category — reuse it
+        # instead of creating a duplicate (category, field_name) pair.
+        payload = self.Provider.get_catalog(scope="tools", category_id=cat.id)
+        facet = {f["key"]: f for f in payload["facets"]}["x_southbrook_hazardous"]
+        self.assertEqual(facet["type"], "flag")
+        by_value = {v["value"]: v for v in facet["values"]}
+        self.assertEqual(set(by_value), {"yes", "no", "not_assessed"})
+        self.assertEqual(by_value["yes"]["count"], 1)
+        self.assertEqual(by_value["yes"]["label"], "Yes")
+        self.assertEqual(by_value["no"]["count"], 1)
+        self.assertEqual(by_value["no"]["label"], "No")
+        self.assertEqual(by_value["not_assessed"]["count"], 1)
+        self.assertEqual(by_value["not_assessed"]["label"], "Not assessed")
+
+    def test_tristate_not_assessed_chip_counts_a_bare_null_column_too(self):
+        """A row that predates the tri-state migration (or was bulk-loaded
+        without the field set) can be a genuine SQL NULL rather than the
+        literal string "not_assessed" — the ORM default only applies going
+        forward from the field definition, not retroactively to rows
+        written around it. The "not assessed" chip must count that row too,
+        not silently drop it from every chip's count.
+        """
+        cat = self.env.ref("southbrook_mrp_kitchen_tools.cat_adhesives")
+        tmpl = self.env["product.template"].create({
+            "name": "TEST Null-hazard Adhesive",
+            "x_southbrook_tool_category_id": cat.id,
+        })
+        self.env.cr.execute(
+            "UPDATE product_template SET x_southbrook_hazardous = NULL "
+            "WHERE id = %s", (tmpl.id,))
+        self.env.invalidate_all()
+        payload = self.Provider.get_catalog(scope="tools", category_id=cat.id)
+        facet = {f["key"]: f for f in payload["facets"]}["x_southbrook_hazardous"]
+        by_value = {v["value"]: v for v in facet["values"]}
+        self.assertEqual(by_value["not_assessed"]["count"], 1)
+        self.assertEqual(by_value["yes"]["count"], 0)
+        self.assertEqual(by_value["no"]["count"], 0)
+
+    def test_tristate_chip_filters_to_the_matching_domain_leaf(self):
+        """Toggling the "yes" chip must narrow rows to exactly (field, '=',
+        'yes') — proving the tri-state chip's `value` round-trips through
+        the ordinary facet-selection domain builder unchanged.
+        """
+        cat = self.env.ref("southbrook_mrp_kitchen_tools.cat_adhesives")
+        Tmpl = self.env["product.template"]
+        Tmpl.create({
+            "name": "TEST Filter Hazardous Adhesive",
+            "x_southbrook_tool_category_id": cat.id,
+            "x_southbrook_hazardous": "yes",
+        })
+        Tmpl.create({
+            "name": "TEST Filter Non-hazardous Adhesive",
+            "x_southbrook_tool_category_id": cat.id,
+            "x_southbrook_hazardous": "no",
+        })
+        payload = self.Provider.get_catalog(
+            scope="tools", category_id=cat.id,
+            facets={"x_southbrook_hazardous": ["yes"]})
+        self.assertTrue(payload["ok"])
+        names = {r["name"] for r in payload["rows"]}
+        self.assertIn("TEST Filter Hazardous Adhesive", names)
+        self.assertNotIn("TEST Filter Non-hazardous Adhesive", names)

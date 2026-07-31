@@ -77,10 +77,26 @@
                                 </group>
                                 <group string="Safety">
                                     <field name="x_southbrook_expiry_required"/>
-                                    <field name="x_southbrook_hazardous"/>
-                                    <field name="x_southbrook_msds_required"/>
-                                    <field name="x_southbrook_flammable"/>
-                                    <field name="x_southbrook_requires_ventilation"/>
+                                    <!-- Three-state safety fields render as
+                                         inline radios, not a dropdown, so
+                                         "Not assessed" is always visible at
+                                         a glance rather than hidden behind
+                                         a click — the whole point of this
+                                         remediation is that an unassessed
+                                         field must never look like a quiet
+                                         "No". -->
+                                    <field name="x_southbrook_hazardous"
+                                           widget="radio"
+                                           options="{'horizontal': True}"/>
+                                    <field name="x_southbrook_msds_required"
+                                           widget="radio"
+                                           options="{'horizontal': True}"/>
+                                    <field name="x_southbrook_flammable"
+                                           widget="radio"
+                                           options="{'horizontal': True}"/>
+                                    <field name="x_southbrook_requires_ventilation"
+                                           widget="radio"
+                                           options="{'horizontal': True}"/>
                                     <field name="x_southbrook_ppe_required"/>
                                 </group>
                             </group>
@@ -117,6 +133,8 @@
                                     <field name="x_southbrook_reorder_multiple"/>
                                     <field name="x_southbrook_issue_uom_id"
                                            options="{'no_create_edit': True}"/>
+                                    <field name="x_southbrook_coverage_rate"/>
+                                    <field name="x_southbrook_coverage_uom"/>
                                 </group>
                                 <group string="Life Tracking">
                                     <field name="x_southbrook_estimated_life_qty"/>
@@ -161,12 +179,31 @@
                         domain="[('x_southbrook_is_indirect_tool', '=', True)]"/>
                 <filter name="maintenance_supply" string="Maintenance Supply"
                         domain="[('x_southbrook_is_maintenance_supply', '=', True)]"/>
+                <!-- x_southbrook_hazardous / _msds_required are three-state
+                     Selection fields as of 19.0.2.0.0 (safety three-state
+                     remediation) — the domain must compare against the
+                     string 'yes', never Python True, or the filter would
+                     silently match zero rows forever. -->
                 <filter name="hazardous" string="Hazardous"
-                        domain="[('x_southbrook_hazardous', '=', True)]"/>
+                        domain="[('x_southbrook_hazardous', '=', 'yes')]"/>
+                <filter name="flammable" string="Flammable"
+                        domain="[('x_southbrook_flammable', '=', 'yes')]"/>
                 <filter name="msds_required" string="MSDS Required"
-                        domain="[('x_southbrook_msds_required', '=', True)]"/>
+                        domain="[('x_southbrook_msds_required', '=', 'yes')]"/>
                 <filter name="expiry_required" string="Expiry Required"
                         domain="[('x_southbrook_expiry_required', '=', True)]"/>
+                <!-- "Absence of data never renders as good": surfaces every
+                     product where any of the four safety fields still sits
+                     at its 'not_assessed' default, regardless of category —
+                     the release-gate constraint only blocks adhesives/
+                     finishing at release time, this filter is the
+                     proactive worklist for catching the rest earlier. -->
+                <filter name="safety_not_assessed" string="Safety Not Assessed"
+                        domain="['|', '|', '|',
+                                 ('x_southbrook_hazardous', '=', 'not_assessed'),
+                                 ('x_southbrook_flammable', '=', 'not_assessed'),
+                                 ('x_southbrook_requires_ventilation', '=', 'not_assessed'),
+                                 ('x_southbrook_msds_required', '=', 'not_assessed')]"/>
                 <group>
                     <filter name="group_tool_family"
                             string="Tool Family"

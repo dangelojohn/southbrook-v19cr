@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Search synonyms — declarations, same philosophy as
+  catalog_declarations.xml, for a different question. A facet/column
+  declaration says "this field is worth a chip/column on this category
+  tree"; a synonym declaration says "this word, which the category tree
+  does not itself name, means these categories".
+
+  "Solvent" is the case in point: the seed tree (southbrook_mrp_kitchen_
+  tools/data/tool_categories_seed.xml) deliberately has no top-level
+  "Solvents" node — that taxonomy decision was made and stays out of this
+  module's scope — but it is the word a shop-floor operator actually
+  types. Rather than inventing a category to hold it, this seeds the word
+  onto the categories that already answer it: Thinner / Reducer / Catalyst
+  and Degreaser / Surface Cleaner, both children of Finishing and Paint
+  Tools. Both the singular and plural form are seeded as separate terms —
+  the match in tools_catalog_provider._synonym_category_ids is exact
+  (case-insensitive), not a stem/substring match, so "solvents" would
+  otherwise search-miss even with "solvent" seeded.
+-->
+<odoo>
+  <data noupdate="1">
+
+    <record id="synonym_solvent" model="materials.catalog.search.synonym">
+      <field name="term">solvent</field>
+      <field name="category_ids" eval="[(6, 0, [
+          ref('southbrook_mrp_kitchen_tools.cat_paint_thinner'),
+          ref('southbrook_mrp_kitchen_tools.cat_paint_degreaser')])]"/>
+    </record>
+    <record id="synonym_solvents" model="materials.catalog.search.synonym">
+      <field name="term">solvents</field>
+      <field name="category_ids" eval="[(6, 0, [
+          ref('southbrook_mrp_kitchen_tools.cat_paint_thinner'),
+          ref('southbrook_mrp_kitchen_tools.cat_paint_degreaser')])]"/>
+    </record>
+
+  </data>
+</odoo>
