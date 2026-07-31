@@ -185,3 +185,12 @@ from . import test_room_bounds_save_and_autofill_cap
 # and that run-axis (X) placement is unaffected.
 from . import test_wall_cab_top_selector
 from . import test_wall_cab_top_controller
+
+# Task 26, corner-remediation (2026-07-30) — action_create_quotation's
+# mirror loop now stamps sb_layout_key/sb_layout_origin on each created
+# SO line and writes sale_order_line_id back onto the design line, so
+# the reconcile cron's own idempotency search matches instead of
+# create()ing a duplicate set of SO lines on its next tick. Proven
+# against a real U-shape design pre-fix (14 -> 28 SO lines after one
+# reconcile tick); this file reproduces the shape synthetically.
+from . import test_quote_reconcile_dedup

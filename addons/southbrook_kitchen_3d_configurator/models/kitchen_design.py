@@ -2835,6 +2835,66 @@ class SouthbrookKitchenDesign(models.Model):
         )
         return bom
 
+    def _sb_quote_line_key(self, design, line):
+        """The design-line -> `sb_layout_key` formula, factored out so
+        action_create_quotation's fresh-order and reuse-existing-order
+        paths (and its write-back loop) can never drift from each other
+        or from reconcile.py's `_reconcile_one` own identical fallback
+        (`dline.layout_key or f"design-{design.id}-line-{dline.id}"`).
+        """
+        return line.layout_key or f"design-{design.id}-line-{line.id}"
+
+    def _sb_quote_line_vals(self, design, line):
+        """The vals dict for one sale.order.line mirrored from a design
+        cabinet line. Shared by action_create_quotation's fresh-create
+        `(0, 0, {...})` path and its existing-draft-order reuse path
+        (T26/T27, corner remediation 2026-07-30) so the two can never
+        diverge in shape. Does not include `order_id` — callers add it
+        themselves as appropriate for their call site.
+        """
+        vals = {
+            "product_id":      line.product_id.id,
+            "name":            self._quote_line_name(line),
+            "product_uom_qty": line.quantity,
+            "price_unit":      line.price_unit,
+            # Task B3 (Materials geometry-writeback plan, Increment B) —
+            # carry this line's real per-instance cabinet dims (drag-
+            # resize/filler overrides included) onto the SO line so the
+            # material BoM can weigh the actual cut, not just the
+            # template's nominal size. {} (no-op) when the line has no
+            # real dims — never fabricated.
+            **line._sb_dims_mm(),
+        }
+        # T26 (corner remediation 2026-07-30, duplication-risk fix) —
+        # stamp the SAME sb_layout_key/sb_layout_origin convention the
+        # reconcile cron (models/reconcile.py `_reconcile_one`, step 4)
+        # uses to match design lines to SO lines. Without this, a design
+        # quoted here that later gets touched again (bumping write_date
+        # — which this very method does via `design.sale_order_id =
+        # order.id`) gets ALL of its cabinet lines DUPLICATED by the
+        # next reconcile tick: reconcile's own idempotency search
+        # `(order_id, sb_layout_origin='configurator', sb_layout_key=
+        # ...)` comes up empty because these fields were never set here,
+        # so it falls through to create() a second set of sale.order.
+        # line records. Proven with a repro script against a real
+        # U-shape design pre-fix: 14 SO lines after quoting -> 28 after
+        # one reconcile tick.
+        #
+        # Only stamped for origin=="configurator" design lines —
+        # matching reconcile's own `if dline.origin != "configurator":
+        # continue` guard exactly (reconcile.py). Manual/backend-
+        # authored design lines are never touched by reconcile's
+        # per-line mirror, and must NOT get an sb_layout_origin=
+        # "configurator" stamp either — reconcile's stale-line sweep
+        # (step 5) deletes any SO line with sb_layout_origin=
+        # 'configurator' whose key isn't in the design's CURRENT
+        # configurator-origin key set, and a manual line's key is never
+        # in that set.
+        if line.origin == "configurator":
+            vals["sb_layout_key"] = self._sb_quote_line_key(design, line)
+            vals["sb_layout_origin"] = "configurator"
+        return vals
+
     def action_create_quotation(self):
         SaleOrder = self.env["sale.order"]
         for design in self:
@@ -2893,38 +2953,113 @@ class SouthbrookKitchenDesign(models.Model):
             #     workflow: swapping partner on the created SO triggers
             #     `_compute_price_unit` which re-derives from the new
             #     partner's channel. Standard Odoo semantics.
-            vals = {
-                "partner_id": design.partner_id.id,
-                "origin":     design.name,
-                "note":       design.notes or "",
-                "order_line": [
-                    (0, 0, {
-                        "product_id":      line.product_id.id,
-                        "name":            self._quote_line_name(line),
-                        "product_uom_qty": line.quantity,
-                        "price_unit":      line.price_unit,
-                        # Task B3 (Materials geometry-writeback plan,
-                        # Increment B) — carry this line's real per-
-                        # instance cabinet dims (drag-resize/filler
-                        # overrides included) onto the SO line so the
-                        # material BoM can weigh the actual cut, not
-                        # just the template's nominal size. {} (no-op)
-                        # when the line has no real dims — never
-                        # fabricated.
-                        **line._sb_dims_mm(),
-                    })
-                    for line in design.cabinet_line_ids
-                ],
-            }
-            # 2026-06-28 Tier-A — resolve the channel pricelist BEFORE
-            # create so the order opens on the right pricelist (Dealer
-            # −50% / Tradesperson tier-3 −35% / etc.) instead of the
-            # default retail. Without this, a Dealer customer who saw
-            # $1,036 in the Order Builder would see $1,594 here.
+            # v19.0.4.22.0 audit P1#4 continues — resolve the channel
+            # pricelist BEFORE create/reuse so the order opens on (or
+            # keeps) the right pricelist (Dealer −50% / Tradesperson
+            # tier-3 −35% / etc.) instead of the default retail. Without
+            # this, a Dealer customer who saw $1,036 in the Order
+            # Builder would see $1,594 here.
             pricelist = SaleOrder._resolve_channel_pricelist(design.partner_id)
-            if pricelist:
-                vals["pricelist_id"] = pricelist.id
-            order = SaleOrder.create(vals)
+
+            # T27 (corner remediation 2026-07-30) — reconcile's own cron
+            # can beat this method to the punch: action_auto_arrange(
+            # sync=True) triggers southbrook.design.reconcile.
+            # _reconcile_one, which lazily creates a draft sale.order for
+            # any design that has a partner but no sale_order_id yet
+            # (reconcile.py step 1). If the user THEN clicks "Create
+            # Quotation" before any further reconcile tick, the old code
+            # here unconditionally called SaleOrder.create() again — a
+            # SECOND, orphaned draft SO (design.sale_order_id gets
+            # overwritten to point at the new one, so the reconcile-made
+            # order never gets referenced or cleaned up again).
+            # Reproduced: 2 stray draft SOs across two runs.
+            #
+            # Fix: when the design already has a DRAFT sale_order_id,
+            # reuse it — write the header fields, then sync order lines
+            # through the exact same linkage-keyed mirror (sb_layout_key/
+            # sb_layout_origin/sale_order_line_id, via
+            # _sb_quote_line_vals/_sb_quote_line_key above) the fresh-
+            # create path below uses, so an already-reconciled
+            # configurator line is updated in place (never duplicated)
+            # while a line reconcile never touched (manual-origin, or
+            # simply new since the last tick) gets created fresh. A
+            # non-draft linked order (confirmed/cancelled) falls through
+            # to the always-create path below instead — editing a
+            # confirmed SO's lines from a "Create Quotation" click would
+            # be the wrong move, so that case keeps the pre-T27 always-
+            # create behaviour.
+            existing_order = (
+                design.sale_order_id
+                if design.sale_order_id
+                and design.sale_order_id.state == "draft"
+                else False
+            )
+
+            if existing_order:
+                order = existing_order
+                order_vals = {
+                    "partner_id": design.partner_id.id,
+                    "origin":     design.name,
+                    "note":       design.notes or "",
+                }
+                if pricelist:
+                    order_vals["pricelist_id"] = pricelist.id
+                order.write(order_vals)
+
+                Line = self.env["sale.order.line"]
+                for line in design.cabinet_line_ids:
+                    line_vals = self._sb_quote_line_vals(design, line)
+                    sol = self.env["sale.order.line"]
+                    if line.origin == "configurator":
+                        if (line.sale_order_line_id
+                                and line.sale_order_line_id.order_id == order):
+                            sol = line.sale_order_line_id
+                        else:
+                            key = line_vals["sb_layout_key"]
+                            sol = order.order_line.filtered(
+                                lambda l, key=key: (
+                                    l.sb_layout_origin == "configurator"
+                                    and l.sb_layout_key == key
+                                )
+                            )[:1]
+                    if sol:
+                        sol.write(line_vals)
+                    else:
+                        sol = Line.create({**line_vals, "order_id": order.id})
+                    if line.origin == "configurator":
+                        line.sale_order_line_id = sol.id
+            else:
+                vals = {
+                    "partner_id": design.partner_id.id,
+                    "origin":     design.name,
+                    "note":       design.notes or "",
+                    "order_line": [
+                        (0, 0, self._sb_quote_line_vals(design, line))
+                        for line in design.cabinet_line_ids
+                    ],
+                }
+                if pricelist:
+                    vals["pricelist_id"] = pricelist.id
+                order = SaleOrder.create(vals)
+
+                # T26 — write the design-line -> SO-line back-link so a
+                # later reconcile tick recognizes these lines as already
+                # mirrored (reconcile checks `dline.sale_order_line_id`
+                # FIRST, before falling back to the sb_layout_key search
+                # — reconcile.py `_reconcile_one` step 4). Only
+                # configurator-origin design lines get a back-link
+                # (mirrors the same origin guard _sb_quote_line_vals
+                # uses — manual lines are never reconcile's concern).
+                configurator_lines = design.cabinet_line_ids.filtered(
+                    lambda l: l.origin == "configurator"
+                )
+                for dline in configurator_lines:
+                    key = self._sb_quote_line_key(design, dline)
+                    sol = order.order_line.filtered(
+                        lambda l, key=key: l.sb_layout_key == key
+                    )
+                    if sol:
+                        dline.sale_order_line_id = sol[:1].id
 
             # ── BOM autoseed (v19.0.5.6.0) ─────────────────────────────
             # For every unique product_tmpl on the fresh SO, make sure
@@ -3440,7 +3575,11 @@ class SouthbrookKitchenDesignLine(models.Model):
         copy=False,
         help="Rec D Sprint 1 — non-authoring mirror onto the sale.order."
              "line slot. Managed by the southbrook.design.reconcile "
-             "cron. Do not set manually.",
+             "cron AND by action_create_quotation (T26, corner "
+             "remediation 2026-07-30 — the direct-quote path stamps "
+             "this immediately so the cron's own idempotency check "
+             "recognizes an already-quoted line instead of creating a "
+             "duplicate on its next tick). Do not set manually.",
     )
 
     # Computed display
