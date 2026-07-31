@@ -305,14 +305,87 @@ class SouthbrookPlacementRule(models.Model):
     def engine_dicts(self):
         """Plain-dict form the pure kitchen_layout_engine consumes as
         `corner_rules`. sku comes from the linked template's default_code;
-        sequence rides along for select ranking."""
+        sequence rides along for select ranking.
+
+        Task 28 (corner-remediation 2026-07-30) fix — `product_tmpl_id.
+        default_code` is Odoo's own related field, and Odoo only
+        populates it for a SINGLE-variant template
+        (`_compute_default_code`: `len(product_variant_ids) != 1` ->
+        forced False, no matter what any individual variant's own code
+        is). The corner-remediation Task 6 work made multi-variant LH/RH
+        corner templates the EXPECTED shape (see kitchen_design.py's T5
+        `_sb_resolve_corner_variant` docstring), so a template going
+        multi-variant silently blanks `sku` here -> the caller
+        (kitchen_design.py action_auto_arrange) falls back to its
+        hardcoded legacy `_CORNER_SKU` default ("SB-CORNER", the susan)
+        for EVERY rule whose template has 2+ variants, regardless of
+        which rule the leg-length gate actually picked. Live evidence:
+        prod's "Blind base corner 45/24" rule (id 2, corner_type_id
+        blind-corner-basic) resolved to template 223 "Corner Base ·
+        Blind" with `default_code=False` (variant 1104=SB-CORNER-BLIND,
+        variant 1422=no code) — a narrow room correctly SELECTED the
+        blind rule (min-leg gate passed) but PLACED SB-CORNER (susan)
+        because `sku` came back "".
+
+        Fix-round (review finding 2) — the REAL rescue chain, corrected:
+        this method's job is to hand the caller a stable, non-hand-
+        specific FAMILY code (`_bare_family_default_code` below prefers
+        the bare code — e.g. "SB-CORNER-BLIND" — over a repair-suffixed
+        sibling on the same template — an "-R" hand twin per
+        corner_sku_repair.py's convention, or a generic "-<width>"
+        dedup suffix per repair_cabinet_variant_refs' — with a
+        deterministic `.sorted("id")` tiebreak when more than one bare
+        candidate exists). It does NOT reproduce `_sb_resolve_corner_
+        variant`'s own fallback (`tmpl.product_variant_id or
+        product_variant_ids[:1]`), which is hand/code-agnostic and picks
+        whichever variant Odoo happens to order first — no such parity
+        exists between the two, and the prior docstring's claim of it
+        was wrong. The two rescues cover DIFFERENT gaps in the same
+        chain: `_sb_resolve_corner_variant`'s hand-aware override (in
+        kitchen_design.py, `hand=node.get("handed")`) reconciles a
+        HANDED split once the family code resolves; this method's bare-
+        preference is what lets that resolution reach the right FAMILY
+        at all for a non-hand-specific (or not-yet-handed) split.
+        """
         out = []
         for r in self:
             d = dict(r.payload or {})
-            d.update({"rule_id": "spr-%d" % r.id, "sku": r.product_tmpl_id.default_code or "",
+            tmpl = r.product_tmpl_id
+            sku = tmpl.default_code
+            if not sku:
+                coded = [v.default_code
+                         for v in tmpl.product_variant_ids.sorted("id")
+                         if v.default_code]
+                sku = self._bare_family_default_code(coded)
+            d.update({"rule_id": "spr-%d" % r.id, "sku": sku,
                       "tier": r.tier, "sequence": r.sequence})
             out.append(d)
         return out
+
+    @api.model
+    def _bare_family_default_code(self, codes):
+        """Deterministic pick among a template's coded variants (`codes`,
+        caller-ordered by variant id — see `engine_dicts`): prefer a code
+        that is NOT itself a hyphen-suffixed extension of another
+        candidate in the same list. Covers both known repair-suffix
+        shapes in this codebase — corner_sku_repair.py's "-R" hand-twin
+        convention (e.g. "SB-CORNER-BLIND" bare vs "SB-CORNER-BLIND-R")
+        and repair_cabinet_variant_refs' generic "-<suffix>" dedup
+        convention (e.g. "SB-BASE-2DR" bare vs "SB-BASE-2DR-24") —
+        without hardcoding either one, since a bare code is always a
+        strict string prefix of any suffixed sibling regardless of which
+        convention minted it. `.sorted('id')` order is preserved as the
+        tiebreak both when multiple bare candidates exist and (fallback)
+        when NONE do, so the result never depends on Odoo's incidental
+        recordset/dict ordering. Returns "" for an empty `codes`."""
+        codes = list(codes)
+        if not codes:
+            return ""
+        code_set = set(codes)
+        bare = [c for c in codes
+                if not any(other != c and c.startswith(other + "-")
+                           for other in code_set)]
+        return (bare or codes)[0]
 
     @api.model
     def _seed_default_rules(self):

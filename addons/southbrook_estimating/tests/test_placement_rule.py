@@ -112,6 +112,128 @@ class TestPlacementRule(TransactionCase):
                     "min_leg_x_mm", "min_leg_z_mm"):
             self.assertEqual(d[key], _VALID_JUNCTION_PAYLOAD[key])
 
+    def test_engine_dicts_sku_survives_multi_variant_template(self):
+        """Task 28 (corner-remediation 2026-07-30) — root-cause regression.
+
+        Live prod evidence: the blind-corner rule's product_tmpl_id had
+        gone multi-variant (an LH variant carrying the real default_code
+        plus an RH twin with none yet assigned) — Odoo's own
+        `_compute_default_code` forces `product.template.default_code`
+        to False whenever a template has more than one variant,
+        regardless of what any individual variant's code is. Before this
+        fix, `engine_dicts()` read that always-False template field
+        directly, so a perfectly-matched rule silently reported
+        `sku=""`, and the caller (kitchen_design.py) fell back to the
+        WRONG hardcoded default corner SKU. `sku` must instead resolve
+        through the template's variants — the ONE coded variant here,
+        the simplest possible case of `_bare_family_default_code`'s
+        rescue (see `test_engine_dicts_prefers_bare_family_code_over_
+        repair_suffixed_sibling` below for the case where more than one
+        variant is coded).
+        """
+        multi_tmpl = self.env["product.template"].create({
+            "name": "Corner Base · Blind (multi-variant fixture)",
+            "list_price": 545.0,
+        })
+        # A real Hinge Side attribute split (LH/RH) is what actually
+        # flips a corner template multi-variant on prod (Task 6, "hand-
+        # aware wall corners") — mirrors that shape exactly rather than
+        # hand-crafting a second product.product (which Odoo rejects:
+        # two variants with no distinguishing attribute collide on the
+        # same empty `combination_indices`).
+        hinge = self.env["product.attribute"].create(
+            {"name": "Hinge Side (T28 fixture)", "create_variant": "always"})
+        lh_val = self.env["product.attribute.value"].create(
+            {"name": "LH (T28 fixture)", "attribute_id": hinge.id})
+        rh_val = self.env["product.attribute.value"].create(
+            {"name": "RH (T28 fixture)", "attribute_id": hinge.id})
+        self.env["product.template.attribute.line"].create({
+            "product_tmpl_id": multi_tmpl.id, "attribute_id": hinge.id,
+            "value_ids": [(6, 0, [lh_val.id, rh_val.id])],
+        })
+        variant_with_code = multi_tmpl.product_variant_ids[:1]
+        variant_with_code.default_code = "SB-CORNER-BLIND-FIXTURE"
+        # The RH twin mirrors prod's variant 1422 — no code assigned yet.
+        multi_tmpl.invalidate_recordset(["default_code"])
+        self.assertFalse(
+            multi_tmpl.default_code,
+            "sanity: Odoo blanks template default_code once >1 variant exists")
+
+        rule = self.Rule.create({
+            "name": "Multi-variant blind fixture",
+            "product_tmpl_id": multi_tmpl.id,
+            "corner_type_id": "blind-corner-basic",
+            "anchor_class": "junction",
+            "tier": "base",
+            "sequence": 20,
+            "payload": _VALID_JUNCTION_PAYLOAD,
+        })
+        d = rule.engine_dicts()[0]
+        self.assertEqual(
+            d["sku"], "SB-CORNER-BLIND-FIXTURE",
+            "engine_dicts() must resolve a real SKU from the variant "
+            "that actually carries a code, not silently return ''")
+
+    def test_engine_dicts_prefers_bare_family_code_over_repair_suffixed_sibling(self):
+        """Fix-round (review finding 2) — when MORE than one variant of a
+        multi-variant template carries a code, `engine_dicts()` must
+        deterministically prefer the BARE family code over a repair-
+        suffixed sibling on the same template (corner_sku_repair.py's
+        "-R" hand-twin convention, e.g. "SB-CORNER-BLIND" bare vs
+        "SB-CORNER-BLIND-R"; the same holds for repair_cabinet_variant_
+        refs' generic "-<suffix>" dedup convention) — never an
+        incidental first-in-recordset-order pick. Runs the pick twice
+        with the coded variants created in each order (RH-then-LH and
+        LH-then-RH) to prove the result does not depend on creation/
+        recordset order, only on which code is bare.
+        """
+        for create_bare_first in (True, False):
+            with self.subTest(create_bare_first=create_bare_first):
+                tmpl = self.env["product.template"].create({
+                    "name": "Corner Base · Blind (bare-vs-suffixed fixture)",
+                    "list_price": 545.0,
+                })
+                hinge = self.env["product.attribute"].create(
+                    {"name": "Hinge Side (T28b fixture)",
+                     "create_variant": "always"})
+                lh_val = self.env["product.attribute.value"].create(
+                    {"name": "LH (T28b fixture)", "attribute_id": hinge.id})
+                rh_val = self.env["product.attribute.value"].create(
+                    {"name": "RH (T28b fixture)", "attribute_id": hinge.id})
+                self.env["product.template.attribute.line"].create({
+                    "product_tmpl_id": tmpl.id, "attribute_id": hinge.id,
+                    "value_ids": [(6, 0, [lh_val.id, rh_val.id])],
+                })
+                variants = tmpl.product_variant_ids.sorted("id")
+                self.assertEqual(len(variants), 2)
+                bare_variant, suffixed_variant = variants[0], variants[1]
+                if not create_bare_first:
+                    bare_variant, suffixed_variant = (
+                        suffixed_variant, bare_variant)
+                # Both coded — the bare family code and a repair-suffixed
+                # sibling, written in whichever id order this subTest
+                # is exercising.
+                suffixed_variant.default_code = "SB-CORNER-BLIND-FIXTURE-R"
+                bare_variant.default_code = "SB-CORNER-BLIND-FIXTURE"
+                tmpl.invalidate_recordset(["default_code"])
+                self.assertFalse(tmpl.default_code, "sanity: multi-variant")
+
+                rule = self.Rule.create({
+                    "name": "Bare-vs-suffixed fixture rule",
+                    "product_tmpl_id": tmpl.id,
+                    "corner_type_id": "blind-corner-basic",
+                    "anchor_class": "junction",
+                    "tier": "base",
+                    "sequence": 20,
+                    "payload": _VALID_JUNCTION_PAYLOAD,
+                })
+                d = rule.engine_dicts()[0]
+                self.assertEqual(
+                    d["sku"], "SB-CORNER-BLIND-FIXTURE",
+                    "the bare family code must win over the "
+                    "repair-suffixed sibling regardless of variant id "
+                    "order, got %r" % d["sku"])
+
     def test_seeded_susan_base_corner_rule(self):
         rule = self.Rule.search([
             ("corner_type_id", "=", "diagonal-corner-lazy-susan"),

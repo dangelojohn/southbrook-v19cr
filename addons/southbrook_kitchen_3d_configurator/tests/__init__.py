@@ -238,3 +238,11 @@ from . import test_slot_variant_width
 # against a real U-shape design pre-fix (14 -> 28 SO lines after one
 # reconcile tick); this file reproduces the shape synthetically.
 from . import test_quote_reconcile_dedup
+
+# Task 29, corner-remediation (2026-07-30) — quote-lifecycle probe: five
+# post-remediation surfaces (double-quote idempotency, post-quote edit +
+# reconcile cron, customer-switch repricing, spec-sheet report render,
+# quote-then-archive interplay) exercised against a live 4-corner +
+# $0-appliance draft SO. Tests-and-evidence only — findings documented
+# inline, no production files touched by this task.
+from . import test_quote_lifecycle_probe

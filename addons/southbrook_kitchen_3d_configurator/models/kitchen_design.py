@@ -1428,8 +1428,31 @@ class SouthbrookKitchenDesign(models.Model):
                 anchor = kitchen_layout_engine.anchor_pose_mm(node, place)
                 # M1 — a rule-resolved node carries the winning rule's
                 # SKU; _CORNER_SKU stays the legacy-fallback mapping.
-                code = (node.get("sku")
-                        or self._CORNER_SKU.get(node["layer"], "SB-CORNER"))
+                rule_sku = node.get("sku")
+                code = rule_sku or self._CORNER_SKU.get(node["layer"], "SB-CORNER")
+                if not rule_sku:
+                    # Task 28 fix-round (corner-remediation 2026-07-30,
+                    # finding 1) — this fallback silently substitutes the
+                    # hardcoded legacy family (almost always the susan,
+                    # "SB-CORNER") for whatever family the rules engine
+                    # actually meant, with zero signal. It can fire two
+                    # ways: no `corner_rules` matched this junction at all
+                    # (`node.get("rule_id")` is None — the diagnostics
+                    # list already logs THAT separately, above), or a
+                    # rule DID match (`rule_id` set) but engine_dicts()
+                    # still came back with sku="" — a mid-split corner
+                    # template caught between its LH/RH variants (Task 28
+                    # root cause: a template whose default_code is
+                    # ambiguous and carries no coded variant at all yet).
+                    # Either way the substitution itself was previously
+                    # invisible; log it so a wrong-family placement is
+                    # diagnosable from the server log alone.
+                    _logger.warning(
+                        "[auto-arrange] corner sku missing for design=%s "
+                        "node=%s layer=%s rule_id=%s — substituting "
+                        "legacy default family %r",
+                        design.id, node.get("id"), node["layer"],
+                        node.get("rule_id"), code)
                 # T5 — single shared resolver (was inline here): exact
                 # default_code match first (a multi-variant corner
                 # template — LH + RH after the SB-CORNER repair — has NO

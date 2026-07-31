@@ -6,10 +6,14 @@ into a derived arranged layout. These tests pin the lifecycle guarantees the
 geometry tests can't see: idempotence, no canonical loss, no derived
 accumulation, atomic rollback, and a mirror that reflects only visible lines.
 """
+import logging
 from unittest.mock import patch
 
 from odoo.tests.common import TransactionCase
 from odoo.addons.southbrook_estimating.models import kitchen_layout_engine as E
+from odoo.addons.southbrook_kitchen_3d_configurator.models import (
+    kitchen_design as _kd,
+)
 
 
 class TestAutoArrangeService(TransactionCase):
@@ -147,3 +151,221 @@ class TestAutoArrangeService(TransactionCase):
         with self.assertRaises(E.LayoutCapacityExceeded):
             d.action_auto_arrange()
         self.assertEqual(self._active_snapshot(d), before)
+
+
+class TestAutoArrangeCornerRuleSkuResolution(TransactionCase):
+    """Task 28 (corner-remediation 2026-07-30) — full-stack regression for
+    the prod-only "narrow room still picks the susan corner" defect.
+
+    Live evidence: room_width_in=40 (X leg too short for the susan's
+    45in min-leg) must select the blind corner (min-leg 27in/54in, both
+    satisfied). `kitchen_layout_engine._select_corner_rule` DID pick the
+    blind rule correctly — the leg-length gate itself was never broken.
+    The bug was downstream: the blind rule's linked product template had
+    gone multi-variant (a real prod shape — see kitchen_design.py's T5
+    `_sb_resolve_corner_variant` docstring, "LH + RH after the SB-CORNER
+    repair"), which forces Odoo's `product.template.default_code` to
+    False, so `southbrook.placement.rule.engine_dicts()` reported
+    `sku=""` for the correctly-selected blind rule and action_auto_arrange
+    silently fell back to its hardcoded legacy default (SB-CORNER, the
+    susan) instead. This test reproduces that exact shape end-to-end
+    through the real ORM/action path (not the pure engine, which
+    test_layout_engine.py already pins) and asserts the SKU that actually
+    lands on the design line.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Template = self.env["product.template"]
+        Rule = self.env["southbrook.placement.rule"]
+
+        # Isolation (mirrors test_room_bounds_save_and_autofill_cap.py's
+        # competitor-neutralizing pattern): a full-catalog harness may
+        # already carry the REAL seeded susan/blind junction rules —
+        # left active, they'd also fit this room and could win the
+        # engine's sequence/rule_id tie-break instead of this fixture's
+        # rules, making the SKU assertion below depend on incidental
+        # catalog state rather than the multi-variant fix under test.
+        Rule.search([("anchor_class", "=", "junction"),
+                     ("tier", "=", "base")]).write({"active": False})
+
+        self.tmpl_susan = Template.create({
+            "name": "Corner Base · Lazy-Susan (T28 fixture)",
+            "default_code": "T28-SB-CORNER", "list_price": 625.0})
+        self.tmpl_blind = Template.create({
+            "name": "Corner Base · Blind (T28 fixture)", "list_price": 545.0})
+        # A real Hinge Side attribute split (LH/RH) is what actually
+        # flips a corner template multi-variant on prod (Task 6, "hand-
+        # aware wall corners") — the exact prod shape (template 223,
+        # variants 1104/1422). Two variants with no distinguishing
+        # attribute would collide on the same empty combination_indices,
+        # so this mirrors the real mechanism rather than hand-crafting a
+        # bare second product.product.
+        self.hinge = self.env["product.attribute"].create(
+            {"name": "Hinge Side (T28 fixture)", "create_variant": "always"})
+        lh_val = self.env["product.attribute.value"].create(
+            {"name": "LH (T28 fixture)", "attribute_id": self.hinge.id})
+        rh_val = self.env["product.attribute.value"].create(
+            {"name": "RH (T28 fixture)", "attribute_id": self.hinge.id})
+        self.env["product.template.attribute.line"].create({
+            "product_tmpl_id": self.tmpl_blind.id, "attribute_id": self.hinge.id,
+            "value_ids": [(6, 0, [lh_val.id, rh_val.id])],
+        })
+        self.blind_variant = self.tmpl_blind.product_variant_ids[:1]
+        self.blind_variant.default_code = "T28-SB-CORNER-BLIND"
+        # The RH twin mirrors prod's variant 1422 — no code assigned yet.
+        self.tmpl_blind.invalidate_recordset(["default_code"])
+        self.assertFalse(self.tmpl_blind.default_code,
+            "sanity: fixture must reproduce Odoo's multi-variant blanking")
+
+        Rule.create({
+            "name": "T28 susan", "product_tmpl_id": self.tmpl_susan.id,
+            "corner_type_id": "diagonal-corner-lazy-susan",
+            "anchor_class": "junction", "tier": "base", "sequence": 10,
+            "payload": {"leg_x_mm": 914.4, "leg_z_mm": 914.4,
+                        "height_mm": 876.0, "min_leg_x_mm": 1143.0,
+                        "min_leg_z_mm": 1143.0}})
+        Rule.create({
+            "name": "T28 blind", "product_tmpl_id": self.tmpl_blind.id,
+            "corner_type_id": "blind-corner-basic",
+            "anchor_class": "junction", "tier": "base", "sequence": 20,
+            "payload": {"leg_x_mm": 609.6, "leg_z_mm": 1143.0,
+                        "height_mm": 876.0, "min_leg_x_mm": 685.8,
+                        "min_leg_z_mm": 1371.6, "host_leg": "z"}})
+
+        self.base_prod = self.env["product.product"].create(
+            {"name": "T28 Test Base 24", "default_code": "T28-ZZ-BASE24",
+             "list_price": 200.0})
+        self.partner = self.env["res.partner"].create({"name": "T28 Test"})
+
+    def test_narrow_room_picks_blind_not_susan_through_multi_variant_template(self):
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T28 narrow-corner probe", "partner_id": self.partner.id,
+            "room_width_in": 40.0,   # X leg too short for susan's 45in
+            "room_depth_in": 200.0,  # Z leg generous — blind's 54in fits
+            "room_height_in": 96.0, "state": "draft"})
+        Line = self.env["southbrook.kitchen.design.line"]
+        Line.create({
+            "design_id": design.id, "product_id": self.base_prod.id,
+            "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "wall": "back", "run_seq": 0, "origin": "configurator",
+            "layout_role": "canonical"})
+        for i in range(3):
+            Line.create({
+                "design_id": design.id, "product_id": self.base_prod.id,
+                "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+                "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+                "wall": "left", "run_seq": i, "origin": "configurator",
+                "layout_role": "canonical"})
+
+        design.action_auto_arrange(sync=False)
+        corners = design.cabinet_line_ids.filtered(
+            lambda l: l.cabinet_type == "corner" and l.zone == "base_run")
+        codes = corners.mapped("product_id.default_code")
+        self.assertIn("T28-SB-CORNER-BLIND", codes,
+            "narrow room must place the blind corner, got %s" % codes)
+        self.assertNotIn("T28-SB-CORNER", codes,
+            "the susan's own min-leg gate must have excluded it, got %s" % codes)
+
+        # Fix-round (review finding 2, minor) — the bare-family fix must
+        # not regress hand correctness: back-left resolves to handed
+        # "L" (kitchen_layout_engine._CORNER_RESOLVE), so the PLACED
+        # variant itself — not just its family code — must carry the LH
+        # Hinge Side PTAV, not just any variant of the blind template.
+        blind_line = corners.filtered(
+            lambda l: l.product_id.default_code == "T28-SB-CORNER-BLIND")
+        self.assertEqual(len(blind_line), 1)
+        hinge_ptavs = blind_line.product_id.product_template_attribute_value_ids.filtered(
+            lambda pt: pt.attribute_id.id == self.hinge.id)
+        self.assertTrue(hinge_ptavs,
+            "placed variant must carry a Hinge Side PTAV")
+        self.assertTrue(
+            any((pt.name or "").startswith("LH") for pt in hinge_ptavs),
+            "back-left is hand='L' — placed variant must be LH-tagged, "
+            "got %s" % hinge_ptavs.mapped("name"))
+
+    def test_missing_sku_fallback_logs_design_layer_rule_and_family(self):
+        """Fix-round (review finding 1) — kitchen_design.py's `code =
+        node.get("sku") or self._CORNER_SKU.get(...)` fallback (the
+        original sin behind the Task 28 defect) must never fire silently
+        again, even for a shape `engine_dicts()`'s Task 28 fix can't
+        rescue: a template where NO variant carries a code at all (not
+        just a mid-split template with one coded sibling). Strip both
+        the blind fixture's variants' codes so `engine_dicts()` still
+        returns sku="" after the fix, and assert the resulting
+        `_logger.warning` names the design, layer, the rule that WAS
+        selected (`rule_id`), and the substituted legacy family.
+
+        Hand-rolled logging.Handler rather than assertLogs() — this
+        suite's own test_placed_width_in.py documents assertLogs()
+        unreliably reporting "no logs triggered" against this module's
+        logger in this test runner even when the call demonstrably
+        fires; attaching straight to `_kd._logger` sidesteps it.
+        """
+        self.blind_variant.default_code = False
+        self.tmpl_blind.invalidate_recordset(["default_code"])
+
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T28 missing-sku-fallback probe",
+            "partner_id": self.partner.id,
+            "room_width_in": 40.0, "room_depth_in": 200.0,
+            "room_height_in": 96.0, "state": "draft"})
+        Line = self.env["southbrook.kitchen.design.line"]
+        Line.create({
+            "design_id": design.id, "product_id": self.base_prod.id,
+            "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "wall": "back", "run_seq": 0, "origin": "configurator",
+            "layout_role": "canonical"})
+        for i in range(3):
+            Line.create({
+                "design_id": design.id, "product_id": self.base_prod.id,
+                "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+                "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+                "wall": "left", "run_seq": i, "origin": "configurator",
+                "layout_role": "canonical"})
+
+        rule_id = self.env["southbrook.placement.rule"].search([
+            ("corner_type_id", "=", "blind-corner-basic"),
+            ("product_tmpl_id", "=", self.tmpl_blind.id),
+        ], limit=1)
+        self.assertTrue(rule_id, "sanity: the T28 blind rule must exist")
+        expected_rule_id = "spr-%d" % rule_id.id
+
+        captured = []
+
+        class _Cap(logging.Handler):
+            def emit(self, record):
+                captured.append(record)
+
+        h = _Cap()
+        _kd._logger.addHandler(h)
+        try:
+            design.action_auto_arrange(sync=False)
+        finally:
+            _kd._logger.removeHandler(h)
+
+        fallback_records = [
+            r for r in captured
+            if "corner sku missing" in r.getMessage()]
+        self.assertEqual(len(fallback_records), 1,
+            "expected exactly one fallback warning, got: %s"
+            % [r.getMessage() for r in captured])
+        msg = fallback_records[0].getMessage()
+        self.assertIn("design=%s" % design.id, msg)
+        self.assertIn("layer=base", msg)
+        self.assertIn("rule_id=%s" % expected_rule_id, msg)
+        self.assertIn("SB-CORNER", msg,
+            "message must name the substituted legacy family")
+
+        # And the substitution had a real effect — the blind family this
+        # room actually needs must NOT be what landed (whatever the
+        # legacy hardcoded "SB-CORNER" resolves to, or no insert at all
+        # if it isn't catalogued on this DB) — confirming this is a REAL
+        # fallback firing, not a false-positive log with no matching
+        # behavior.
+        corners = design.cabinet_line_ids.filtered(
+            lambda l: l.cabinet_type == "corner" and l.zone == "base_run")
+        self.assertNotIn(
+            "T28-SB-CORNER-BLIND", corners.mapped("product_id.default_code"))
