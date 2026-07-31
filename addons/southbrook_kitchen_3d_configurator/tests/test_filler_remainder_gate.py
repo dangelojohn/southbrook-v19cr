@@ -53,6 +53,34 @@ class TestFillerRemainderGate(TransactionCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        # Test-isolation fix (post-completion follow-up) — controllers/
+        # main.py's `_first_product(cabinet_type)` has no `order=` and no
+        # way for a caller to target a specific product; it just returns
+        # whatever `search([...], limit=1)` picks first. On a DB seeded
+        # with a real catalog (e.g. a full-catalog Harness B clone), that
+        # can be a PRE-EXISTING base/wall/filler product instead of the
+        # ones this class creates below — and this class's assertions
+        # hard-code the fixtures' own module_w=24 / std_w=3 assumptions
+        # (e.g. rw=12 must resolve to n=0 for the "undersized room" test;
+        # a pre-seeded 12in base product would instead resolve n=1,
+        # silently invalidating that assumption). Neutralize every OTHER
+        # candidate `_first_product` could return for the three types
+        # this class exercises so OUR templates (created below, hence not
+        # yet existing at search time) are the only ones left standing —
+        # scoped to this class's own transaction/savepoint only, never
+        # persisted. Do NOT change controllers/main.py itself: its
+        # unscoped-search behavior is real production behavior (a single-
+        # cabinet-catalog install has exactly this shape), so making the
+        # test data deterministic is the correct fix, not the route.
+        competitors = cls.env["product.product"].search([
+            ("product_tmpl_id.southbrook_is_cabinet", "=", True),
+            ("product_tmpl_id.southbrook_cabinet_type", "in",
+             ("base", "wall", "filler")),
+            ("sale_ok", "=", True),
+        ])
+        if competitors:
+            competitors.write({"sale_ok": False})
+
         cls.tmpl_base = cls.env["product.template"].create({
             "name": "T10 Base Cabinet", "type": "consu", "sale_ok": True,
             "list_price": 500.0,
