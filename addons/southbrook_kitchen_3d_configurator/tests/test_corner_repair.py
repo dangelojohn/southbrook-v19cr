@@ -211,6 +211,16 @@ class TestCornerSkuRepair(TransactionCase):
                 "this DB (catalog-completeness gap, not this pin's "
                 "concern)")
         self.assertEqual(pre.layout_key, "corner-%s-back-left-wall" % design.id)
+        # Review round 1, MINOR 6 — baseline captured BEFORE the flip so
+        # the post-flip assertion below can tell "pre-existing, catalog-
+        # driven UNRESOLVED_SLOT noise" (this DB's SB-CORNER twin drift
+        # leaves M1/B2/M2 as unresolved GHOST placeholders — confirmed
+        # via odoo-shell probe to be IDENTICAL before and after a flip,
+        # nothing this fix could touch) apart from a genuinely NEW issue
+        # the fix might introduce.
+        pre_unresolved_slots = set(
+            design.cabinet_line_ids.filtered("is_unresolved")
+            .mapped("template_slot_code"))
 
         design.action_flip_layout(axis="x")
 
@@ -229,11 +239,29 @@ class TestCornerSkuRepair(TransactionCase):
         self.assertEqual(post.wall, "right")
         self.assertEqual(post.rotation_deg, 270)
 
+        # Review round 1, MINOR 6 — assert the FULL blocking list (minus
+        # MISSING_CUSTOMER/MISSING_BOM, the two exceptions
+        # test_l10x8_no_geometry_hand_blocks already establishes are out
+        # of scope on a bare test DB with no partner_id/BOM data, and
+        # UNRESOLVED_SLOT — but ONLY for the SAME slots already unresolved
+        # pre-flip, verified via the strict subset check below, never a
+        # blanket exclusion), not just CORNER_HAND_MISMATCH, so a stray
+        # FOOTPRINT_COLLISION from the backfill's geometry — or anything
+        # else new — fails this test instead of going unnoticed.
+        post_unresolved_slots = set(
+            design.cabinet_line_ids.filtered("is_unresolved")
+            .mapped("template_slot_code"))
+        self.assertLessEqual(
+            post_unresolved_slots, pre_unresolved_slots,
+            "flip must not create NEW unresolved template slots: %s"
+            % (post_unresolved_slots - pre_unresolved_slots))
         blocking = [i for i in design._check_production_ready()
                     if i["severity"] == "blocking"]
-        hand_mismatches = [i for i in blocking
-                            if i["code"] == "CORNER_HAND_MISMATCH"]
+        geometry_blocks = [i for i in blocking
+                           if i["code"] not in ("MISSING_CUSTOMER",
+                                                 "MISSING_BOM",
+                                                 "UNRESOLVED_SLOT")]
         self.assertFalse(
-            hand_mismatches,
-            "the flipped wall corner must agree with the validator's own "
-            "expected-hand derivation: %s" % hand_mismatches)
+            geometry_blocks,
+            "the flipped design must carry no geometry/hand/collision "
+            "blocking issues: %s" % geometry_blocks)

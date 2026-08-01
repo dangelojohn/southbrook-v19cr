@@ -1369,10 +1369,12 @@ class SouthbrookKitchenDesign(models.Model):
                 worktop_cursor=SaleOrder._WORKTOP_CURSOR,
                 worktop_y=SaleOrder._WORKTOP_Y_FLOOR,
             )
-            for diag in r.get("corner_diagnostics") or ():
-                _logger.info("[auto-arrange] design=%s corner=%s/%s: %s",
-                             design.id, diag["corner"], diag["layer"],
-                             diag["reason"])
+            # Task 32 review round 1 (MINOR 5) — diagnostics logging moved to
+            # AFTER the "3a" backfill step below (was here, right after the
+            # engine call) so backfill-added entries (appended to this SAME
+            # `r["corner_diagnostics"]` list, matching the engine's own
+            # {"corner","layer","reason"} shape) print through the ONE loop
+            # too, instead of needing a second, differently-formatted one.
             finals = {c["id"]: c for c in r["cabinets"]}
             places = {p["id"]: p for p in r["placements"]}
 
@@ -1554,11 +1556,10 @@ class SouthbrookKitchenDesign(models.Model):
             #     exists there, and mirrors it for the missing layer —
             #     via the same tables/functions _sb_corner_expected_hand
             #     and the loop just above already read (_CORNER_RESOLVE,
-            #     _CORNER_STANDALONE, _CORNER_RESOLVE_PRESENTATION,
-            #     _CORNER_XZ_KEYS, _corner_cell_rect,
-            #     _corner_node_pose_rect, _select_corner_rule,
-            #     anchor_pose_mm) — never a parallel re-derivation of
-            #     corner geometry.
+            #     _CORNER_RESOLVE_PRESENTATION, _CORNER_XZ_KEYS,
+            #     _corner_cell_rect, _corner_node_pose_rect,
+            #     _select_corner_rule, anchor_pose_mm) — never a parallel
+            #     re-derivation of corner geometry.
             inserted_by_corner = {}
             for node in r["inserted"]:
                 inserted_by_corner.setdefault(
@@ -1567,7 +1568,30 @@ class SouthbrookKitchenDesign(models.Model):
             for c in r.get("assigned", []):
                 walls_with_layer[kitchen_layout_engine._layer_of(c)].add(
                     c.get("wall") or "back")
+            backfilled_inserted = 0
+            backfilled_removed = 0
             for cname, walls, _xz in kitchen_layout_engine._CORNER_SPECS:
+                if cname in kitchen_layout_engine._CORNER_STANDALONE:
+                    # Review round 1, CRITICAL 1 — the engine's standalone
+                    # ("both-high", e.g. front-right) corners are capped
+                    # by a GEOMETRIC footprint-overlap pass over every
+                    # cabinet in the room (resolve_and_layout's own
+                    # standalone cap pass, using footprints_overlap
+                    # against the reserved cell — not a run-position
+                    # `_run_end` absorption). This backfill only
+                    # replicates the `_run_end`-based absorption the
+                    # three _CORNER_RESOLVE junctions use; a standalone
+                    # corner has no host/other run to absorb from at all,
+                    # so nothing would be capped and a colliding
+                    # duplicate corner could be inserted. The flip defect
+                    # this task fixes is back-left/back-right only (an
+                    # L-shape has no front-right junction) — scoped out
+                    # here rather than risk a stuck FOOTPRINT_COLLISION
+                    # on an engine-owned derived line. A future task
+                    # extending this to standalone corners must replicate
+                    # the engine's geometric cap pass, not this run-based
+                    # absorption.
+                    continue
                 have = inserted_by_corner.get(cname, set())
                 for layer in ("base", "wall"):
                     if layer in have:
@@ -1583,9 +1607,23 @@ class SouthbrookKitchenDesign(models.Model):
                         # the junction's walls at all — genuinely no
                         # corner belongs here for this layer.
                         continue
-                    self._sb_backfill_corner_layer(
+                    outcome = self._sb_backfill_corner_layer(
                         design, Line, cname, layer, room, corner_rules, zl,
                         IN, r)
+                    if outcome:
+                        backfilled_inserted += outcome["inserted"]
+                        backfilled_removed += outcome["removed"]
+            # Review round 1, MINOR 5 — the SAME diagnostics list/shape
+            # the engine populates (see the resolve_and_layout call
+            # above); _sb_backfill_corner_layer appends its own
+            # {"corner","layer","reason"} entries to it (rule-selection
+            # fallbacks, and every skip this step's tightened checks
+            # produce) so ALL of it — engine and backfill — logs through
+            # this ONE loop, in the SAME format.
+            for diag in r.get("corner_diagnostics") or ():
+                _logger.info("[auto-arrange] design=%s corner=%s/%s: %s",
+                             design.id, diag["corner"], diag["layer"],
+                             diag["reason"])
 
             # 3b) M3 — rule-demanded corner FILLER strips become real
             #     derived design lines so they reach the manufacturing
@@ -1662,99 +1700,189 @@ class SouthbrookKitchenDesign(models.Model):
                                       "design %s — rolling back", design.id)
                     raise
 
+        # Review round 1, IMPORTANT 3 — the documented {corners, removed,
+        # inserted} contract (test_auto_arrange_service.py asserts on
+        # `res["inserted"]`/`res["removed"]` directly) must count the "3a"
+        # backfill's own inserts/absorptions too, not just the engine's —
+        # a backfilled corner is exactly as real a corner/removal as an
+        # engine-inserted one from this method's caller's point of view.
+        total_inserted = len(r["inserted"]) + backfilled_inserted
+        total_removed = len(r["removed_ids"]) + backfilled_removed
         _logger.info("[auto-arrange] finished design=%s corners=%d removed=%d "
-                     "inserted=%d elapsed=%dms", design.id, len(r["corners"]),
-                     len(r["removed_ids"]), len(r["inserted"]),
+                     "inserted=%d (backfilled=%d) elapsed=%dms", design.id,
+                     len(r["corners"]) + backfilled_inserted, total_removed,
+                     total_inserted, backfilled_inserted,
                      int((time.time() - _t0) * 1000))
-        return {"corners": len(r["corners"]), "removed": len(r["removed_ids"]),
-                "inserted": len(r["inserted"])}
+        return {"corners": len(r["corners"]) + backfilled_inserted,
+                "removed": total_removed, "inserted": total_inserted}
 
     # Task 32 (corner-remediation follow-up) — see the "3a" call site's
-    # comment in action_auto_arrange above for why this exists. Archives
-    # the same two run-end cabinets the engine's own corner-insert would
-    # have absorbed (mirroring its private `_run_end` selection: the
-    # host wall's own first member, the other wall's `other_end` member —
-    # both restricted to `layer` and the two walls this junction owns),
-    # then creates the missing derived corner line via the SAME product
-    # resolver (`_sb_resolve_corner_variant`) and pose-conversion
+    # comment in action_auto_arrange above for why this exists. Only ever
+    # called for `_CORNER_RESOLVE` junctions (back-left/back-right/
+    # front-left) — the caller loop excludes `_CORNER_STANDALONE`
+    # (front-right) entirely, see its own comment (review round 1,
+    # CRITICAL 1). Archives the same two run-end cabinets the engine's
+    # own corner-insert would have absorbed, then creates the missing
+    # derived corner line via the SAME product resolver
+    # (`_sb_resolve_corner_variant`) and pose-conversion
     # (`anchor_pose_mm`) the main writer loop uses.
+    #
+    # Returns {"inserted": 1, "removed": <0..2>} on success, or None when
+    # the backfill was skipped (nothing written) — the caller sums these
+    # into action_auto_arrange's own {corners, removed, inserted} return.
     def _sb_backfill_corner_layer(self, design, Line, cname, layer, room,
                                    corner_rules, zl, IN, r):
         CLE = kitchen_layout_engine
+        diagnostics = r.setdefault("corner_diagnostics", [])
+        spec = CLE._CORNER_RESOLVE.get(cname)
+        if spec is None:
+            # Defensive only — the caller already excludes every
+            # junction not in _CORNER_RESOLVE (i.e. the standalone
+            # front-right corner). Never expected to fire.
+            return None
+        host_wall, other_wall, other_end, handed = spec
+
+        # Review round 1, IMPORTANT 2 — MINOR 4: `_run_end` here is a
+        # hand-synced duplicate of resolve_and_layout's own PRIVATE
+        # nested closure of the same name
+        # (kitchen_layout_engine.py, inside `resolve_and_layout`,
+        # ~line 890: "def _run_end(cabs, wall, layer, end):") — not
+        # exported, so replicated verbatim (a 2-line min/max selection
+        # over already-engine-computed `r["assigned"]`, not a corner
+        # table). If that closure's selection rule ever changes, this
+        # one must change with it.
+        assigned = r.get("assigned", [])
+
+        def _run_end(for_layer, wall, end):
+            if wall is None:
+                return None
+            run = [c for c in assigned
+                   if (c.get("wall") or "back") == wall
+                   and CLE._layer_of(c) == for_layer
+                   and not c.get("corner_cabinet")]
+            pick = min if end == "first" else max
+            return pick(run, key=lambda c: c.get("run_seq", 0), default=None)
+
+        sibling = "wall" if layer == "base" else "base"
+        layer_host = _run_end(layer, host_wall, "first")
+        layer_other = _run_end(layer, other_wall, other_end)
+        if layer_host is None or layer_other is None:
+            # The topology pre-check in the caller already confirmed
+            # SOME cabinet of `layer` on each wall, but _run_end's own
+            # extra filters (excludes corner_cabinet nodes) came up
+            # empty here — nothing usable to anchor a corner on.
+            return None
+        # Review round 1, IMPORTANT 2 — topology alone ("cabinets exist
+        # on both walls") over-triggers on a routine layout with a
+        # genuine no-upper gap AT this corner (e.g. a window) but wall
+        # cabinets elsewhere on both walls (auto-arrange runs on every
+        # multi-wall save, room-dim edit, template apply, and rotate —
+        # not just flip). Require the "other_end" candidate — the one on
+        # the side actually exposed to the compacted-cursor shortfall
+        # this backfill exists for — to carry the EXACT SAME run_seq as
+        # the SIBLING layer's own absorbed candidate at that end. This
+        # is not a coincidence test: `_transform_layout`'s reversal
+        # remaps every canonical line's run_seq from ONE dict built from
+        # the UNION of values on that wall, so a genuinely paired base/
+        # wall cabinet (created together at the corner) keeps an
+        # IDENTICAL run_seq through any flip. The "host" end is not
+        # checked the same way — it is always the trivially-reachable
+        # cursor-0 end of `layer`'s own run (see the "3a" comment above
+        # on why "first" never suffers the shortfall "last" does), so
+        # its bare existence is not itself a source of false positives.
+        sibling_other = _run_end(sibling, other_wall, other_end)
+        if (sibling_other is None
+                or layer_other.get("run_seq") != sibling_other.get("run_seq")):
+            diagnostics.append({
+                "corner": cname, "layer": layer,
+                "reason": "backfill: run_seq pairing with the sibling "
+                          "layer's own absorbed cabinet did not match — "
+                          "topology alone is not enough evidence of a "
+                          "real junction here (skipped)",
+            })
+            return None
+
         rule = (CLE._select_corner_rule(cname, layer, corner_rules, room)
                 if corner_rules else None)
+        if rule is None and corner_rules:
+            diagnostics.append({
+                "corner": cname, "layer": layer,
+                "reason": "backfill: no placement rule fits — legacy "
+                          "%.0fmm square used" % CLE._CORNER_FOOTPRINT_MM,
+            })
         ext_x = (rule.get("leg_x_mm") if rule else None) or CLE._CORNER_FOOTPRINT_MM
         ext_z = (rule.get("leg_z_mm") if rule else None) or CLE._CORNER_FOOTPRINT_MM
         height_mm = (rule.get("height_mm") if rule else None) or CLE._CORNER_HEIGHT_MM[layer]
         y_floor = zl.get("wall" if layer == "wall" else "base_run",
                          ("ground", 0, 0))[1]
 
-        if cname in CLE._CORNER_STANDALONE:
-            handed = "L"
-            host_wall = other_wall = other_end = None
-            xk, zk = CLE._CORNER_STANDALONE[cname]
-            cell = CLE._corner_cell_rect(xk, zk, room, ext_x, ext_z)
-            pose = CLE._corner_node_pose_rect(cell, 0, y_floor)
-            node_w, node_d = ext_x, ext_z
-            wall_tag = "right"
-        else:
-            spec = CLE._CORNER_RESOLVE.get(cname)
-            if spec is None:
-                return
-            host_wall, other_wall, other_end, handed = spec
-            wall_tag, rotation_deg = CLE._CORNER_RESOLVE_PRESENTATION[cname]
-            if rule is not None and rule.get("host_leg") in ("x", "z"):
-                pair = next(ws for n, ws, _xz in CLE._CORNER_SPECS
-                            if n == cname)
-                wall_tag = pair[0] if rule["host_leg"] == "x" else pair[1]
-                rotation_deg = CLE._WALL_SPEC[wall_tag]["rot"]
-            xk, zk = CLE._CORNER_XZ_KEYS[cname]
-            cell = CLE._corner_cell_rect(xk, zk, room, ext_x, ext_z)
-            pose = CLE._corner_node_pose_rect(cell, rotation_deg, y_floor)
-            rot_n = int(round(rotation_deg)) % 360
-            node_w = ext_x if rot_n in (0, 180) else ext_z
-            node_d = ext_z if rot_n in (0, 180) else ext_x
+        wall_tag, rotation_deg = CLE._CORNER_RESOLVE_PRESENTATION[cname]
+        if rule is not None and rule.get("host_leg") in ("x", "z"):
+            pair = next(ws for n, ws, _xz in CLE._CORNER_SPECS
+                        if n == cname)
+            wall_tag = pair[0] if rule["host_leg"] == "x" else pair[1]
+            rotation_deg = CLE._WALL_SPEC[wall_tag]["rot"]
+        xk, zk = CLE._CORNER_XZ_KEYS[cname]
+        cell = CLE._corner_cell_rect(xk, zk, room, ext_x, ext_z)
+        pose = CLE._corner_node_pose_rect(cell, rotation_deg, y_floor)
+        rot_n = int(round(rotation_deg)) % 360
+        node_w = ext_x if rot_n in (0, 180) else ext_z
+        node_d = ext_z if rot_n in (0, 180) else ext_x
+
+        # Review round 1, CRITICAL 1 / IMPORTANT 2 — geometric collision
+        # safety net using the engine's own EXPORTED footprint_mm/
+        # footprints_overlap (not private, unlike _run_end above): before
+        # writing anything, confirm no SURVIVING (not about to be
+        # absorbed) cabinet of this same layer would end up overlapping
+        # the corner cell we're about to reserve. `_run_end`'s run-
+        # position absorption picks the two run-END cabinets, but it is
+        # a topological pick, not a geometric one — this is the real
+        # geometric check backstopping it, so a design can never come
+        # out of this backfill with a regenerating FOOTPRINT_COLLISION
+        # on an engine-owned derived line.
+        placements_by_id = {p["id"]: p for p in r.get("placements", [])}
+        absorbed_ids = {c["id"] for c in (layer_host, layer_other)}
+        for c in assigned:
+            if (CLE._layer_of(c) != layer or c.get("corner_cabinet")
+                    or c.get("id") in absorbed_ids):
+                continue
+            place = placements_by_id.get(c.get("id"))
+            if place is None:
+                continue
+            if CLE.footprints_overlap(CLE.footprint_mm(c, place), cell):
+                diagnostics.append({
+                    "corner": cname, "layer": layer,
+                    "reason": "backfill: would collide with surviving "
+                              "cabinet id=%s — skipped rather than risk "
+                              "a stuck FOOTPRINT_COLLISION" % c.get("id"),
+                })
+                return None
 
         rule_sku = rule.get("sku") if rule else None
         code = rule_sku or self._CORNER_SKU.get(layer, "SB-CORNER")
         if not rule_sku:
-            _logger.warning(
-                "[auto-arrange] backfill: corner sku missing for design=%s "
-                "corner=%s layer=%s — substituting legacy default family "
-                "%r", design.id, cname, layer, code)
+            diagnostics.append({
+                "corner": cname, "layer": layer,
+                "reason": "backfill: corner sku missing — substituting "
+                          "legacy default family %r" % code,
+            })
         variant, tmpl = Line._sb_resolve_corner_variant(code, hand=handed)
         if not variant:
-            _logger.warning(
-                "[auto-arrange] backfill corner SKU %s missing/no-variant "
-                "— skipping %s/%s backfill (design %s)",
-                code, cname, layer, design.id)
-            return
+            diagnostics.append({
+                "corner": cname, "layer": layer,
+                "reason": "backfill: corner SKU %s missing/no-variant — "
+                          "skipped" % code,
+            })
+            return None
 
-        # Absorb the same two run-end cabinets the engine's own
-        # corner-insert would have (mirrors `_run_end` inside
-        # resolve_and_layout — not exposed, so replicated verbatim here;
-        # it is a 2-line min/max selection, not a corner table).
-        assigned = r.get("assigned", [])
-
-        def _run_end(wall, end):
-            if wall is None:
-                return None
-            run = [c for c in assigned
-                   if (c.get("wall") or "back") == wall
-                   and CLE._layer_of(c) == layer
-                   and not c.get("corner_cabinet")]
-            pick = min if end == "first" else max
-            return pick(run, key=lambda c: c.get("run_seq", 0), default=None)
-
-        for absorbed in (_run_end(host_wall, "first"),
-                         _run_end(other_wall, other_end)):
-            if absorbed is None:
-                continue
+        removed = 0
+        for absorbed in (layer_host, layer_other):
             Line.browse(absorbed["id"]).write({
                 "active": False,
                 "wall": absorbed.get("wall") or "back",
                 "run_seq": absorbed.get("run_seq", 0),
             })
+            removed += 1
 
         node = {"width_mm": node_w, "height_mm": height_mm,
                 "depth_mm": node_d}
@@ -1785,6 +1913,7 @@ class SouthbrookKitchenDesign(models.Model):
             "(design=%s) — sibling layer resolved but detect_corners' "
             "compacted per-layer cursor missed this one",
             layer, cname, design.id)
+        return {"inserted": 1, "removed": removed}
 
     # ── PR4 (2026-07-12) — shared add-a-cabinet engine-placement helper ────
     # Extracted from the website's `_sb_place_line_on_wall`
