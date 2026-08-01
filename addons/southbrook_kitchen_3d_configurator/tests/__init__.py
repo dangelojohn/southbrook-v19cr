@@ -268,3 +268,12 @@ from . import test_plan_report
 # Generation (part b) SHIPPED: _generate_standard_layout targets the base
 # run's length and fills non-divisible tails with a wall-side filler.
 from . import test_wall_base_run_coordination
+
+# Task 21, corner-remediation (2026-07-30, SBK-035, reduced scope) —
+# naming half shipped separately (see test_design_naming.py); this file
+# covers the remainder: state guard (a design must not reach
+# state='configured' with zero active cabinet lines, model constraint
+# + the save_design controller fix it required), the archive action
+# now form-bound (reuses the existing action_archive_bulk), and the
+# "Empty designs" search filter (+ confirming "Archived" already ships).
+from . import test_state_lifecycle_guards

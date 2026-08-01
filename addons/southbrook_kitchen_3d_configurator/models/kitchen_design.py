@@ -679,6 +679,44 @@ class SouthbrookKitchenDesign(models.Model):
         tracking=True,
     )
 
+    # ── State guard — 'configured' requires real content ───────────────────────
+    # Task 21 (corner-remediation 2026-07-30, SBK-035, reduced scope) — a
+    # design must never persist in state='configured' with zero ACTIVE
+    # cabinet lines. Live gap (pre-fix): controllers/main.py's save_design
+    # endpoint forced `"state": "configured"` into the very FIRST vals dict
+    # handed to Design.create()/design.write() — BEFORE the item-processing
+    # loop further down in that same function ever runs — so an empty save
+    # (items=[], e.g. a rep deletes every cabinet and the client autosaves)
+    # or an all-rejected payload (every product_id fails the /products
+    # catalog ACL gate) could reach state='configured' having created not
+    # one single line. Fixed alongside this guard: save_design now writes
+    # state="configured" only once, at the end, gated on
+    # `design.cabinet_line_ids` being non-empty — the exact pattern
+    # kitchen_design.py's OWN state="configured" writes already use
+    # (_apply_kitchen_template's "if seeded: self.state = 'configured'",
+    # _generate_standard_layout's trailing `self.state = "configured"`
+    # after every line is created, kitchen_template.py's
+    # action_instantiate likewise) — this constraint is a no-op backstop
+    # for those, and the real check for save_design.
+    #
+    # `@api.constrains` trap: this only fires on a write()/create() call
+    # whose vals dict contains the literal key "state" — a write that only
+    # touches cabinet_line_ids (e.g. archiving/unlinking the last line on
+    # an already-configured design without ever re-touching state) will
+    # NOT re-trigger this check. Closing that residual gap would need a
+    # guard on the line model's own write/unlink path, which is out of
+    # this reduced scope (record pruning/deletion stays the owner's call
+    # per the task brief) — flagged here rather than silently assumed.
+    @api.constrains("state")
+    def _check_configured_state_has_lines(self):
+        for design in self:
+            if design.state == "configured" and not design.cabinet_line_ids:
+                raise ValidationError(
+                    'Cannot mark "%s" as Configured with no cabinet lines. '
+                    "Add at least one cabinet first, or leave the design "
+                    "in Draft." % (design.name or "this design")
+                )
+
     # ── default_get — portal-user partner autofill ─────────────────────────────
     # 2026-07-01 task #48 — pre-select partner_id for two entry paths:
     #   (a) partner-form "Create Kitchen Design" → context carries
