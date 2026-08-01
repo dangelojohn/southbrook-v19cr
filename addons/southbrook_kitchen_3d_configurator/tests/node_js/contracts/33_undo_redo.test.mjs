@@ -17,16 +17,27 @@
  * attempt) and that the first undo after each returns to the exact
  * prior state. Also covers: the two toolbar buttons (aria-label +
  * disabled state), the keyboard bindings (Ctrl+Z / Ctrl+Shift+Z /
- * Ctrl+Y), the explicit Auto-arrange command's confirm-gate + its
- * "undo snapshot pushed before arranging" ordering, and the house rule
- * that confirmation NEVER uses window.confirm.
+ * Ctrl+Y — including that they're a no-op while typing in an INPUT,
+ * per the pre-existing top-of-_onKeyDown guard), the explicit
+ * Auto-arrange command's confirm-gate + its "undo snapshot pushed
+ * before arranging" ordering, and the house rule that confirmation
+ * NEVER uses window.confirm.
  *
- * "flip" (action_flip_layout, models/kitchen_design.py) is in the
- * brief's op list but is NOT reachable from this screen — grepped: no
- * `_flip*` method or UI control exists in kitchen_configurator.js; the
- * server action is only wired to a button in the backend form view
- * (kitchen_design_views.xml), a different screen entirely. Nothing to
- * wire here; see task-35-report.md's per-AC table for the full note.
+ * Review fast-follow (Task 35 review, Important 1) — Q/E rotation
+ * (_rotateSelected) is ALSO a design-mutating op (item.rotation_deg,
+ * in place) and was initially shipped with no undo coverage at all: a
+ * rep who rotated a cabinet and hit Ctrl+Z would silently undo an
+ * unrelated earlier op instead. Added below (one pre-op snapshot per
+ * Q/E keypress — not coalesced across repeated taps; the 25-entry cap
+ * absorbs a burst the same way it absorbs a burst of any other op).
+ *
+ * "flip" (action_flip_layout, models/kitchen_design.py) is the ONE
+ * item still in the brief's op list that is NOT reachable from this
+ * screen — grepped: no `_flip*` method or UI control exists in
+ * kitchen_configurator.js; the server action is only wired to a
+ * button in the backend form view (kitchen_design_views.xml), a
+ * different screen entirely. Nothing to wire here; see
+ * task-35-report.md's per-AC table for the full note.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -289,6 +300,78 @@ test("move (onMoveItemStart + onMoveItem): pushes exactly ONE pre-op snapshot at
 
     c._undo();
     assert.equal(c.state.items[0].x_position_in, preDragX, "undo restores the exact pre-drag position");
+    h.destroy();
+});
+
+test("rotate (_rotateSelected, Q/E): pushes one pre-op snapshot per keypress; undo restores the previous rotation_deg (review fast-follow, Important 1)", async () => {
+    const h = await mountWithCatalog();
+    const c = h.component;
+    c._addCabinetFromProduct(BASE24);
+    clearAutoSave(h);
+    c.state.selected = c.state.items[0];
+    // A freshly added item carries no rotation_deg field at all (see
+    // _addCabinetFromProduct — it's never in the spread); _rotateSelected
+    // is the first thing that ever introduces it, via `|| 0`. The
+    // pre-rotation snapshot therefore captures `undefined`, not `0` —
+    // asserted explicitly below so this test pins the REAL pre-op
+    // state, not an assumed one.
+    const preRotation = c.state.items[0].rotation_deg;
+    assert.equal(!!preRotation, false, "sanity: no rotation yet");
+    const undoCountBeforeRotate = c.state.undoCount;   // the add itself already pushed one
+
+    c._rotateSelected(90);   // E
+    clearAutoSave(h);
+    assert.equal(c.state.items[0].rotation_deg, 90);
+    assert.equal(c.state.undoCount, undoCountBeforeRotate + 1,
+        "one rotate keypress pushes exactly one snapshot");
+
+    c._rotateSelected(90);   // a second E — a SEPARATE snapshot, not coalesced
+    clearAutoSave(h);
+    assert.equal(c.state.items[0].rotation_deg, 180);
+    assert.equal(c.state.undoCount, undoCountBeforeRotate + 2);
+
+    c._undo();
+    assert.equal(c.state.items[0].rotation_deg, 90,
+        "first undo after the second rotate returns to the exact prior (90°) state");
+    c._undo();
+    assert.equal(c.state.items[0].rotation_deg, preRotation,
+        "second undo returns to the exact pre-rotation state");
+    h.destroy();
+});
+
+test("rotate: a no-op call (nothing selected, or a filler/panel that never rotates) pushes NO snapshot", async () => {
+    const h = await mountWithCatalog();
+    const c = h.component;
+    c._addCabinetFromProduct(BASE24);
+    clearAutoSave(h);
+    c.state.selected = null;
+    const undoCountBefore = c.state.undoCount;
+
+    c._rotateSelected(90);
+    assert.equal(c.state.undoCount, undoCountBefore, "nothing selected -> no-op, no snapshot");
+
+    c.state.selected = { ...c.state.items[0], cabinet_type: "filler" };
+    c._rotateSelected(90);
+    assert.equal(c.state.undoCount, undoCountBefore, "fillers never rotate -> no-op, no snapshot");
+    h.destroy();
+});
+
+test("Ctrl+Z with the customer-name INPUT focused is a no-op — the top-of-_onKeyDown editable-target guard covers the new shortcuts too (review fast-follow, Minor 3)", async () => {
+    const h = await mountWithCatalog();
+    const c = h.component;
+    c._addCabinetFromProduct(BASE24);
+    clearAutoSave(h);
+    assert.equal(c.state.items.length, 1);
+    const undoCountBefore = c.state.undoCount;
+
+    c._onKeyDown({
+        key: "z", ctrlKey: true,
+        target: { tagName: "INPUT" },
+        preventDefault() { throw new Error("must not even reach the Ctrl+Z branch"); },
+    });
+
+    assert.equal(c.state.items.length, 1, "Ctrl+Z while typing in an input must not undo anything");
+    assert.equal(c.state.undoCount, undoCountBefore, "the stack itself must be untouched");
     h.destroy();
 });
 

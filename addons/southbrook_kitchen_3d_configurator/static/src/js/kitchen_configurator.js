@@ -3175,6 +3175,18 @@ class SouthbrookKitchenConfigurator extends Component {
         if (item.cabinet_type === "filler" || item.cabinet_type === "panel") {
             return;
         }
+        // Task 35 review fast-follow (Important 1) — this is a design-
+        // mutating op (item.rotation_deg, in place) exactly like
+        // _updateSelectedWidth, and was missing undo coverage entirely:
+        // a rep who rotated a cabinet and hit Ctrl+Z would silently
+        // undo an unrelated EARLIER op instead. Pushed before the
+        // in-place mutation below, same pattern as every other op.
+        // One snapshot per Q/E keypress (not coalesced across repeated
+        // taps) — simple and correct; the 25-entry cap already absorbs
+        // a burst of quick rotations the same way it absorbs a burst
+        // of any other op.
+        this._pushUndoSnapshot();
+        this._placementsDirty = true;
         const cur = ((item.rotation_deg || 0) + deltaDeg) % 360;
         item.rotation_deg = (cur + 360) % 360;
         item.pinned = true;
