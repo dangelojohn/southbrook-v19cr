@@ -40,6 +40,46 @@
         </field>
     </record>
 
+    <!-- Cabinet Products iconography — one source (P2 product-icons,
+         2026-07-31). The Cabinet Products action below has no bespoke
+         kanban/list views of its own; it reuses product.template's
+         standard ones, so that's where this inherits. The
+         sb_cabinet_thumb widget falls back to the standard product
+         photo for any record with southbrook_is_cabinet=False, so this
+         is safe to apply to product.template's kanban/list everywhere
+         they're used, not just this action's screen — see
+         cabinet_thumb_field.esm.js and
+         `.claude/skills/southbrook-design-system/SKILL.md`
+         "Cabinet iconography — one source". -->
+    <record id="view_product_template_kanban_cabinet_thumb" model="ir.ui.view">
+        <field name="name">product.template.kanban.southbrook.cabinet.thumb</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_kanban_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='image_128']" position="replace">
+                <field name="image_128"
+                       widget="sb_cabinet_thumb"
+                       options="{'size_px': 80}"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_product_template_list_cabinet_thumb" model="ir.ui.view">
+        <field name="name">product.template.list.southbrook.cabinet.thumb</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_tree_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='is_favorite']" position="after">
+                <field name="image_128"
+                       widget="sb_cabinet_thumb"
+                       string="Icon"
+                       options="{'size_px': 24}"
+                       optional="show"
+                       nolabel="1"/>
+            </xpath>
+        </field>
+    </record>
+
     <!-- Cabinet Products action (filtered product list) -->
     <record id="action_southbrook_cabinet_products" model="ir.actions.act_window">
         <field name="name">Cabinet Products</field>

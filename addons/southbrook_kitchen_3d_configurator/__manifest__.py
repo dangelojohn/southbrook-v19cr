@@ -4,7 +4,7 @@
         "Isometric Three.js kitchen room configurator backed by "
         "live Odoo cabinet inventory — design, save, and quote."
     ),
-    "version": "19.0.5.36.2",
+    "version": "19.0.5.37.0",
     "category": "Manufacturing/Product Configurator",
     "author": "OdooIQ / REAL Partners Ltd.",
     "website": "https://odooiq.com",
@@ -101,6 +101,9 @@
             # free-camera mode and zoom dolly.
             "southbrook_estimating/static/lib/three/OrbitControls.js",
             "southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss",
+            # P2 product-icons — Cabinet Products kanban/list thumb widget
+            # layout only; palette lives entirely in cabinet_thumb.esm.js.
+            "southbrook_kitchen_3d_configurator/static/src/scss/product_kanban_thumb.scss",
             # Rec D · Sprint 2d shared canvas modules. All MUST load
             # before kitchen_configurator.js so ES imports resolve.
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/constants.esm.js",
@@ -151,6 +154,10 @@
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/catalog_list.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/cabinet_thumb.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/kitchen_configurator.js",
+            # P2 product-icons — Cabinet Products kanban/list icon widget.
+            # Imports cabinetThumbSVG from cabinet_thumb.esm.js above, so
+            # it must load after it (ES import order).
+            "southbrook_kitchen_3d_configurator/static/src/js/fields/cabinet_thumb_field.esm.js",
         ],
     },
     "application": True,

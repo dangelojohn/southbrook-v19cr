@@ -1,0 +1,30 @@
+// ─── Cabinet Products views — sb_cabinet_thumb field widget ────────────────
+// Layout-only (no colour decisions live here — the SVG itself carries the
+// full "Cabinet iconography — one source" palette from cabinet_thumb.esm.js).
+// See addons/southbrook_kitchen_3d_configurator/static/src/js/fields/
+// cabinet_thumb_field.esm.js for the widget this styles.
+
+.o_sbk_cabinet_thumb_field {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+
+    svg {
+        max-width: 100%;
+        height: auto;
+    }
+}
+
+.o_sbk_cabinet_thumb_fallback_img {
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
+}
+
+// Kanban aside slot (128px placeholder area in the base product kanban
+// card) — keep the icon vertically centred the same way the image
+// widget it replaces was.
+.o_kanban_record aside .o_sbk_cabinet_thumb_field {
+    height: 100%;
+}
