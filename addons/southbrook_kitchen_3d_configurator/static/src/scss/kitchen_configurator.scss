@@ -2123,6 +2123,141 @@ $sbk-amber:      #B45309;
     span[aria-hidden] { font-size: 15px; line-height: 1; }
 }
 
+// ─── Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) ─────────────────
+// Persistent production-readiness status chip + its dropdown panel.
+// Southbrook design system rule: never hardcode a status colour — the
+// three tones below are the shared --sb-status-{ok,warn,blocked}-*
+// token triples, the SAME ones .o_sbk_data_flag (above) already uses
+// for its own warn tone.
+.o_sbk_validation {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.o_sbk_validation_chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid transparent;
+
+    &.o_sbk_vc_ok {
+        color: var(--sb-status-ok-fg);
+        background: var(--sb-status-ok-bg);
+        border-color: var(--sb-status-ok-border);
+    }
+    &.o_sbk_vc_warn {
+        color: var(--sb-status-warn-fg);
+        background: var(--sb-status-warn-bg);
+        border-color: var(--sb-status-warn-border);
+    }
+    &.o_sbk_vc_blocked {
+        color: var(--sb-status-blocked-fg);
+        background: var(--sb-status-blocked-bg);
+        border-color: var(--sb-status-blocked-border);
+    }
+}
+.o_sbk_validation_dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: 0 0 auto;
+}
+.o_sbk_validation_panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 1000;
+    width: 360px;
+    max-width: calc(100vw - 32px);
+    max-height: 420px;
+    overflow-y: auto;
+    background: $sbk-white;
+    border: 1px solid $sbk-border;
+    border-radius: var(--sb-radius);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    padding-bottom: 4px;
+}
+.o_sbk_validation_panel_head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-bottom: 1px solid $sbk-bg;
+}
+.o_sbk_validation_panel_title {
+    font-size: 12px;
+    font-weight: 700;
+    color: $sbk-dark;
+}
+.o_sbk_validation_close {
+    background: transparent;
+    border: none;
+    padding: 2px 6px;
+    font-size: 16px;
+    line-height: 1;
+    color: $sbk-muted;
+    cursor: pointer;
+    border-radius: var(--sb-radius);
+
+    &:hover { color: $sbk-dark; background: $sbk-bg; }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
+}
+.o_sbk_validation_group_title {
+    padding: 8px 10px 2px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: $sbk-muted;
+}
+.o_sbk_validation_list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.o_sbk_validation_issue {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 8px 10px;
+    border-bottom: 1px solid $sbk-bg;
+
+    &:last-child { border-bottom: none; }
+}
+.o_sbk_validation_issue_btn {
+    background: transparent;
+    border: none;
+    padding: 0;
+    text-align: left;
+    font-family: inherit;
+    font-size: 12.5px;
+    line-height: 1.4;
+    color: $sbk-ink;
+    cursor: pointer;
+
+    &:hover { color: $sbk-accent; text-decoration: underline; }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
+}
+.o_sbk_validation_issue_text {
+    font-size: 12.5px;
+    line-height: 1.4;
+    color: $sbk-ink;
+}
+.o_sbk_validation_fix {
+    align-self: flex-start;
+    padding: 4px 10px;
+    min-height: 26px;
+    font-size: 11px;
+}
+
 // Task 34 (SBK-019) — collapsible side panels. `_toggleControlsPanel`/
 // `_toggleInventoryPanel` (kitchen_configurator.js) flip these two
 // classes independently; `narrowAtBoot` (same file) decides the

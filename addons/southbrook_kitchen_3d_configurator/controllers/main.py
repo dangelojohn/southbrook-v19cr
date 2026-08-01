@@ -1291,6 +1291,65 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             "summary": design._get_counter_summary(),
         }
 
+    # ─── Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) ───────────────
+    # Read-only structured-issue feed for the 3D configurator's
+    # persistent status chip. Same NOT_FOUND/ACCESS_DENIED shape as
+    # /load_design_lines just above, and the SAME normalized issue
+    # structure (`_normalize_production_issues`) the record form's own
+    # `action_validate_production` button renders from, so the chip and
+    # the form button can never disagree about what's wrong with a
+    # design. No writes — a validation check is read-only by
+    # construction (`_check_production_ready` never mutates the design).
+    @http.route(
+        "/southbrook_kitchen/configurator/validate",
+        type="jsonrpc", auth="user", methods=["POST"],
+    )
+    def validate_production(self, design_id):
+        design = request.env["southbrook.kitchen.design"].browse(
+            int(design_id or 0))
+        if not design.exists():
+            return {
+                "issues": [],
+                "error": "This design no longer exists. It may have "
+                         "been deleted.",
+                "error_code": "NOT_FOUND",
+            }
+        try:
+            design.check_access("read")
+        except Exception:
+            return {
+                "issues": [],
+                "error": "You don't have access to this design.",
+                "error_code": "ACCESS_DENIED",
+            }
+        issues = design._normalize_production_issues(
+            design._check_production_ready())
+        # Resolve each issue's line_ids to the client's own per-cabinet
+        # identity (layout_key) so a click can select+reveal the
+        # offending cabinet the SAME way Task 22's canvas selection
+        # already works (state.selected + the canvas reveal) — never a
+        # second, id-keyed selection path. Lines with no layout_key
+        # (e.g. a manual/backend-origin line the 3D canvas never
+        # rendered) are simply omitted from `layout_keys`, not errored.
+        wanted_ids = {lid for issue in issues for lid in issue["line_ids"]}
+        key_by_id = {
+            line.id: line.layout_key
+            for line in design.cabinet_line_ids
+            if line.id in wanted_ids and line.layout_key
+        }
+        for issue in issues:
+            issue["layout_keys"] = [
+                key_by_id[lid] for lid in issue["line_ids"]
+                if lid in key_by_id
+            ]
+        blocking = sum(1 for i in issues if i["severity"] == "blocking")
+        warning = sum(1 for i in issues if i["severity"] == "warning")
+        return {
+            "issues": issues,
+            "counts": {"blocking": blocking, "warning": warning},
+            "ready": blocking == 0,
+        }
+
     # ─── Task 20 (SBK-034) — landing-state recent designs ───────────────────────
     @http.route(
         "/southbrook_kitchen/configurator/recent_designs",

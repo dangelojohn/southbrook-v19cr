@@ -277,3 +277,11 @@ from . import test_wall_base_run_coordination
 # now form-bound (reuses the existing action_archive_bulk), and the
 # "Empty designs" search filter (+ confirming "Archived" already ships).
 from . import test_state_lifecycle_guards
+
+# Task 19, corner-remediation (2026-07-30, SBK-032 + C9 UX) — validation
+# surfaced in the configurator: `_normalize_production_issues` (structured
+# issue list — code/severity/message/line_ids, deduped by code+line_ids)
+# and the new read-only `/southbrook_kitchen/configurator/validate` JSON
+# endpoint the persistent status chip polls (NOT_FOUND/ACCESS_DENIED
+# shape, layout_key resolution for click-to-select, no side effects).
+from . import test_validation_endpoint

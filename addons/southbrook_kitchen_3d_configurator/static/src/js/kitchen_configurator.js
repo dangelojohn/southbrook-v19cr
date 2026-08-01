@@ -54,6 +54,14 @@ import { ToastStore } from "@southbrook_kitchen_3d_configurator/js/toast/toast_s
 import {
     UndoStore, shouldConfirmArrange,
 } from "@southbrook_kitchen_3d_configurator/js/undo/undo_store.esm";
+// Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) — production-
+// readiness status chip pure reducer (chip-state derivation, dedupe,
+// severity grouping). Same ownership split as the two imports above:
+// this file decides WHEN to fetch /validate and WHAT a click does; the
+// module only shapes the data.
+import {
+    dedupeIssues, groupBySeverity, deriveChipState,
+} from "@southbrook_kitchen_3d_configurator/js/validation/validation_store.esm";
 // Panel P2 (catalog redesign) — the inventory panel's pure data layer
 // (name parsing, L/R handing, width recovery, search haystack, and the
 // grouped/L-R-merged/sorted catalog shape) and its thumbnail renderer.
@@ -472,6 +480,26 @@ class SouthbrookKitchenConfigurator extends Component {
             // writer.
             undoCount: 0,
             redoCount: 0,
+            // Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) —
+            // persistent production-readiness status chip. `counts` is
+            // the server's OWN {blocking, warning} tally
+            // (controllers/main.py /validate) — the chip's label/tone
+            // (`_validationChip()`) derives from THIS, never from a
+            // client-side recount of `issues`, so the two can never
+            // disagree. `issues` already carries the server's dedupe +
+            // this client's defensive second pass (dedupeIssues) and
+            // each entry's `layout_keys` for click-to-select. Empty/
+            // `ready: true` until the first successful fetch — a brand
+            // new, never-saved session has nothing to validate yet
+            // (the chip itself is hidden pre-save; see the template's
+            // `t-if="state.designId"` gate).
+            validation: {
+                loading:   false,
+                issues:    [],
+                counts:    { blocking: 0, warning: 0 },
+                ready:     true,
+                panelOpen: false,
+            },
         });
         // Auto-save debounce timer (not reactive; managed imperatively).
         this._autoSaveTimer = null;
@@ -1164,6 +1192,12 @@ class SouthbrookKitchenConfigurator extends Component {
                 return;
             }
             this.state.screen = "workspace";
+            // Task 19 — the design resolved (readable, whether or not
+            // it carries any lines yet — an empty design still has its
+            // own EMPTY_DESIGN issue to surface). Refresh the status
+            // chip now rather than waiting for the rep's first edit;
+            // fire-and-forget, same as `_loadRecentDesigns()` above.
+            this._refreshValidation();
             // PR2.5a (Gap 1) — backfill room dims / design name from the
             // server's additive echo (controllers/main.py
             // load_design_lines) when `params` didn't already supply
@@ -1540,6 +1574,11 @@ class SouthbrookKitchenConfigurator extends Component {
                 this.state.room = { ...this.state.room, ...res.room };
             }
             this._recomputeLayoutFromItems();
+            // Task 19 — brief: status chip "refreshed after save/
+            // arrange". Arranging can add/drop corner-derived lines and
+            // change wall-run coordination, so the readiness picture
+            // may have genuinely changed. Fire-and-forget.
+            this._refreshValidation();
             return true;
         } catch (e) {
             console.warn(
@@ -1769,6 +1808,79 @@ class SouthbrookKitchenConfigurator extends Component {
         // selection must not bleed onto a newly-selected cabinet's Width
         // field.
         this.state.selectedWidthError = "";
+    }
+
+    // ─── Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) ──────────────
+    // Persistent production-readiness status chip. `/validate` is only
+    // meaningful once the design is actually persisted (`_check_
+    // production_ready` runs against the DB record); a brand-new,
+    // never-saved session has nothing to fetch, and the topbar chip
+    // itself is hidden until `state.designId` exists (see the
+    // template). Fire-and-forget from every call site below (hydrate/
+    // save/auto-save/arrange) — same pattern as `_loadRecentDesigns()`
+    // in onWillStart: the chip updating a beat after the action that
+    // triggered it is fine, gating anything on it is not.
+    async _refreshValidation() {
+        if (!this.state.designId) return;
+        this.state.validation.loading = true;
+        try {
+            const resp = await rpc("/southbrook_kitchen/configurator/validate", {
+                design_id: this.state.designId,
+            });
+            if (!resp || resp.error_code) {
+                // A design that stopped existing/being readable mid-
+                // session (e.g. deleted from another tab) — the
+                // hydrate/save paths already own surfacing THAT failure
+                // mode; the chip just quietly stops updating rather
+                // than opening a second error channel.
+                return;
+            }
+            this.state.validation.issues = dedupeIssues(resp.issues || []);
+            this.state.validation.counts = resp.counts
+                || { blocking: 0, warning: 0 };
+            this.state.validation.ready = !!resp.ready;
+        } catch (e) {
+            console.warn(
+                "[SouthbrookKitchenConfigurator] validate failed:", e);
+        } finally {
+            this.state.validation.loading = false;
+        }
+    }
+
+    // Pure chip-state derivation, delegated straight to the reducer
+    // (brief: "chip state derivation (pure function)") — this wrapper
+    // only supplies the live counts from state.
+    _validationChip() {
+        return deriveChipState(this.state.validation.counts);
+    }
+
+    // Panel content, grouped by severity (brief: "panel grouped by
+    // severity") — blocking first.
+    _groupedValidationIssues() {
+        return groupBySeverity(this.state.validation.issues);
+    }
+
+    _toggleValidationPanel() {
+        this.state.validation.panelOpen = !this.state.validation.panelOpen;
+    }
+
+    // Click-to-select (brief AC: "click selects the offending cabinet").
+    // Reuses the EXACT selection mechanism Task 22 already built
+    // (state.selected + <KitchenCanvas>'s own reveal of it) via
+    // `_selectCabinet` — no second selection path. An issue whose
+    // line(s) aren't in `state.items` (deleted since the check ran, or
+    // a manual/backend-origin line the 3D canvas never rendered) is a
+    // silent no-op: the template only renders this as a clickable
+    // button when `layout_keys.length`, so reaching here with nothing
+    // matching is the stale-data edge case, not the common path.
+    _selectValidationIssue(issue) {
+        const keys = (issue && issue.layout_keys) || [];
+        if (!keys.length) return;
+        const item = (this.state.items || []).find(
+            (it) => keys.includes(it.layout_key));
+        if (!item) return;
+        this._selectCabinet(item);
+        this.state.validation.panelOpen = false;
     }
 
     // F14 — inventory row click is catalog BROWSING, not layout
@@ -3369,6 +3481,9 @@ class SouthbrookKitchenConfigurator extends Component {
             // C2 — apply any corner-resolution relay + surface a
             // layout_warning, if the server sent either.
             this._applyRelaidResult(result);
+            // Task 19 — brief: status chip "refreshed after save/
+            // arrange". Fire-and-forget, same as every other call site.
+            this._refreshValidation();
             // Task #48 — quiet, non-sticky toast on the happy path.
             // Previous format ("Saved: ${name}") leaked implementation
             // detail into the message; the rep already sees the design
@@ -3578,6 +3693,9 @@ class SouthbrookKitchenConfigurator extends Component {
             // _queueAutoSave() -> here, so this path must react to a
             // corner-resolution relay too.
             this._applyRelaidResult(result);
+            // Task 19 — brief: status chip "refreshed after save/
+            // arrange" — auto-save is a save. Fire-and-forget.
+            this._refreshValidation();
         } catch (e) {
             // Silent on auto-save: manual save will surface errors. Log
             // for diagnostics only.
@@ -3943,6 +4061,89 @@ SouthbrookKitchenConfigurator.template = xml`
               t-on-click="_openDesigns">
         Kitchen Designs
       </button>
+      <!-- Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) —
+           persistent production-readiness status chip. Same toolbar-
+           button lineage as the panel toggles (Task 34) and undo/redo
+           (Task 35) above: an aria-expanded toggle button opening a
+           dropdown panel, the same button-triggered-popover pattern
+           the customer picker (Task #48) already established. Hidden
+           entirely until the design is actually persisted
+           (state.designId) — nothing to validate before the first
+           save; _refreshValidation() itself no-ops for the same
+           reason (see that method's own guard).
+           AC: "a blocking issue is visible without leaving the
+           configurator" — the chip's tone/label reflect the latest
+           save/auto-save/arrange without navigating off this screen. -->
+      <div t-if="state.designId" class="o_sbk_validation">
+        <button type="button"
+                t-att-class="'o_sbk_btn o_sbk_validation_chip o_sbk_vc_' + _validationChip().tone"
+                aria-haspopup="true"
+                t-att-aria-expanded="state.validation.panelOpen ? 'true' : 'false'"
+                t-att-aria-label="'Production check: ' + _validationChip().label + (state.validation.loading ? ' (checking)' : '')"
+                t-att-title="'Production check: ' + _validationChip().label"
+                t-on-click="_toggleValidationPanel">
+          <span class="o_sbk_validation_dot" aria-hidden="true"/>
+          <span t-esc="_validationChip().label"/>
+        </button>
+        <div t-if="state.validation.panelOpen" class="o_sbk_validation_panel"
+             role="dialog" aria-label="Production check">
+          <div class="o_sbk_validation_panel_head">
+            <span class="o_sbk_validation_panel_title">Production check</span>
+            <button type="button" class="o_sbk_validation_close"
+                    aria-label="Close production check panel"
+                    t-on-click="_toggleValidationPanel">×</button>
+          </div>
+          <div t-if="!state.validation.issues.length" class="o_sbk_customer_hint">
+            No blocking issues. Ready to quote.
+          </div>
+          <t t-else="">
+            <!-- Panel grouped by severity, blocking first (brief). -->
+            <div t-if="_groupedValidationIssues().blocking.length" class="o_sbk_validation_group">
+              <div class="o_sbk_validation_group_title">Blocking</div>
+              <ul class="o_sbk_validation_list">
+                <li t-foreach="_groupedValidationIssues().blocking" t-as="issue"
+                    t-key="issue.code + ':' + (issue.layout_keys || []).join(',')"
+                    class="o_sbk_validation_issue">
+                  <!-- Click selects+reveals the offending cabinet (AC) —
+                       reuses _selectCabinet/state.selected (Task 22),
+                       never a second selection path. Only rendered as a
+                       button when the issue actually names a cabinet
+                       still on the canvas; otherwise plain text. -->
+                  <button t-if="(issue.layout_keys || []).length" type="button"
+                          class="o_sbk_validation_issue_btn"
+                          t-on-click="() => this._selectValidationIssue(issue)">
+                    <t t-esc="issue.message"/>
+                  </button>
+                  <span t-else="" class="o_sbk_validation_issue_text" t-esc="issue.message"/>
+                  <!-- The one wired fix action (Task 18's existing
+                       walk-in flow); every other conceivable fix stays
+                       unimplemented per the brief ("others...inert"). -->
+                  <button t-if="issue.code === 'MISSING_CUSTOMER'" type="button"
+                          class="o_sbk_btn o_sbk_btn_ghost o_sbk_validation_fix"
+                          t-on-click="_useWalkInCustomer">
+                    Assign walk-in customer
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <div t-if="_groupedValidationIssues().warning.length" class="o_sbk_validation_group">
+              <div class="o_sbk_validation_group_title">Warnings</div>
+              <ul class="o_sbk_validation_list">
+                <li t-foreach="_groupedValidationIssues().warning" t-as="issue"
+                    t-key="issue.code + ':' + (issue.layout_keys || []).join(',')"
+                    class="o_sbk_validation_issue">
+                  <button t-if="(issue.layout_keys || []).length" type="button"
+                          class="o_sbk_validation_issue_btn"
+                          t-on-click="() => this._selectValidationIssue(issue)">
+                    <t t-esc="issue.message"/>
+                  </button>
+                  <span t-else="" class="o_sbk_validation_issue_text" t-esc="issue.message"/>
+                </li>
+              </ul>
+            </div>
+          </t>
+        </div>
+      </div>
       <!-- D5 — Background auto-save status pill. Quiet by default;
            pops "Saving..." during a debounced save and a green
            checkmark for ~3s after success. -->

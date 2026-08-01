@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import re
 import time
 
 from odoo import api, fields, models
@@ -125,6 +126,15 @@ def _line_ref(*items):
     for item in items:
         _collect(item)
     return "".join(" (line #%d)" % i for i in ids)
+
+
+# Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) — the ONE
+# parse site for the " (line #<id>)" refs `_line_ref` (above) emits.
+# Paired with that single emit site so the two can never drift apart:
+# `_normalize_production_issues` (SouthbrookKitchenDesign, below) uses
+# this to turn each issue's free-text `message` into a real, structured
+# `line_ids` list — never a second, independent id-collection scheme.
+_LINE_REF_PARSE_RE = re.compile(r"\(line #(\d+)\)")
 
 
 # ── Task 11 (corner-remediation 2026-07-30, SBK-024) ──────────────────────
@@ -3296,11 +3306,63 @@ class SouthbrookKitchenDesign(models.Model):
 
         return issues
 
+    # ── Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) ────────────
+    # Turns `_check_production_ready()`'s raw issue list (dicts with just
+    # code/severity/message) into the ONE structured shape both this
+    # record form's own `action_validate_production` button AND the 3D
+    # configurator's persistent status chip (controllers/main.py's
+    # `/validate` JSON endpoint) render from — the AC's "record form and
+    # configurator render the same data" requirement. A thin
+    # normalization pass, not a rewrite of the validator itself:
+    # `_check_production_ready` is untouched, every existing test that
+    # calls it directly keeps seeing the exact same raw list.
+    #
+    #   - `line_ids`: the design-line ids `_line_ref` (Task 1) already
+    #     embeds in every message as " (line #NN)", parsed back out via
+    #     `_LINE_REF_PARSE_RE` (the one parse site paired with that one
+    #     emit site) into a real int list — not a second, independently
+    #     derived id-collection scheme.
+    #   - `code`/`severity`/`message` pass through UNCHANGED. Task 15
+    #     already made these copy-review-clean (no raw coordinates/enum
+    #     literals); this method only adds structure on top, never
+    #     rewrites copy.
+    #   - Dedupe by (code, sorted line_ids) — AC: "no duplicate
+    #     messages". An identical rule firing on the exact same line(s)
+    #     twice collapses to one entry; the SAME code on a DIFFERENT
+    #     line (or a different pair of lines — e.g. two independent
+    #     CABINET_COLLISION pairs) is a distinct, real issue and stays.
+    def _normalize_production_issues(self, issues):
+        self.ensure_one()
+        seen = set()
+        out = []
+        for issue in issues or []:
+            message = issue.get("message") or ""
+            line_ids = sorted(
+                {int(i) for i in _LINE_REF_PARSE_RE.findall(message)})
+            dedupe_key = (issue.get("code"), tuple(line_ids))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            out.append({
+                "code":     issue.get("code"),
+                "severity": issue.get("severity"),
+                "message":  message,
+                "line_ids": line_ids,
+            })
+        return out
+
     def action_validate_production(self):
         """Form-button validator. Surfaces all issues in a notification
-        toast — sticky if any blocking, transient otherwise."""
+        toast — sticky if any blocking, transient otherwise.
+
+        Task 19 — renders from `_normalize_production_issues`, the SAME
+        structure the 3D configurator's `/validate` endpoint returns, so
+        this button and the persistent status chip can never disagree
+        about what's wrong with a design.
+        """
         self.ensure_one()
-        issues = self._check_production_ready()
+        issues = self._normalize_production_issues(
+            self._check_production_ready())
         if not issues:
             return {
                 "type": "ir.actions.client",

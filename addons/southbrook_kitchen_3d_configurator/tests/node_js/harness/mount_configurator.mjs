@@ -56,6 +56,16 @@ const DEFAULT_ROUTES = {
     // test that doesn't care about it isn't forced to stub it, mirroring
     // the other three DEFAULT_ROUTES entries above.
     "/southbrook_kitchen/configurator/recent_designs": () => ([]),
+    // Task 19 (corner-remediation 2026-07-31) — the persistent status
+    // chip's fire-and-forget fetch, fired after every successful
+    // hydrate/save/auto-save/arrange on a design_id boot (see kitchen_
+    // configurator.js's _refreshValidation). A benign "all clear"
+    // default so the many existing design_id-boot tests that don't
+    // care about this endpoint aren't forced to stub it — mirroring
+    // /recent_designs just above.
+    "/southbrook_kitchen/configurator/validate": () => ({
+        issues: [], counts: { blocking: 0, warning: 0 }, ready: true,
+    }),
 };
 
 let configuratorModuleLoaded = false;
