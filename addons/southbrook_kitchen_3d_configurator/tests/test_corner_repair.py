@@ -265,7 +265,11 @@ class TestCornerSkuRepair(TransactionCase):
         # Task-32 history predates and is not itself about; the new
         # check correctly surfaces it, but it is a separate, known gap
         # (options report, task-15-report.md) rather than a regression
-        # in the flip logic this test pins.
+        # in the flip logic this test pins. Orchestrator ruling
+        # (2026-07-31, review round 1) narrowed the check to only fire
+        # when a wall run EXISTS but falls short — this fixture's wall
+        # cabinets are real (non-zero) and genuinely fall short of the
+        # base run, so this exclusion is still required post-ruling.
         geometry_blocks = [i for i in blocking
                            if i["code"] not in ("MISSING_CUSTOMER",
                                                  "MISSING_BOM",

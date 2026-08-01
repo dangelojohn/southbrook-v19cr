@@ -3043,12 +3043,33 @@ class SouthbrookKitchenDesign(models.Model):
 
         # 14) NEW — Task 15 (corner-remediation 2026-07-30, SBK-027) — wall-
         #     run / base-run coordination. Per wall, a wall-cabinet run
-        #     that doesn't reach as far as the base run underneath it
-        #     leaves base cabinets with no upper storage above them —
-        #     BLOCK. A wall run that reaches far enough but whose internal
-        #     seams don't land where the base run's seams land underneath
-        #     it is a cosmetic mismatch (the door reveals won't read as
-        #     one continuous line) — WARN.
+        #     that EXISTS but doesn't reach as far as the base run
+        #     underneath it leaves base cabinets with no upper storage
+        #     above part of the run — BLOCK. A wall run that reaches far
+        #     enough but whose internal seams don't land where the base
+        #     run's seams land underneath it is a cosmetic mismatch (the
+        #     door reveals won't read as one continuous line) — WARN.
+        #
+        #     Orchestrator ruling (2026-07-31, review round 1) — a wall
+        #     with a base run and ZERO wall cabinets at all is NOT an
+        #     issue of any severity, not even WARN. A first cut of this
+        #     check treated "no wall cabinets planned for this wall" the
+        #     same as "wall cabinets exist but fall short", which BLOCKed
+        #     completely normal, deliberately upper-cabinet-free kitchens
+        #     (window walls, range-hood walls, open shelving) — this
+        #     validator runs against live saved customer designs, and a
+        #     blocking rule must reflect real invalidity, not merely "this
+        #     wall happens to have no uppers". The brief's actual concern
+        #     is COORDINATION between two runs that both exist, not
+        #     mandating that every base run has upper coverage — that
+        #     enforcement was never asked for and would light up
+        #     production data with noise. Confirmed live: the U-10X8X10
+        #     and L-10X8 shipped templates both carry a wall run that
+        #     EXISTS but falls short (SINK/W3, appliance-adjacent legs)
+        #     — those still correctly BLOCK/WARN under this narrower
+        #     rule; fixtures elsewhere in this suite that modeled a
+        #     base-only wall (no wall cabinets at all, never meant to
+        #     model wall coverage) now correctly produce nothing.
         #
         #     Corner cells (cabinet_type == "corner") and appliance gaps
         #     (cabinet_type == "appliance") are EXCLUDED from both runs,
@@ -3117,6 +3138,13 @@ class SouthbrookKitchenDesign(models.Model):
             wallcabs14 = self.cabinet_line_ids.filtered(
                 lambda l, w=wall14: l.cabinet_type == "wall"
                 and l.zone == "wall" and (l.wall or "back") == w)
+            if not wallcabs14:
+                # Orchestrator ruling — a wall with a base run and NO
+                # wall cabinets at all is a deliberate, valid choice
+                # (window wall, range hood, open shelving), not a
+                # coordination defect between two runs. Nothing to
+                # compare against; no issue of any severity.
+                continue
 
             base_spans14 = sorted(
                 (_run14_span_in(l) + (l,) for l in base14),

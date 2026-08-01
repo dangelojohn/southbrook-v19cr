@@ -60,25 +60,6 @@ class TestGeoB3LineDims(TransactionCase):
             "southbrook_depth_in":     24.0,
         })
 
-        # Task 15 (SBK-027) — a companion wall cabinet template so the
-        # drag-resize test's base line doesn't trip the new
-        # WALL_RUN_SHORTER_THAN_BASE gate at action_create_quotation's
-        # D12 check; this test's own concern is dimension propagation,
-        # not wall/base coordination.
-        cls.tmpl_wall = cls.Template.create({
-            "name":       "Geo-B3 Wall",
-            "type":       "consu",
-            "sale_ok":    True,
-            "list_price": 60.0,
-        })
-        cls.tmpl_wall.write({
-            "southbrook_is_cabinet":   True,
-            "southbrook_cabinet_type": "wall",
-            "southbrook_width_in":     24.0,
-            "southbrook_height_in":    30.0,
-            "southbrook_depth_in":     12.0,
-        })
-
     def _make_design(self):
         return self.Design.create({
             "name":           "Geo-B3 Test Design",
@@ -114,23 +95,6 @@ class TestGeoB3LineDims(TransactionCase):
             "depth_in":       24.0,
             "x_position_in":  0,
             "y_position_in":  0,
-            "z_position_in":  0,
-        })
-        # Task 15 (SBK-027) — companion wall line, see setUpClass's
-        # comment on tmpl_wall: covers the base run's real (resized)
-        # length so the new WALL_RUN_SHORTER_THAN_BASE gate doesn't
-        # block this test's actual concern (dimension propagation).
-        self.Line.create({
-            "design_id":      design.id,
-            "product_id":     self.tmpl_wall.product_variant_id.id,
-            "quantity":       1,
-            "price_unit":     self.tmpl_wall.list_price,
-            "cabinet_type":   "wall",
-            "width_in":       overridden_width_in,
-            "height_in":      30.0,
-            "depth_in":       12.0,
-            "x_position_in":  0,
-            "y_position_in":  54,
             "z_position_in":  0,
         })
         self.assertNotEqual(

@@ -4,17 +4,27 @@ coordination.
 
 Part (a): `_check_production_ready` gained two new checks (kitchen_design.py,
 "#14"):
-  - WALL_RUN_SHORTER_THAN_BASE (blocking) — the merged, anchor-convention
-    covered length of a wall's WALL cabinets (cabinet_type='wall',
-    zone='wall') is less than that of its BASE cabinets (cabinet_type=
-    'base', zone='base_run'). Corner cells (cabinet_type='corner') and
-    appliance gaps (cabinet_type='appliance') are excluded from BOTH sides
-    of the comparison by construction (neither cabinet_type is 'base' or
-    'wall'), per the brief verbatim.
+  - WALL_RUN_SHORTER_THAN_BASE (blocking) — a wall carrying at least one
+    WALL cabinet (cabinet_type='wall', zone='wall') whose merged, anchor-
+    convention covered length is less than that of its BASE cabinets
+    (cabinet_type='base', zone='base_run'). Corner cells (cabinet_type=
+    'corner') and appliance gaps (cabinet_type='appliance') are excluded
+    from BOTH sides of the comparison by construction (neither cabinet_
+    type is 'base' or 'wall'), per the brief verbatim.
   - WALL_BASE_JOINT_MISALIGNED (warning) — once the wall run is long
-    enough, an interior seam (the touching boundary between two adjacent
-    same-run cabinets) in the base run that has no matching seam in the
-    wall run within 0.5" is flagged.
+    enough, a WALL-run interior seam (the touching boundary between two
+    adjacent same-run cabinets) that has no matching BASE-run seam within
+    0.5" is flagged.
+
+Orchestrator ruling (2026-07-31, review round 1) — a wall with a base run
+and ZERO wall cabinets at all produces NO issue of any severity. A first
+cut BLOCKed on "wall coverage doesn't reach the base run" even when there
+was no wall run at all to begin with, which fires on completely normal,
+deliberately upper-cabinet-free walls (windows, range hoods, open
+shelving) — this validator runs against live saved customer designs, and
+a blocking rule must reflect real invalidity, not "this wall happens to
+have no uppers". The brief's actual concern is coordinating two runs that
+BOTH exist. See `test_wall_with_zero_wall_cabinets_is_not_flagged_at_all`.
 
 Reproduction (documented, not a shipped test — see task-15-report.md):
 before this fix, none of `_check_production_ready`'s existing checks read
@@ -144,6 +154,23 @@ class TestWallRunBaseRunCoordination(TransactionCase):
                     layout_key="t15-onlywall")
         codes = [i["code"] for i in design._check_production_ready()]
         self.assertNotIn("WALL_RUN_SHORTER_THAN_BASE", codes, codes)
+
+    def test_wall_with_zero_wall_cabinets_is_not_flagged_at_all(self):
+        """Orchestrator ruling (2026-07-31, review round 1): a base run
+        with NO wall cabinets at all on that wall is a deliberate,
+        valid choice (window wall, range hood, open shelving) — not a
+        coordination defect between two runs, since there is no second
+        run to coordinate against. Must produce NEITHER
+        WALL_RUN_SHORTER_THAN_BASE NOR WALL_BASE_JOINT_MISALIGNED,
+        regardless of how long or how many-cabinet the base run is."""
+        design = self._design()
+        self._line(design, self.base_prod, "base", 24.0, 0.0,
+                    layout_key="t15-zerowall-base-a")
+        self._line(design, self.base_prod, "base", 24.0, 24.0,
+                    layout_key="t15-zerowall-base-b")
+        codes = [i["code"] for i in design._check_production_ready()]
+        self.assertNotIn("WALL_RUN_SHORTER_THAN_BASE", codes, codes)
+        self.assertNotIn("WALL_BASE_JOINT_MISALIGNED", codes, codes)
 
     # ── corner cells / appliance gaps excluded from the comparison ──────
 

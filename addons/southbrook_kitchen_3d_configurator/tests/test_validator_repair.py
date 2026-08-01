@@ -189,16 +189,7 @@ class TestCabinetCollisionCheck(TransactionCase):
             "layout_key": "vr-overlap-b",
         })
         issues = design._check_production_ready()
-        # Task 15 (SBK-027) — this fixture's left wall carries no wall
-        # cabinets at all (it exists purely to exercise the check #3/#7
-        # collision dedup above), which independently trips the newer
-        # WALL_RUN_SHORTER_THAN_BASE check. Excluded here, same
-        # established convention as test_u_shape_template.py's
-        # geometry_blocks filter — this test's own "exactly one
-        # targeted BLOCK" claim is about the COLLISION dedup, not
-        # wall/base coordination.
-        blocking = [i for i in issues if i["severity"] == "blocking"
-                    and i["code"] != "WALL_RUN_SHORTER_THAN_BASE"]
+        blocking = [i for i in issues if i["severity"] == "blocking"]
         self.assertEqual(len(blocking), 1, issues)
         self.assertEqual(blocking[0]["code"], "FOOTPRINT_COLLISION", issues)
         codes = [i["code"] for i in issues]
