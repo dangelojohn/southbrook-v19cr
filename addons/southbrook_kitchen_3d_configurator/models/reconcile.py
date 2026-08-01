@@ -248,7 +248,9 @@ class SouthbrookDesignReconcile(models.AbstractModel):
             # already-confirmed sale order is re-arranged — a later
             # price_extra edit anywhere in the catalog must not silently
             # rewrite that order's corner line. Gate the recompute to
-            # draft orders only.
+            # draft orders only. (This recompute-from-variant is still
+            # corner-specific — Task 33 generalizes the WRITE-side
+            # freeze below to every cabinet_type, not this recompute.)
             #
             # "Coherent unit" is the PER-LINE MIRROR WRITE of price_unit
             # on an ALREADY-mirrored corner line, not just the recompute
@@ -312,13 +314,29 @@ class SouthbrookDesignReconcile(models.AbstractModel):
                 dline.sudo().sale_order_line_id = sol.id
                 stats["created_lines"] += 1
             else:
-                # T5 review fix — an ALREADY-mirrored corner line on a
-                # non-draft order: capture the price BEFORE the write so
-                # it can be re-pinned after (see the long comment above
-                # `draft_order` — omitting "price_unit" from write_vals
-                # is NOT sufficient on its own).
-                pin_price_unit = (dline.cabinet_type == "corner"
-                                   and not draft_order)
+                # Task 33 (2026-07-31, T5 follow-up) — the freeze below
+                # used to be cabinet_type == "corner"-scoped, but the
+                # write() re-trigger hazard it guards against is generic:
+                # EVERY cabinet_type goes through this same
+                # sol.sudo().write(line_vals) call, and line_vals always
+                # carries "price_unit" (see `price_unit` above — only
+                # corner+draft lines get a recomputed value; every other
+                # line carries dline.price_unit verbatim, but it's still
+                # IN the vals dict). sale.order.line.price_unit is
+                # `compute='_compute_price_unit', store=True,
+                # readonly=False` in stock Odoo — writing ANY of its
+                # OTHER dependencies (product_id, product_uom_qty, ...,
+                # all of which line_vals legitimately still carries for
+                # geometry/product sync) re-triggers that compute and
+                # silently overwrites price_unit from the product's
+                # pricelist price regardless of which keys the write()
+                # call used or what value line_vals put there — corner
+                # or not. An ALREADY-mirrored line (any cabinet_type) on
+                # a non-draft order must capture the price BEFORE the
+                # write so it can be re-pinned after (omitting
+                # "price_unit" from the vals dict is NOT sufficient on
+                # its own — see above).
+                pin_price_unit = not draft_order
                 frozen_price_unit = sol.price_unit if pin_price_unit else None
                 sol.sudo().write(line_vals)
                 if pin_price_unit:
