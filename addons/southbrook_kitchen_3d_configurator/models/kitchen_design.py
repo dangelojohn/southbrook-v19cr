@@ -250,6 +250,21 @@ def placed_width_in(product):
 # path, untouched by this fix) keeps passing.
 _REMAINDER_WALL_TOL_IN = 1.0
 
+# Task 15 (corner-remediation 2026-07-30, SBK-027) — wall-run / base-run
+# coordination check #14 in `_check_production_ready`, below. Hoisted to
+# module level per the `_REMAINDER_WALL_TOL_IN` precedent above (a single,
+# named source of truth for a tolerance a method-local reader would
+# otherwise have to hunt for inline).
+_WALL_RUN_BLOCK_TOL_IN = 0.05      # float/rounding slack only — this is
+                                    # NOT the brief's misalignment
+                                    # threshold (that's the constant below)
+_WALL_RUN_TOUCH_TOL_IN = 0.5       # "physically adjacent enough to form a
+                                    # seam" — same +/-0.5in the ORPHAN_
+                                    # FILLER check already uses for "next
+                                    # to a cabinet"
+_WALL_RUN_JOINT_WARN_TOL_IN = 0.5  # the brief's own seam-misalignment
+                                    # threshold
+
 
 def _merge_intervals_covered_in(intervals, eps=0.05):
     """Total covered length (inches) of a list of (lo, hi) intervals,
@@ -3045,10 +3060,10 @@ class SouthbrookKitchenDesign(models.Model):
         #     run / base-run coordination. Per wall, a wall-cabinet run
         #     that EXISTS but doesn't reach as far as the base run
         #     underneath it leaves base cabinets with no upper storage
-        #     above part of the run — BLOCK. A wall run that reaches far
+        #     above part of the run — WARN. A wall run that reaches far
         #     enough but whose internal seams don't land where the base
         #     run's seams land underneath it is a cosmetic mismatch (the
-        #     door reveals won't read as one continuous line) — WARN.
+        #     door reveals won't read as one continuous line) — also WARN.
         #
         #     Orchestrator ruling (2026-07-31, review round 1) — a wall
         #     with a base run and ZERO wall cabinets at all is NOT an
@@ -3066,10 +3081,28 @@ class SouthbrookKitchenDesign(models.Model):
         #     production data with noise. Confirmed live: the U-10X8X10
         #     and L-10X8 shipped templates both carry a wall run that
         #     EXISTS but falls short (SINK/W3, appliance-adjacent legs)
-        #     — those still correctly BLOCK/WARN under this narrower
-        #     rule; fixtures elsewhere in this suite that modeled a
-        #     base-only wall (no wall cabinets at all, never meant to
-        #     model wall coverage) now correctly produce nothing.
+        #     — those still correctly fire under this narrower rule;
+        #     fixtures elsewhere in this suite that modeled a base-only
+        #     wall (no wall cabinets at all, never meant to model wall
+        #     coverage) now correctly produce nothing.
+        #
+        #     Orchestrator ruling (2026-07-31, review round 2) —
+        #     WALL_RUN_SHORTER_THAN_BASE is downgraded from BLOCKING to
+        #     WARNING. Both shipped templates (U-10X8X10's 24in upper
+        #     over the 30in SINK base; L-10X8's appliance-adjacent legs)
+        #     carry this exact shape DELIBERATELY — a shorter or absent
+        #     upper run over a sink or appliance is a normal, buildable
+        #     kitchen, not a defect a customer's quote should be blocked
+        #     on. At blocking severity this (a) broke the documented
+        #     deploy smoke test's "only a missing-customer block on a
+        #     fresh shipped template" assertion and (b) made
+        #     action_create_quotation raise UserError for a fresh,
+        #     perfectly ordinary shipped-template instantiation — a false
+        #     invalid state on live production data. The audit brief's
+        #     literal "BLOCK" wording is overridden here on product-
+        #     reality grounds (flagged for John's review — see the task
+        #     report); the rule's `code` and `message` are UNCHANGED so a
+        #     future severity flip back to blocking is a one-word change.
         #
         #     Corner cells (cabinet_type == "corner") and appliance gaps
         #     (cabinet_type == "appliance") are EXCLUDED from both runs,
@@ -3090,17 +3123,11 @@ class SouthbrookKitchenDesign(models.Model):
         #     COORDINATE_CONTRACT.md) — never re-derived — and the same
         #     merge-intervals helper `remainder_in` already uses above
         #     (`_merge_intervals_covered_in`), so "covered length" can
-        #     never disagree between the two features.
+        #     never disagree between the two features. Tolerances are
+        #     module-level constants (`_WALL_RUN_BLOCK_TOL_IN` /
+        #     `_WALL_RUN_TOUCH_TOL_IN` / `_WALL_RUN_JOINT_WARN_TOL_IN`,
+        #     defined near `_REMAINDER_WALL_TOL_IN` above).
         _RUN14_MM = _MM_PER_IN
-        _RUN14_BLOCK_TOL_IN = 0.05     # float/rounding slack only — the
-                                        # brief's threshold is for the
-                                        # WARN check below, not this one
-        _RUN14_TOUCH_TOL_IN = 0.5      # "physically adjacent enough to
-                                        # form a seam" — same ±0.5" the
-                                        # ORPHAN_FILLER check above (#9)
-                                        # already uses for "next to"
-        _RUN14_JOINT_WARN_TOL_IN = 0.5  # the brief's own misalignment
-                                         # threshold
 
         def _run14_span_in(line):
             cab = {"width_mm": (line.width_in or 0) * _RUN14_MM,
@@ -3117,7 +3144,7 @@ class SouthbrookKitchenDesign(models.Model):
         def _run14_interior_joints(spans):
             """Boundary positions between two spans (sorted, each a
             (lo, hi, line) triple) that actually TOUCH within
-            `_RUN14_TOUCH_TOL_IN` — i.e. a real seam, not the far edge of
+            `_WALL_RUN_TOUCH_TOL_IN` — i.e. a real seam, not the far edge of
             a gap where an excluded corner/appliance/tall cabinet used to
             sit. One entry per seam: (position, line_before, line_after).
             """
@@ -3125,7 +3152,7 @@ class SouthbrookKitchenDesign(models.Model):
             for i in range(len(spans) - 1):
                 _lo0, hi0, l0 = spans[i]
                 lo1, _hi1, l1 = spans[i + 1]
-                if abs(lo1 - hi0) <= _RUN14_TOUCH_TOL_IN:
+                if abs(lo1 - hi0) <= _WALL_RUN_TOUCH_TOL_IN:
                     joints.append(((hi0 + lo1) / 2.0, l0, l1))
             return joints
 
@@ -3158,10 +3185,14 @@ class SouthbrookKitchenDesign(models.Model):
             wall_covered14 = _merge_intervals_covered_in(
                 [(lo, hi) for lo, hi, _l in wall_spans14])
 
-            if base_covered14 - wall_covered14 > _RUN14_BLOCK_TOL_IN:
+            if base_covered14 - wall_covered14 > _WALL_RUN_BLOCK_TOL_IN:
                 issues.append({
                     "code":     "WALL_RUN_SHORTER_THAN_BASE",
-                    "severity": "blocking",
+                    # Orchestrator ruling, review round 2 — WARNING, not
+                    # blocking (see the check's header comment above).
+                    # Code/message stay unchanged so a future severity
+                    # flip is a one-word change.
+                    "severity": "warning",
                     "message":  (
                         "The base cabinets on the %s wall run %.1f\" "
                         "long, but the wall cabinets above only run "
@@ -3199,7 +3230,7 @@ class SouthbrookKitchenDesign(models.Model):
             for pos, wl0, wl1 in wall_joints14:
                 nearest = min(base_joints14, key=lambda j: abs(j[0] - pos))
                 delta = abs(nearest[0] - pos)
-                if delta > _RUN14_JOINT_WARN_TOL_IN:
+                if delta > _WALL_RUN_JOINT_WARN_TOL_IN:
                     mismatched14.append((nearest[1], nearest[2], wl0, wl1))
                     worst14 = max(worst14, delta)
             if mismatched14:
@@ -4016,6 +4047,7 @@ class SouthbrookKitchenDesign(models.Model):
             # back wall).
             self._create_line(wall_product, seq, x, 54.0, 0.0)
             seq += 10
+        wall_remainder = base_run_length - wall_n * wall_w
 
         # Filler panel for remainder
         if remainder >= 1.0:
@@ -4023,6 +4055,33 @@ class SouthbrookKitchenDesign(models.Model):
             if filler:
                 self._create_line(filler, seq, n * module_w, 0.0, 0.0, qty=1,
                                    override_width=remainder)
+                seq += 10
+
+        # Task 15 (corner-remediation 2026-07-30, SBK-027, review round 2
+        # IMPORTANT 2) — wall-side filler mirroring the base run's own
+        # mechanism directly above: when the wall product's width doesn't
+        # evenly divide the base run's length, cover the leftover tail
+        # with a filler strip at wall elevation, edge-aligned to the wall
+        # run's own end (x = wall_n * wall_w) — "fill the remaining
+        # length" applied to the wall side, exactly like the base side
+        # already does for its own remainder.
+        #
+        # This does NOT, by itself, silence WALL_RUN_SHORTER_THAN_BASE
+        # for that tail — a filler is cabinet_type=='filler', which (like
+        # every other check in this module) never counts as real
+        # cabinet_type=='wall' coverage. `_base_run_eligible_lines`
+        # documents the identical convention for the base side: filler/
+        # panel lines are excluded from occupied-run length on purpose,
+        # "they represent the leftover gap itself... not occupied run
+        # length." So a tail this filler physically covers can still
+        # legitimately WARN — informational, not silently invisible,
+        # per the brief's "never silently short."
+        if wall_remainder >= 1.0:
+            wall_filler = self._find_cabinet_product(
+                "filler", raise_if_missing=False)
+            if wall_filler:
+                self._create_line(wall_filler, seq, wall_n * wall_w, 54.0,
+                                   0.0, qty=1, override_width=wall_remainder)
 
         self.state = "configured"
 

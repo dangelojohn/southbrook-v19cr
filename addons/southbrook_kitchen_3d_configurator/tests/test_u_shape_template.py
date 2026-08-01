@@ -75,20 +75,9 @@ class TestUShapeTemplate(TransactionCase):
         # empty on a freshly instantiated + arranged shipped template.
         blocking = [i for i in design._check_production_ready()
                     if i["severity"] == "blocking"]
-        # Task 15 (SBK-027) — U-10X8X10's left leg is SINK (30") under
-        # W3 (24") — a real, pre-existing wall/base run-length gap (a
-        # sink commonly has no matching upper), independent of and not
-        # a regression from this pin's own corner-substitution concern.
-        # Surfaced deliberately by the new check; tracked in the
-        # options report (task-15-report.md), not fixed here.
-        # Orchestrator ruling (2026-07-31, review round 1) narrowed the
-        # check to only fire when a wall run EXISTS but falls short —
-        # W3 is a real (non-zero) wall cabinet that genuinely falls
-        # short of SINK's 30", so this exclusion is still required.
         geometry_blocks = [i for i in blocking
                            if i["code"] not in ("MISSING_CUSTOMER",
-                                                 "MISSING_BOM",
-                                                 "WALL_RUN_SHORTER_THAN_BASE")]
+                                                 "MISSING_BOM")]
         self.assertFalse(
             geometry_blocks,
             "a shipped template must instantiate with no geometry/hand/"
