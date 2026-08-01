@@ -4946,9 +4946,10 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
     )
     cabinet_count = fields.Integer(
         string="Number of Cabinets", default=0,
-        help="How many repeating cabinets to place. Starts at the "
-             "template's own default and never goes above what fits the "
-             "room at the chosen cabinet size.")
+        help="How many repeating cabinets to place. Defaults to the "
+             "maximum that fits the room at the chosen cabinet size "
+             "whenever you pick a shape — lower it to build a smaller "
+             "run. Never goes above what fits the room.")
     module_width_in = fields.Selection(
         [("18", '18"'), ("21", '21"'), ("24", '24"'), ("30", '30"')],
         string="Cabinet Size", default="24", required=True)
@@ -5021,7 +5022,23 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
         # Selection widgets can't grey options in a transient — clamping +
         # fit_summary IS the spec's "constrain or flag" (never grow room).
         for rec in self:
-            if rec.template_id and rec.cabinet_count and \
+            # Task 24 (SBK-038) — Number of Cabinets is AUTHORITATIVE: the
+            # created design's line count must match whatever this field
+            # shows. Selecting a NEW shape has to reset it to that shape's
+            # own Max rather than leaving in place a count that merely
+            # still FITS (which the downward-only clamp below would do —
+            # e.g. shape A's max is 3, user keeps 3, switches to shape B
+            # whose max is 6: 3 still fits under 6, so the clamp branch
+            # never fires and the field would silently under-report B's
+            # own default). `_origin` is the pre-edit value for a real
+            # onchange (Form/webclient); a plain already-saved record has
+            # `_origin is self`, so this branch never fires for direct
+            # method calls that re-invoke this onchange on an unchanged
+            # template_id just to exercise the clamp/seed paths below.
+            shape_changed = rec.template_id != rec._origin.template_id
+            if shape_changed and rec.template_id:
+                rec.cabinet_count = rec.count_max
+            elif rec.template_id and rec.cabinet_count and \
                     rec.count_max and rec.cabinet_count > rec.count_max:
                 rec.cabinet_count = rec.count_max
             # 2026-07-31 — the field only ever clamped DOWNWARD, so it

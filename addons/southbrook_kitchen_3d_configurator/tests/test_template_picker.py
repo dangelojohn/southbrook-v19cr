@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 """Templates T3 — the four-dropdown picker + thumbnails + compat."""
-from odoo.tests import TransactionCase, tagged
+from odoo.tests import Form, TransactionCase, tagged
 
 
 @tagged("post_install", "-at_install", "southbrook",
@@ -77,6 +77,90 @@ class TestTemplatePicker(TransactionCase):
         picker.cabinet_count = chosen
         picker._onchange_parametrics()
         self.assertEqual(picker.cabinet_count, chosen)
+
+    def test_shape_switch_resets_count_to_new_shape_max(self):
+        """Task 24 (SBK-038) — Number of Cabinets is authoritative:
+        picking a NEW shape must show THAT shape's own Max, never a
+        stale count that merely still fits under whatever shape was
+        selected before. Uses Form() (not a bare .create()/manual
+        onchange call) because the defect only shows up through the
+        real onchange machinery's `_origin` semantics — the other tests
+        in this file call `_onchange_parametrics()` directly on an
+        already-saved record, which never exercises a genuine
+        "value changed from A to B" transition.
+        """
+        Tpl = self.env["southbrook.kitchen.template"]
+        Slot = self.env["southbrook.kitchen.template.line"]
+        base = self.env.ref("southbrook_estimating.base_2dr")
+        sink = self.env.ref("southbrook_estimating.sink_base")
+        big = Tpl.create({
+            "name": "T24 Picker 14ft", "code": "T24-SW-14",
+            "layout_shape": "straight",
+            "default_room_width_in": 168.0, "default_room_depth_in": 96.0,
+            "default_room_height_in": 96.0, "default_module_width_in": 24.0,
+        })
+        Slot.create([
+            {"template_id": big.id, "slot_code": "SINK",
+             "cabinet_type": "base", "wall": "back", "run_seq": 10,
+             "product_id": sink.product_variant_id.id},
+            {"template_id": big.id, "slot_code": "B1",
+             "cabinet_type": "base", "wall": "back", "run_seq": 20,
+             "repeat_ok": True, "product_id": base.product_variant_id.id},
+        ])
+        small_max = self.tpl.parametric_fit(module_width_in=24.0)["n_max"]
+        big_max = big.parametric_fit(module_width_in=24.0)["n_max"]
+        self.assertNotEqual(
+            small_max, big_max,
+            "fixture templates must differ in capacity for this test "
+            "to mean anything")
+
+        with Form(self.env["kitchen.design.template.picker"]) as f:
+            f.template_id = self.tpl
+            self.assertEqual(f.cabinet_count, small_max)
+            f.template_id = big
+            self.assertEqual(
+                f.cabinet_count, big_max,
+                "selecting a new shape must reset the count to THAT "
+                "shape's own max, not leave the old shape's count in "
+                "place")
+
+    def test_cabinet_count_help_text_matches_actual_default_behavior(self):
+        """2026-07-31 — the field's help text still said "Starts at the
+        template's own default", describing the PRE-fix behavior (the
+        natural, non-max count `action_create` falls back to only when
+        the field is left at 0). Selecting a shape now seeds Number of
+        Cabinets to the template's MAX instead (see
+        test_count_seeds_to_max_when_unset) — a different, usually
+        larger, number. Stale copy describing behavior the code no
+        longer has."""
+        help_text = self.env["kitchen.design.template.picker"]._fields[
+            "cabinet_count"].help
+        self.assertNotIn(
+            "template's own default", help_text,
+            "help text still describes the pre-Task-24 default "
+            "behavior")
+        self.assertIn("maximum", help_text.lower())
+
+    def test_cabinet_size_flows_into_repeat_slot_width(self):
+        """Task 24 (SBK-038) — Cabinet Size must be honoured in the
+        widths of the generated (repeatable) module lines, not silently
+        pinned to the wizard's 24in default. The underlying mechanism
+        is already covered one layer down by
+        test_template_instantiate.py::test_module_width_parametric;
+        this closes the same gap at the picker itself, since the wizard
+        is a separate, independently-editable surface over the same
+        `action_instantiate` call.
+        """
+        picker = self.env["kitchen.design.template.picker"].create({
+            "template_id": self.tpl.id, "module_width_in": "30",
+            "range_width_in": "30", "cabinet_count": 2})
+        picker.action_create()
+        design = self.env["southbrook.kitchen.design"].search(
+            [], order="id desc", limit=1)
+        b1 = design.cabinet_line_ids.filtered(
+            lambda l: l.template_slot_code == "B1")
+        self.assertTrue(b1, "the repeat slot must have produced a line")
+        self.assertEqual(b1.width_in, 30.0)
 
     def test_empty_preset_creates_plain_draft(self):
         # legacy-compat: 'empty' = plain draft design, no template consulted
