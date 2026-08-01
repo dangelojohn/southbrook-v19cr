@@ -672,6 +672,19 @@ $sbk-amber:      #B45309;
     background: $sbk-accent-bg;
     border: 1px solid var(--sb-border);
     border-radius: var(--sb-radius);
+
+    // Task 34 (SBK-020) — this panel is a `_syncPanelFocus` target
+    // (tabindex="-1" in the markup, focused programmatically the
+    // instant it opens). Plain `:focus`, not `:focus-visible`, same
+    // rationale as the Task 22 canvas focus ring below
+    // (.o_sbk_canvas3d): a script-triggered `.focus()` call doesn't
+    // reliably match `:focus-visible` across browsers, and this ring
+    // is the one piece of visible evidence the panel actually moved
+    // keyboard focus.
+    &:focus {
+        outline: 2px solid $sbk-accent;
+        outline-offset: -2px;
+    }
 }
 
 .o_sbk_catalog_preview_thumb {
@@ -810,7 +823,12 @@ $sbk-amber:      #B45309;
 .o_sbk_chip_count {
     font-family: var(--sb-font-mono);
     font-variant-numeric: tabular-nums;
-    opacity: 0.75;
+    // Task 34 (SBK-020) — measured contrast fix. The old
+    // `opacity: 0.75` failed 4.5:1 in BOTH chip states: the inactive
+    // count ($sbk-mid on white) composited to ~4.30:1, and the active
+    // count ($sbk-accent on $sbk-accent-bg) to ~3.17:1. Full opacity
+    // restores each chip's own already-compliant base pair (8.34:1 /
+    // 4.86:1 — see task-34-report.md) with no separate dimming.
 }
 
 // Width chips are numeral-only (no count) — mono data token, no pill
@@ -892,6 +910,12 @@ $sbk-amber:      #B45309;
     text-decoration: underline;
     cursor: pointer;
     font-size: 12px;
+    // Task 34 (SBK-020) — every other interactive control in this file
+    // has a focus-visible ring; this one was missing it.
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
 }
 .o_sbk_prod_draggable {
     cursor: grab;
@@ -1348,17 +1372,23 @@ $sbk-amber:      #B45309;
     font-size: 18px;
     line-height: 1;
     color: $sbk-mid;
-    opacity: 0.65;
+    // Task 34 (SBK-020) — measured contrast fix. The old default
+    // `opacity: 0.65` composites $sbk-mid (#4A4E57) down to ~#898C92
+    // against the toast's near-white background — 3.37:1, below the
+    // 4.5:1 text-contrast target (this "×" glyph is 18px/regular,
+    // under the "large text" threshold, so the relaxed 3:1 ratio does
+    // NOT apply). Full opacity keeps $sbk-mid's own 8.34:1 — the glyph
+    // still reads as secondary/quiet purely from the muted grey, no
+    // dedicated dimming needed. See task-34-report.md for the full
+    // measured pair.
     cursor: pointer;
     transition: var(--sb-transition);
     &:hover {
-        opacity: 1;
         background: rgba(0, 0, 0, 0.06);
     }
     &:focus-visible {
         outline: 2px solid var(--sb-blue);
         outline-offset: 2px;
-        opacity: 1;
     }
 }
 
@@ -1675,6 +1705,14 @@ $sbk-amber:      #B45309;
         color: $sbk-muted;
         text-transform: uppercase;
         margin: 0 0 10px;
+    }
+
+    // Task 34 (SBK-020) — same `_syncPanelFocus` target / plain
+    // `:focus` (not `:focus-visible`) rationale as
+    // .o_sbk_catalog_preview above.
+    &:focus {
+        outline: 2px solid $sbk-accent;
+        outline-offset: -2px;
     }
 }
 
@@ -1998,6 +2036,155 @@ $sbk-amber:      #B45309;
         border-radius: 3px;
 
         &:hover { background: #b0a89e; }
+    }
+}
+
+// ─── Task 34 (SBK-019) — responsive: toolbar wrap + collapsible panels ────────
+// Scoped to the CONFIGURATOR page chrome only, per the task-34 brief —
+// no site-wide breakpoint changes. Deliberately does NOT reintroduce a
+// viewport-triggered GRID RESTRUCTURE — the exact class of defect the
+// "Scroll / overflow fix" block above this one exists to prevent (a
+// bare width-based media query silently reflowing this action just
+// because the HOST backend window happened to be narrow, e.g.
+// DevTools split-screen — see that block's own comment for the full
+// incident). Collapsing a side panel here is always an explicit user
+// toggle (`_toggleControlsPanel`/`_toggleInventoryPanel`,
+// kitchen_configurator.js) with a viewport-width-based DEFAULT decided
+// ONCE at boot (`narrowAtBoot`, same file) — never a live-reflowing
+// rule. This section also never attempts a phone layout — see the
+// mobile gate at the bottom, which mirrors Prodboard's own tablet/
+// desktop-only boundary.
+.o_sbk_topbar {
+    // The base declaration (top of this file) has no flex-wrap; at
+    // tablet widths the brand block + room-dim inputs + customer
+    // picker + action buttons would otherwise force the topbar wider
+    // than its container instead of wrapping onto a second line —
+    // the horizontal-overflow AC this task closes. Harmless at desktop
+    // widths (there's always room for one line there, so wrapping
+    // never visibly engages).
+    flex-wrap: wrap;
+    row-gap: 10px;
+}
+.o_sbk_actions {
+    flex-wrap: wrap;
+    row-gap: 8px;
+}
+@media (max-width: 1023px) {
+    // .o_sbk_room_dims's margin-right:auto (declared where the group
+    // is defined, above) pins it hard left of the action cluster when
+    // the topbar fits on one line; once IT wraps onto its own row
+    // (tablet widths) that auto margin would leave a large empty gap
+    // beside it instead of the row just reading left-aligned.
+    .o_sbk_room_dims {
+        margin-right: 0;
+        flex-wrap: wrap;
+        row-gap: 8px;
+    }
+}
+
+// Task 34 (SBK-019) — the two panel-collapse toggle buttons (topbar,
+// left of the room-stretch/Kitchen-Designs/Save cluster). Sized to a
+// comfortable 32px square touch target; a hairline divider separates
+// them from the buttons that follow so they read as their own group
+// (role="group" in the markup already says so to assistive tech).
+.o_sbk_panel_toggles {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 8px;
+    margin-right: 4px;
+    border-right: 1px solid $sbk-border;
+}
+.o_sbk_panel_toggle {
+    width: 32px;
+    padding: 8px;
+    justify-content: center;
+
+    span[aria-hidden] { font-size: 15px; line-height: 1; }
+}
+
+// Task 34 (SBK-019) — collapsible side panels. `_toggleControlsPanel`/
+// `_toggleInventoryPanel` (kitchen_configurator.js) flip these two
+// classes independently; `narrowAtBoot` (same file) decides the
+// default ONCE at mount from the viewport width (collapsed under
+// 1024px), never on a live resize. Two-class grid-template-columns
+// selectors here out-specificity the single-class desktop pin in the
+// "Scroll / overflow fix" block above regardless of source order; the
+// `display: none` rules below, however, target `.o_sbk_controls` /
+// `.o_sbk_inventory` directly (same specificity as that block's own
+// `display: block/flex !important`) and so NEED both `!important` AND
+// to be declared after it — which this section already is.
+.o_sbk_workspace.is-controls-collapsed {
+    grid-template-columns: 0 1fr 300px !important;
+}
+.o_sbk_workspace.is-inventory-collapsed {
+    grid-template-columns: 210px 1fr 0 !important;
+}
+.o_sbk_workspace.is-controls-collapsed.is-inventory-collapsed {
+    grid-template-columns: 0 1fr 0 !important;
+}
+// display:none (not just a 0-width grid column) — a 0-width
+// overflow:hidden aside would still be keyboard-reachable and
+// screen-reader-announced: a real focus/AT trap for anyone tabbing
+// through a "collapsed" panel that's actually just invisible.
+.o_sbk_workspace.is-controls-collapsed .o_sbk_controls {
+    display: none !important;
+}
+.o_sbk_workspace.is-inventory-collapsed .o_sbk_inventory {
+    display: none !important;
+}
+
+// ─── Task 34 (SBK-019) — below-768px mobile gate ──────────────────────────────
+// Mirrors Prodboard's own boundary (tablet/desktop only — the brief
+// explicitly sanctions a static notice here instead of a phone
+// layout). `.o_sbk_mobile_gate` is always in the DOM (see the
+// template, right after `.o_sbk_root`'s opening tag) so this is pure
+// CSS — no JS/resize-listener involved, and it re-evaluates live on
+// rotate/resize for free.
+.o_sbk_mobile_gate {
+    display: none;
+}
+@media (max-width: 767px) {
+    .o_sbk_mobile_gate {
+        display: flex;
+        flex: 1 1 auto;
+        min-height: 0;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 32px 24px;
+        text-align: center;
+        background: $sbk-bg;
+    }
+    // Same eyebrow treatment as .o_sbk_brand_label (topbar) — the
+    // topbar itself is hidden at this width, so this repeats the
+    // brand mark once, quietly, instead of leaving the gate unbranded.
+    .o_sbk_mobile_gate_brand {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: $sbk-muted;
+    }
+    .o_sbk_mobile_gate_title {
+        font-size: 16px;
+        font-weight: 700;
+        color: $sbk-dark;
+    }
+    .o_sbk_mobile_gate_body {
+        margin: 0;
+        max-width: 320px;
+        font-size: 13px;
+        line-height: 1.5;
+        color: $sbk-muted;
+    }
+    // Every OTHER direct child of the root (topbar, landing, loading,
+    // error screen, workspace) yields to the gate above — whichever
+    // branch state.screen picked, the phone-width rider wins over all
+    // of them, not just the 3D workspace.
+    .o_sbk_root > *:not(.o_sbk_mobile_gate) {
+        display: none !important;
     }
 }
 

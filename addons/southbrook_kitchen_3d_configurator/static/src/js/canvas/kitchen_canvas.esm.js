@@ -75,9 +75,34 @@ export class KitchenCanvas extends Component {
     // state a :focus outline can key off — see the SCSS focus-ring
     // rule for .o_sbk_canvas3d). aria-label gives it an accessible
     // name for screen readers tabbing through the page.
+    //
+    // Task 34 (SBK-020) — split the old single aria-label (name +
+    // full keyboard-shortcut prose) into a NAME (this element's own
+    // job per WAI-ARIA: "what is this") and a DESCRIPTION referenced
+    // via aria-describedby (a separate, visually-hidden node — "how
+    // do I use it"). The name now identifies the CURRENT DESIGN
+    // (falls back to a generic label pre-hydration/landing, where
+    // props.designName is still ""), so two designs open in two tabs
+    // read as distinguishable landmarks instead of two identical "3D
+    // kitchen scene" names. The shortcut prose — including the ←/→
+    // cycling this task adds a11y coverage for — moved into
+    // #sbkCanvasHint verbatim (no shortcut dropped), using the
+    // Bootstrap 5 `.visually-hidden` utility already shipped in
+    // web.assets_backend (no new CSS needed — southbrook design-
+    // system convention is to reuse a platform utility before adding
+    // a bespoke one).
     static template = xml`
         <div t-ref="kitchenCanvas" class="o_sbk_canvas3d" tabindex="0"
-             aria-label="3D kitchen scene. Click a cabinet to select it, arrow keys cycle selection, 1-6 switch camera views."/>
+             t-att-aria-label="_ariaLabel()"
+             aria-describedby="sbkCanvasHint">
+            <span id="sbkCanvasHint" class="visually-hidden">
+                Click a cabinet to select it. Left and right arrow keys
+                cycle through every placed cabinet. Number keys 1
+                through 6 switch camera views; R resets to isometric.
+                Q and E rotate the selected cabinet. Delete or
+                Backspace removes it. Escape clears the selection.
+            </span>
+        </div>
     `;
     static props = {
         items:          { type: Array, optional: true },
@@ -96,12 +121,26 @@ export class KitchenCanvas extends Component {
         // click-to-select callback.
         onWallSelect:   { type: Function, optional: true },
         activeWall:     { type: [String, { value: null }], optional: true },
+        // Task 34 (SBK-020) — the open design's name, purely for the
+        // canvas's accessible name (see the template comment above).
+        // Never read for anything else in this component.
+        designName:     { type: String, optional: true },
     };
     static defaultProps = {
         items: [], room: {}, view: "iso",
         selected: null, draggedProduct: null, dragHover: false,
-        activeWall: null,
+        activeWall: null, designName: "",
     };
+
+    // Task 34 (SBK-020) — accessible name for the canvas element.
+    // Falls back to a generic label when no design is named yet
+    // (landing/new/unsaved) so the element is never nameless.
+    _ariaLabel() {
+        const name = (this.props.designName || "").trim();
+        return name
+            ? `3D kitchen scene — ${name}`
+            : "3D kitchen scene";
+    }
 
     setup() {
         this.canvasRef = useRef("kitchenCanvas");

@@ -250,6 +250,21 @@ def placed_width_in(product):
 # path, untouched by this fix) keeps passing.
 _REMAINDER_WALL_TOL_IN = 1.0
 
+# Task 15 (corner-remediation 2026-07-30, SBK-027) — wall-run / base-run
+# coordination check #14 in `_check_production_ready`, below. Hoisted to
+# module level per the `_REMAINDER_WALL_TOL_IN` precedent above (a single,
+# named source of truth for a tolerance a method-local reader would
+# otherwise have to hunt for inline).
+_WALL_RUN_BLOCK_TOL_IN = 0.05      # float/rounding slack only — this is
+                                    # NOT the brief's misalignment
+                                    # threshold (that's the constant below)
+_WALL_RUN_TOUCH_TOL_IN = 0.5       # "physically adjacent enough to form a
+                                    # seam" — same +/-0.5in the ORPHAN_
+                                    # FILLER check already uses for "next
+                                    # to a cabinet"
+_WALL_RUN_JOINT_WARN_TOL_IN = 0.5  # the brief's own seam-misalignment
+                                    # threshold
+
 
 def _merge_intervals_covered_in(intervals, eps=0.05):
     """Total covered length (inches) of a list of (lo, hi) intervals,
@@ -1816,7 +1831,14 @@ class SouthbrookKitchenDesign(models.Model):
         y_floor = zl.get("wall" if layer == "wall" else "base_run",
                          ("ground", 0, 0))[1]
 
-        wall_tag, rotation_deg = CLE._CORNER_RESOLVE_PRESENTATION[cname]
+        # Rebase adaptation (2026-08-01): the concurrent session's
+        # corner-orientation fix replaced _CORNER_RESOLVE_PRESENTATION
+        # with the ONE presentation table ROOM_CORNER_PLACEMENT
+        # (x_key, z_key, rotation_deg) + _wall_tag_for_rotation — the
+        # backfill now reads the same corrected orientations the
+        # engine's own inserts use, by construction.
+        _xk_p, _zk_p, rotation_deg = CLE.ROOM_CORNER_PLACEMENT[cname]
+        wall_tag = CLE._wall_tag_for_rotation(rotation_deg)
         if rule is not None and rule.get("host_leg") in ("x", "z"):
             pair = next(ws for n, ws, _xz in CLE._CORNER_SPECS
                         if n == cname)
@@ -3041,6 +3063,199 @@ class SouthbrookKitchenDesign(models.Model):
                                  fw / _MM12, w) + _line_ref(cl),
                         })
 
+        # 14) NEW — Task 15 (corner-remediation 2026-07-30, SBK-027) — wall-
+        #     run / base-run coordination. Per wall, a wall-cabinet run
+        #     that EXISTS but doesn't reach as far as the base run
+        #     underneath it leaves base cabinets with no upper storage
+        #     above part of the run — WARN. A wall run that reaches far
+        #     enough but whose internal seams don't land where the base
+        #     run's seams land underneath it is a cosmetic mismatch (the
+        #     door reveals won't read as one continuous line) — also WARN.
+        #
+        #     Orchestrator ruling (2026-07-31, review round 1) — a wall
+        #     with a base run and ZERO wall cabinets at all is NOT an
+        #     issue of any severity, not even WARN. A first cut of this
+        #     check treated "no wall cabinets planned for this wall" the
+        #     same as "wall cabinets exist but fall short", which BLOCKed
+        #     completely normal, deliberately upper-cabinet-free kitchens
+        #     (window walls, range-hood walls, open shelving) — this
+        #     validator runs against live saved customer designs, and a
+        #     blocking rule must reflect real invalidity, not merely "this
+        #     wall happens to have no uppers". The brief's actual concern
+        #     is COORDINATION between two runs that both exist, not
+        #     mandating that every base run has upper coverage — that
+        #     enforcement was never asked for and would light up
+        #     production data with noise. Confirmed live: the U-10X8X10
+        #     and L-10X8 shipped templates both carry a wall run that
+        #     EXISTS but falls short (SINK/W3, appliance-adjacent legs)
+        #     — those still correctly fire under this narrower rule;
+        #     fixtures elsewhere in this suite that modeled a base-only
+        #     wall (no wall cabinets at all, never meant to model wall
+        #     coverage) now correctly produce nothing.
+        #
+        #     Orchestrator ruling (2026-07-31, review round 2) —
+        #     WALL_RUN_SHORTER_THAN_BASE is downgraded from BLOCKING to
+        #     WARNING. Both shipped templates (U-10X8X10's 24in upper
+        #     over the 30in SINK base; L-10X8's appliance-adjacent legs)
+        #     carry this exact shape DELIBERATELY — a shorter or absent
+        #     upper run over a sink or appliance is a normal, buildable
+        #     kitchen, not a defect a customer's quote should be blocked
+        #     on. At blocking severity this (a) broke the documented
+        #     deploy smoke test's "only a missing-customer block on a
+        #     fresh shipped template" assertion and (b) made
+        #     action_create_quotation raise UserError for a fresh,
+        #     perfectly ordinary shipped-template instantiation — a false
+        #     invalid state on live production data. The audit brief's
+        #     literal "BLOCK" wording is overridden here on product-
+        #     reality grounds (flagged for John's review — see the task
+        #     report); the rule's `code` and `message` are UNCHANGED so a
+        #     future severity flip back to blocking is a one-word change.
+        #
+        #     Corner cells (cabinet_type == "corner") and appliance gaps
+        #     (cabinet_type == "appliance") are EXCLUDED from both runs,
+        #     per the brief verbatim — a corner's base/wall halves are
+        #     already covered by their own dedicated checks above
+        #     (#3c/#12/#13), and an appliance legitimately has nothing
+        #     above it, so neither should count toward "how much wall
+        #     coverage this base run expects." Restricting to zone ==
+        #     "base_run" / "wall" (not just cabinet_type) also drops tall
+        #     cabinets (zone="tall") and any cabinet a user has manually
+        #     re-zoned (e.g. an island base) out of the comparison —
+        #     consistent with `_base_run_eligible_lines`'s own base_run
+        #     filter above.
+        #
+        #     Geometry comes from the SAME anchor-convention primitive
+        #     every other geometric check in this method uses
+        #     (kitchen_layout_engine.footprint_from_anchor_mm,
+        #     COORDINATE_CONTRACT.md) — never re-derived — and the same
+        #     merge-intervals helper `remainder_in` already uses above
+        #     (`_merge_intervals_covered_in`), so "covered length" can
+        #     never disagree between the two features. Tolerances are
+        #     module-level constants (`_WALL_RUN_BLOCK_TOL_IN` /
+        #     `_WALL_RUN_TOUCH_TOL_IN` / `_WALL_RUN_JOINT_WARN_TOL_IN`,
+        #     defined near `_REMAINDER_WALL_TOL_IN` above).
+        _RUN14_MM = _MM_PER_IN
+
+        def _run14_span_in(line):
+            cab = {"width_mm": (line.width_in or 0) * _RUN14_MM,
+                   "depth_mm": (line.depth_in or 0) * _RUN14_MM}
+            place = {"x": (line.x_position_in or 0) * _RUN14_MM,
+                     "z": (line.z_position_in or 0) * _RUN14_MM,
+                     "rotation_deg": line.rotation_deg or 0}
+            x0, x1, z0, z1 = kitchen_layout_engine.footprint_from_anchor_mm(
+                cab, place)
+            if line.wall in ("left", "right"):
+                return z0 / _RUN14_MM, z1 / _RUN14_MM
+            return x0 / _RUN14_MM, x1 / _RUN14_MM
+
+        def _run14_interior_joints(spans):
+            """Boundary positions between two spans (sorted, each a
+            (lo, hi, line) triple) that actually TOUCH within
+            `_WALL_RUN_TOUCH_TOL_IN` — i.e. a real seam, not the far edge of
+            a gap where an excluded corner/appliance/tall cabinet used to
+            sit. One entry per seam: (position, line_before, line_after).
+            """
+            joints = []
+            for i in range(len(spans) - 1):
+                _lo0, hi0, l0 = spans[i]
+                lo1, _hi1, l1 = spans[i + 1]
+                if abs(lo1 - hi0) <= _WALL_RUN_TOUCH_TOL_IN:
+                    joints.append(((hi0 + lo1) / 2.0, l0, l1))
+            return joints
+
+        for wall14 in ("back", "front", "left", "right"):
+            base14 = self.cabinet_line_ids.filtered(
+                lambda l, w=wall14: l.cabinet_type == "base"
+                and l.zone == "base_run" and (l.wall or "back") == w)
+            if not base14:
+                continue   # nothing to compare this wall's wall-run against
+            wallcabs14 = self.cabinet_line_ids.filtered(
+                lambda l, w=wall14: l.cabinet_type == "wall"
+                and l.zone == "wall" and (l.wall or "back") == w)
+            if not wallcabs14:
+                # Orchestrator ruling — a wall with a base run and NO
+                # wall cabinets at all is a deliberate, valid choice
+                # (window wall, range hood, open shelving), not a
+                # coordination defect between two runs. Nothing to
+                # compare against; no issue of any severity.
+                continue
+
+            base_spans14 = sorted(
+                (_run14_span_in(l) + (l,) for l in base14),
+                key=lambda t: t[0])
+            wall_spans14 = sorted(
+                (_run14_span_in(l) + (l,) for l in wallcabs14),
+                key=lambda t: t[0])
+
+            base_covered14 = _merge_intervals_covered_in(
+                [(lo, hi) for lo, hi, _l in base_spans14])
+            wall_covered14 = _merge_intervals_covered_in(
+                [(lo, hi) for lo, hi, _l in wall_spans14])
+
+            if base_covered14 - wall_covered14 > _WALL_RUN_BLOCK_TOL_IN:
+                issues.append({
+                    "code":     "WALL_RUN_SHORTER_THAN_BASE",
+                    # Orchestrator ruling, review round 2 — WARNING, not
+                    # blocking (see the check's header comment above).
+                    # Code/message stay unchanged so a future severity
+                    # flip is a one-word change.
+                    "severity": "warning",
+                    "message":  (
+                        "The base cabinets on the %s wall run %.1f\" "
+                        "long, but the wall cabinets above only run "
+                        "%.1f\". Add wall cabinets (or shorten the base "
+                        "run) so the upper run covers the same length "
+                        "before quoting."
+                    ) % (wall14, base_covered14, wall_covered14)
+                                + _line_ref(base14, wallcabs14),
+                })
+                continue   # a short run's interior seams aren't the issue
+
+            base_joints14 = _run14_interior_joints(base_spans14)
+            wall_joints14 = _run14_interior_joints(wall_spans14)
+            if not (base_joints14 and wall_joints14):
+                continue
+
+            # Direction matters here, and it is NOT symmetric: iterate the
+            # WALL run's own seams (typically the coarser side — wall
+            # cabinets are commonly wider/fewer than the base cabinets
+            # underneath them, e.g. one 24" wall unit over two 12"
+            # drawer-bank bases) and check each against its NEAREST base
+            # seam, not the other way around. Iterating base-first would
+            # flag every base seam that simply falls in the MIDDLE of a
+            # wider wall cabinet as "misaligned" — that is normal,
+            # expected geometry, not a defect, and would false-positive
+            # on most real kitchens (confirmed live against the
+            # production catalog: SB-BASE-1DRW-TOP (12") under
+            # SB-WALL-2DR-24 (24") — every wall seam lands exactly on a
+            # base seam, but 6 of the 11 base seams fall mid-wall-cabinet
+            # and have no wall seam of their own). What actually reads as
+            # a cosmetic defect is a WALL seam that does NOT land over a
+            # real base-cabinet division.
+            mismatched14 = []
+            worst14 = 0.0
+            for pos, wl0, wl1 in wall_joints14:
+                nearest = min(base_joints14, key=lambda j: abs(j[0] - pos))
+                delta = abs(nearest[0] - pos)
+                if delta > _WALL_RUN_JOINT_WARN_TOL_IN:
+                    mismatched14.append((nearest[1], nearest[2], wl0, wl1))
+                    worst14 = max(worst14, delta)
+            if mismatched14:
+                ref_ids14 = set()
+                for bl0, bl1, wl0, wl1 in mismatched14:
+                    ref_ids14.update((bl0.id, bl1.id, wl0.id, wl1.id))
+                issues.append({
+                    "code":     "WALL_BASE_JOINT_MISALIGNED",
+                    "severity": "warning",
+                    "message":  (
+                        "On the %s wall, %d cabinet seam(s) between the "
+                        "base and wall cabinets don't line up (off by up "
+                        "to %.2f\"). Nudge cabinet widths or positions so "
+                        "the doors read as a continuous line."
+                    ) % (wall14, len(mismatched14), worst14)
+                                + _line_ref(sorted(ref_ids14)),
+                })
+
         return issues
 
     def action_validate_production(self):
@@ -3803,17 +4018,43 @@ class SouthbrookKitchenDesign(models.Model):
         module_w = placed_width_in(base_product) or 24.0
         n = max(0, int(math.floor(self.room_width_in / module_w)))
         remainder = self.room_width_in - n * module_w
+        base_run_length = n * module_w
 
         self.cabinet_line_ids.unlink()
         seq = 10
         for i in range(n):
             x = i * module_w
-            self._create_line(base_product, seq,      x, 0.0,  0.0)
+            self._create_line(base_product, seq, x, 0.0, 0.0)
+            seq += 10
+
+        # Task 15 (corner-remediation 2026-07-30, SBK-027) — the wall run
+        # targets the BASE run's real length (`base_run_length`), tiled
+        # with the WALL product's OWN width, independently of the base
+        # module's x-cursor. Before this fix, the wall cabinet was
+        # created inside the SAME loop at the SAME x as its paired base
+        # cabinet (`self._create_line(wall_product, seq + 5, x, 54.0,
+        # 0.0)`, x = i * module_w) — correct only when the wall product
+        # happens to share the base module's width. Live-verified
+        # against the production catalog (base module SB-BASE-1DRW-TOP
+        # at 12in, paired with wall product SB-WALL-2DR-24 at 24in): the
+        # old loop placed 12 wall cabinets 12in apart while each was
+        # 24in wide, producing 11 pairwise FOOTPRINT_COLLISION blocks
+        # plus one OUT_OF_ROOM_BOUNDS on a 144in room. Tiling
+        # independently at the wall product's own width, starting at
+        # x=0 (a base module boundary), fixes that and satisfies the
+        # brief's "fill the remaining length; prefer edge alignment
+        # with base module boundaries" — kitchen_layout_engine.py (LAW)
+        # is not touched by this loop at all.
+        wall_w = placed_width_in(wall_product) or module_w
+        wall_n = int(math.floor(base_run_length / wall_w)) if wall_w > 0 else 0
+        for j in range(wall_n):
+            x = j * wall_w
             # PR3.0 — y/z field-semantics migration: mount height (54")
             # lives in y_position_in, not z; z stays 0 (flush to the
             # back wall).
-            self._create_line(wall_product, seq + 5,  x, 54.0, 0.0)
+            self._create_line(wall_product, seq, x, 54.0, 0.0)
             seq += 10
+        wall_remainder = base_run_length - wall_n * wall_w
 
         # Filler panel for remainder
         if remainder >= 1.0:
@@ -3821,6 +4062,33 @@ class SouthbrookKitchenDesign(models.Model):
             if filler:
                 self._create_line(filler, seq, n * module_w, 0.0, 0.0, qty=1,
                                    override_width=remainder)
+                seq += 10
+
+        # Task 15 (corner-remediation 2026-07-30, SBK-027, review round 2
+        # IMPORTANT 2) — wall-side filler mirroring the base run's own
+        # mechanism directly above: when the wall product's width doesn't
+        # evenly divide the base run's length, cover the leftover tail
+        # with a filler strip at wall elevation, edge-aligned to the wall
+        # run's own end (x = wall_n * wall_w) — "fill the remaining
+        # length" applied to the wall side, exactly like the base side
+        # already does for its own remainder.
+        #
+        # This does NOT, by itself, silence WALL_RUN_SHORTER_THAN_BASE
+        # for that tail — a filler is cabinet_type=='filler', which (like
+        # every other check in this module) never counts as real
+        # cabinet_type=='wall' coverage. `_base_run_eligible_lines`
+        # documents the identical convention for the base side: filler/
+        # panel lines are excluded from occupied-run length on purpose,
+        # "they represent the leftover gap itself... not occupied run
+        # length." So a tail this filler physically covers can still
+        # legitimately WARN — informational, not silently invisible,
+        # per the brief's "never silently short."
+        if wall_remainder >= 1.0:
+            wall_filler = self._find_cabinet_product(
+                "filler", raise_if_missing=False)
+            if wall_filler:
+                self._create_line(wall_filler, seq, wall_n * wall_w, 54.0,
+                                   0.0, qty=1, override_width=wall_remainder)
 
         self.state = "configured"
 

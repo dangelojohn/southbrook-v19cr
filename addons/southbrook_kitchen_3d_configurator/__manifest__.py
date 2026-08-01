@@ -48,6 +48,12 @@
         "security/groups.xml",
         "security/ir.model.access.csv",
         "security/kitchen_design_rules.xml",
+        # Task 36 (SBK-039) — Plan PDF report action + QWeb template.
+        # MUST LOAD BEFORE kitchen_design_views.xml: the form's header
+        # "Plan PDF" button references this action via the
+        # `%(...)d` external-id syntax, which is resolved against
+        # ir.model.data at view-parse time.
+        "reports/kitchen_plan_report.xml",
         "views/product_template_views.xml",
         "views/kitchen_design_views.xml",
         "views/kitchen_configurator_views.xml",

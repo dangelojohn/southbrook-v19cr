@@ -310,6 +310,29 @@ class SouthbrookDesignReconcile(models.AbstractModel):
                     ("sb_layout_key",    "=", line_vals["sb_layout_key"]),
                 ], limit=1)
             if not sol:
+                # Task 33b (2026-07-31, Task 33 follow-up) — mirrors the
+                # draft_order guard immediately above/below: a design line
+                # with no mirrored SO line counterpart (e.g. a cabinet
+                # added to a design tied to an already-confirmed order)
+                # must never land a brand-new PRICED line on a CONFIRMED
+                # order. Skip the create, count it, log once, and move on
+                # to the next design line — a human reconciles this
+                # deliberately. dline.sale_order_line_id is deliberately
+                # left unset (not pointed at anything) so the next cron
+                # tick re-evaluates it rather than this branch silently
+                # pretending a mirror happened.
+                if not draft_order:
+                    _logger.info(
+                        "[sb.rec_d] Task 33b — skipped creating a new SO "
+                        "line on confirmed order id=%s for design id=%s "
+                        "(design line id=%s, layout_key=%r) — a human "
+                        "should reconcile this deliberately",
+                        design.sale_order_id.id, design.id, dline.id,
+                        line_vals["sb_layout_key"],
+                    )
+                    stats["skipped_create_confirmed"] = (
+                        stats.get("skipped_create_confirmed", 0) + 1)
+                    continue
                 sol = Line.sudo().create(line_vals)
                 dline.sudo().sale_order_line_id = sol.id
                 stats["created_lines"] += 1
@@ -354,7 +377,28 @@ class SouthbrookDesignReconcile(models.AbstractModel):
             ("sb_layout_key",    "not in", list(existing_dline_keys) or [False]),
         ])
         if stale:
-            stale.unlink()
+            # Task 33b (2026-07-31, Task 33 follow-up) — mirrors the
+            # per-line draft_order price-pin guard above: a mirrored SO
+            # line whose design-side layout_key disappeared (design line
+            # edited/retired/removed) must never be unlinked from a
+            # CONFIRMED order — that's deleting a real line from an order
+            # the customer has already seen. Evaluated once for the whole
+            # stale batch (rather than per-line, like the price pin) since
+            # "stale" is already computed against the design's WHOLE
+            # order, and every stale line here shares the same order_id
+            # and therefore the same order state.
+            order_is_draft = design.sale_order_id.state == "draft"
+            if order_is_draft:
+                stale.unlink()
+            else:
+                _logger.info(
+                    "[sb.rec_d] Task 33b — skipped unlinking %d stale "
+                    "mirrored line(s) on confirmed order id=%s for design "
+                    "id=%s — a human should reconcile this deliberately",
+                    len(stale), design.sale_order_id.id, design.id,
+                )
+                stats["skipped_unlink_confirmed"] = (
+                    stats.get("skipped_unlink_confirmed", 0) + len(stale))
 
         # 6) Divergence sensor — log-only, no auto-heal in Sprint 1.
         so_total = sum(l.price_subtotal or 0 for l in design.sale_order_id.order_line)
