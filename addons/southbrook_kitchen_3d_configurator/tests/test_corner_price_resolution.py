@@ -574,3 +574,193 @@ class TestNonCornerReconcileConfirmedOrderFreeze(TransactionCase):
         line.price_unit = 222.0
         Reconcile._reconcile_one(design, stats)
         self.assertEqual(line.sale_order_line_id.price_unit, 222.0)
+
+    def test_reconcile_does_not_create_a_new_line_on_a_confirmed_order(self):
+        """Task 33b — a design line added AFTER the tied order is confirmed
+        (e.g. a cabinet added to a design tied to a confirmed order) must
+        NOT land a brand-new PRICED line on that confirmed order.
+        Reproduce-first: this must FAIL on pre-fix code (the old
+        `if not sol: sol = Line.sudo().create(line_vals)` was
+        unconditional — a new SO line DOES appear)."""
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T33b Reconcile Confirmed-Order No-Create Test Design",
+            "partner_id": self.partner.id,
+        })
+        line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": self.base_product.id,
+            "quantity": 1,
+            "price_unit": 300.0,
+            "cabinet_type": "base",
+            "zone": "base_run",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t33b-reconcile-confirmed-noCreate-first",
+            "layout_role": "canonical",
+        })
+        Reconcile = self.env["southbrook.design.reconcile"]
+        stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
+                  "created_lines": 0, "divergence": 0, "errors": 0}
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(design.sale_order_id)
+        self.assertTrue(line.sale_order_line_id)
+        order = design.sale_order_id
+        design.sale_order_id.state = "sale"  # confirm the quote
+        lines_before = len(order.order_line)
+
+        # A second design line appears on the SAME design AFTER the order
+        # it's tied to has already been confirmed — the exact scenario the
+        # guard exists for.
+        new_line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": self.base_product.id,
+            "quantity": 1,
+            "price_unit": 950.0,
+            "cabinet_type": "base",
+            "zone": "base_run",
+            "width_in": 18.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t33b-reconcile-confirmed-noCreate-second",
+            "layout_role": "canonical",
+        })
+
+        Reconcile._reconcile_one(design, stats)
+
+        self.assertFalse(
+            new_line.sale_order_line_id,
+            "a confirmed order must not gain a mirrored SO line for a "
+            "design line added after confirmation")
+        self.assertEqual(
+            len(order.order_line), lines_before,
+            "no new sale.order.line should have been created on the "
+            "confirmed order")
+        self.assertFalse(
+            order.order_line.filtered(
+                lambda l: l.sb_layout_key == new_line.layout_key),
+            "no SO line carrying the new design line's layout_key should "
+            "exist on the confirmed order")
+
+    def test_reconcile_still_creates_a_new_line_on_a_draft_order(self):
+        """Companion to the confirmed-order no-create guard above: the
+        draft case must still create the mirrored line (the guard must be
+        state-scoped, not a blanket regression of the Task 33b fix)."""
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T33b Reconcile Draft-Order Create Test Design",
+            "partner_id": self.partner.id,
+        })
+        line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": self.base_product.id,
+            "quantity": 1,
+            "price_unit": 100.0,
+            "cabinet_type": "base",
+            "zone": "base_run",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t33b-reconcile-draft-create-first",
+            "layout_role": "canonical",
+        })
+        Reconcile = self.env["southbrook.design.reconcile"]
+        stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
+                  "created_lines": 0, "divergence": 0, "errors": 0}
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(design.sale_order_id)
+        self.assertEqual(design.sale_order_id.state, "draft")
+
+        new_line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": self.base_product.id,
+            "quantity": 1,
+            "price_unit": 200.0,
+            "cabinet_type": "base",
+            "zone": "base_run",
+            "width_in": 18.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t33b-reconcile-draft-create-second",
+            "layout_role": "canonical",
+        })
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(
+            new_line.sale_order_line_id,
+            "a draft order must still gain a mirrored SO line for a "
+            "newly-added design line")
+        self.assertEqual(new_line.sale_order_line_id.price_unit, 200.0)
+
+    def test_reconcile_does_not_unlink_a_stale_line_on_a_confirmed_order(self):
+        """Task 33b — a mirrored SO line whose design-side layout_key
+        disappears (design line retired/removed) must NOT be unlinked from
+        a CONFIRMED order. Reproduce-first: this must FAIL on pre-fix code
+        (step 5's `stale.unlink()` was unconditional — the real SO line
+        DOES get deleted)."""
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T33b Reconcile Confirmed-Order No-Unlink Test Design",
+            "partner_id": self.partner.id,
+        })
+        line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": self.base_product.id,
+            "quantity": 1,
+            "price_unit": 400.0,
+            "cabinet_type": "base",
+            "zone": "base_run",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t33b-reconcile-confirmed-noUnlink",
+            "layout_role": "canonical",
+        })
+        Reconcile = self.env["southbrook.design.reconcile"]
+        stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
+                  "created_lines": 0, "divergence": 0, "errors": 0}
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(design.sale_order_id)
+        self.assertTrue(line.sale_order_line_id)
+        sol_id = line.sale_order_line_id.id
+        design.sale_order_id.state = "sale"  # confirm the quote
+
+        # Retire the design line — its layout_key disappears from the
+        # design's active cabinet_line_ids, exactly the condition step 5's
+        # stale-line sweep keys off of.
+        line.active = False
+
+        Reconcile._reconcile_one(design, stats)
+
+        self.assertTrue(
+            self.env["sale.order.line"].browse(sol_id).exists(),
+            "a confirmed order's real SO line must survive even after its "
+            "design-side counterpart is retired")
+
+    def test_reconcile_still_unlinks_a_stale_line_on_a_draft_order(self):
+        """Companion to the confirmed-order no-unlink guard above: the
+        draft case must still unlink the stale line (the guard must be
+        state-scoped, not a blanket regression of the Task 33b fix)."""
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T33b Reconcile Draft-Order Unlink Test Design",
+            "partner_id": self.partner.id,
+        })
+        line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": self.base_product.id,
+            "quantity": 1,
+            "price_unit": 150.0,
+            "cabinet_type": "base",
+            "zone": "base_run",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t33b-reconcile-draft-unlink",
+            "layout_role": "canonical",
+        })
+        Reconcile = self.env["southbrook.design.reconcile"]
+        stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
+                  "created_lines": 0, "divergence": 0, "errors": 0}
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(design.sale_order_id)
+        self.assertEqual(design.sale_order_id.state, "draft")
+        sol_id = line.sale_order_line_id.id
+
+        line.active = False
+        Reconcile._reconcile_one(design, stats)
+
+        self.assertFalse(
+            self.env["sale.order.line"].browse(sol_id).exists(),
+            "a draft order's stale mirrored line must still be unlinked "
+            "when its design-side counterpart is retired")
