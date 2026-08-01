@@ -1116,7 +1116,7 @@ class SouthbrookKitchenConfigurator extends Component {
         // v19 doAction REQUIRES explicit views (memory: doaction_views_required)
         await this.action.doAction({
             type: "ir.actions.act_window",
-            name: "Start from Template",
+            name: "Start Custom",
             res_model: "kitchen.design.template.picker",
             views: [[false, "form"]],
             target: "new",
@@ -3330,7 +3330,7 @@ SouthbrookKitchenConfigurator.template = xml`
            + cabinet selections (the four-dropdown picker dialog). -->
       <button class="o_sbk_btn o_sbk_btn_template" type="button"
               title="Start from a prebuilt sample kitchen"
-              t-on-click="_openTemplatePicker">Start from Template</button>
+              t-on-click="_openTemplatePicker">Start Custom</button>
     </div>
     <!-- Task #48 — Customer picker (top-bar).
          Hidden entirely for portal users — Agent A's default_get
