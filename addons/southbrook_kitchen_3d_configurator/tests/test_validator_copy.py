@@ -369,7 +369,12 @@ class TestMotionEnvelopeMessagePrefersHumanName(TransactionCase):
         corner_line = design.cabinet_line_ids.filtered(
             lambda l: l.cabinet_type == "corner")
         self.assertEqual(len(corner_line), 1, corner_line)
-        self.assertEqual(corner_line.rotation_deg, 90)
+        # Corner-orientation fix (2026-07-31): back-left presents at
+        # rotation_deg=0 (kitchen_layout_engine.ROOM_CORNER_PLACEMENT),
+        # was 90 pre-fix. The envelope box below is computed dynamically
+        # from corner_line's ACTUAL rotation, so nothing else in this
+        # test depends on the specific value.
+        self.assertEqual(corner_line.rotation_deg, 0)
 
         # Compute the SAME envelope box the validator computes, so the
         # planted intruder's position is geometrically guaranteed

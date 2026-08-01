@@ -17,16 +17,29 @@ This pins the fix's contract:
      carries a base run.
 
   2. Corner lines carry only ONE presentational `wall` tag
-     (kitchen_layout_engine._CORNER_RESOLVE_PRESENTATION) even though
-     they physically bridge TWO walls (verified live: production design
-     108, a U-shape, has both corners tagged wall='left'/'right' and
-     NEITHER wall='back', even though both corners sit in the back
-     wall's run) — so a corner's footprint counts toward every wall
-     plane it geometrically touches, on top of the wall named by its own
-     field. An ordinary (non-corner) line counts ONLY toward the wall
-     named by its own `wall` field — this is what keeps a plain,
-     perfectly-tessellated single-wall run from spuriously "leaking"
-     leftover onto the side walls its end cabinets happen to touch.
+     (kitchen_layout_engine.ROOM_CORNER_PLACEMENT — was
+     `_CORNER_RESOLVE_PRESENTATION` before the 2026-07-31 corner-
+     orientation fix) even though they physically bridge TWO walls
+     (verified live, pre-fix: production design 108, a U-shape, had
+     both corners tagged wall='left'/'right' and NEITHER wall='back',
+     even though both corners sit in the back wall's run — post-fix,
+     design 108's back-left corner is retagged wall='back' by the
+     19.0.5.36.1 repair migration, and back-right stays wall='right'
+     unchanged; either way NEITHER corner is ever tagged with BOTH walls
+     it touches, which is the property this test actually exercises) —
+     so a corner's footprint counts toward every wall plane it
+     geometrically touches, on top of the wall named by its own field.
+     An ordinary (non-corner) line counts ONLY toward the wall named by
+     its own `wall` field — this is what keeps a plain, perfectly-
+     tessellated single-wall run from spuriously "leaking" leftover onto
+     the side walls its end cabinets happen to touch. This test's own
+     fixtures below use their own directly-authored (wall, rotation)
+     values, independent of which specific ROOM_CORNER_PLACEMENT
+     rotation the live engine currently chooses — the remainder math
+     under test reads real footprints (footprint_from_anchor_mm), and a
+     square corner's anchor-convention AABB is identical for any of the
+     four ALLOWED_ROTATIONS (see that module's own comment), so these
+     numbers hold regardless.
 
   3. With NO placed base-elevation lines, `remainder_in` keeps the
      LEGACY room-wide modulo estimate — now with the n==0 guard
@@ -112,11 +125,15 @@ class TestRemainderOccupancy(TransactionCase):
         """
         design = self._design(room_width_in=120.0, room_depth_in=96.0)
 
-        # Back-left corner — presentational wall='left' (matches
-        # kitchen_layout_engine._CORNER_RESOLVE_PRESENTATION), but its
-        # footprint (anchor x=0,z=36, w=36,d=36, rot=90 ->
-        # AABB x:[0,36] z:[0,36]) touches BOTH the back wall's plane
-        # (z0=0) and the left wall's plane (x0=0).
+        # Back-left corner — directly-authored fixture pose (a square
+        # corner's AABB is footprint-identical for any of the four
+        # ALLOWED_ROTATIONS — see kitchen_layout_engine.
+        # ROOM_CORNER_PLACEMENT's module comment — so this legacy
+        # wall='left'/rotation=90 pose still exercises the exact same
+        # geometry the live engine now emits as wall='back'/rotation=0):
+        # anchor x=0,z=36, w=36,d=36, rot=90 -> AABB x:[0,36] z:[0,36],
+        # touching BOTH the back wall's plane (z0=0) and the left wall's
+        # plane (x0=0).
         self._line(design, cabinet_type="corner", wall="left",
                    rotation_deg=90, x_position_in=0, z_position_in=36,
                    width_in=36, depth_in=36)

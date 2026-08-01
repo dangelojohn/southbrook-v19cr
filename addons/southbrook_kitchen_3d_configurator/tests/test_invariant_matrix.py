@@ -26,9 +26,12 @@ is `skipTest`-ed with the concrete evidence, never silently dropped and
 never "fixed" here (this file may not touch production code) — see the
 task-25 report for the live table.
 """
+import logging
+import math
 import re
 from collections import Counter
 
+from odoo.exceptions import UserError
 from odoo.tests import TransactionCase, tagged
 
 from odoo.addons.southbrook_estimating.models import kitchen_layout_engine as E
@@ -38,6 +41,8 @@ from odoo.addons.southbrook_estimating.models.corner_sku_repair import (
 
 from .test_corner_repair import ensure_repaired_corner
 from .test_template_catalog import _TEST_CODE_PREFIXES
+
+_logger = logging.getLogger(__name__)
 
 _MM = 25.4                  # inches -> millimetres
 _EPS_MM = 2.0                # generic float-safety tolerance (matches the
@@ -466,6 +471,152 @@ class TestInvariantMatrix(TransactionCase):
                     before, after,
                     "%s: regenerating the same template twice is not "
                     "byte-identical (modulo ids/timestamps)" % tpl.code)
+
+    # ── CLIENT ADDITION (2026-07-31, corner-orientation fix) ────────────
+    # John (relayed verbatim): "update all the template kitchens
+    # available and make sure that their corners are correct and if they
+    # are not, then correct them." Structural fact: southbrook.kitchen.
+    # template stores SLOTS only (this module's docstring / kitchen_
+    # template.py's own top-of-file note — "No geometry fields live
+    # here") — every corner pose is ENGINE-derived at instantiation via
+    # action_auto_arrange, so the corner-orientation emitter fix (
+    # kitchen_layout_engine.ROOM_CORNER_PLACEMENT) IS the template fix.
+    # This test is the client-facing PROOF the client asked for, not an
+    # inference from that structural fact: it instantiates EVERY active
+    # template (search([]) — never a hardcoded list, so a template added
+    # after this test is written is covered automatically) and checks
+    # every resulting derived corner line's REAL (x, z, rotation_deg)
+    # against the table, plus two independent geometric sanity checks
+    # (door midpoint inside the room; AABB touches exactly the two room
+    # walls a real junction corner must touch). Any failure here is a
+    # bug in the emitter fix, not in this assertion — the fix would need
+    # to change, not the test.
+    def test_template_corners_match_room_corner_placement(self):
+        Template = self.env["southbrook.kitchen.template"]
+        all_templates = Template.search([])
+        self.assertTrue(
+            all_templates, "no active southbrook.kitchen.template records "
+                           "found at all — nothing for the client's ask "
+                           "to verify")
+
+        covered_templates = []
+        skipped_templates = []
+        checked_corner_lines = 0
+        for tpl in all_templates:
+            # action_instantiate is itself already savepoint-atomic
+            # (kitchen_template.py) — a fit/capacity failure rolls back
+            # to before design creation and raises UserError, which the
+            # except clause below records rather than lets fail the
+            # whole matrix. TransactionCase's own per-test rollback
+            # (setUp/tearDown) cleans up every design this test creates
+            # afterward — the same pattern
+            # test_invariants_hold_for_every_active_template above uses.
+            try:
+                design = tpl.action_instantiate(partner_id=self.partner.id)
+            except UserError as exc:
+                # A template that cannot instantiate AT ALL fails for
+                # reasons unrelated to corner orientation (unresolved
+                # catalog slots, a fit that doesn't converge, etc.) —
+                # a pre-existing catalog-completeness concern
+                # (test_template_catalog.py's own territory), not this
+                # bug. Recorded, never silently dropped, so the report
+                # below is honest about coverage.
+                skipped_templates.append((tpl.code, str(exc)))
+                continue
+
+            corners = design.cabinet_line_ids.filtered(
+                lambda l: l.layout_role == "derived"
+                and l.cabinet_type == "corner")
+            room_w_mm = (design.room_width_in or 0) * _MM
+            room_d_mm = (design.room_depth_in or 0) * _MM
+            key_prefix = "corner-%s-" % design.id
+            for cl in corners:
+                key = cl.layout_key or ""
+                self.assertTrue(
+                    key.startswith(key_prefix),
+                    "%s: derived corner line %r has an unparseable "
+                    "layout_key" % (tpl.code, key))
+                cname = key[len(key_prefix):].rsplit("-", 1)[0]
+                self.assertIn(
+                    cname, E.ROOM_CORNER_PLACEMENT,
+                    "%s: corner line %r names unknown junction %r"
+                    % (tpl.code, key, cname))
+                checked_corner_lines += 1
+                xk, zk, want_rot = E.ROOM_CORNER_PLACEMENT[cname]
+                want_x_in = 0.0 if xk == "0" else design.room_width_in
+                want_z_in = 0.0 if zk == "0" else design.room_depth_in
+
+                with self.subTest(template=tpl.code, corner=key):
+                    # (a) pose matches ROOM_CORNER_PLACEMENT within
+                    # 0.01in.
+                    self.assertAlmostEqual(
+                        cl.x_position_in, want_x_in, delta=0.01,
+                        msg="%s/%s: x_position_in" % (tpl.code, key))
+                    self.assertAlmostEqual(
+                        cl.z_position_in, want_z_in, delta=0.01,
+                        msg="%s/%s: z_position_in" % (tpl.code, key))
+                    self.assertAlmostEqual(
+                        (cl.rotation_deg or 0) % 360, want_rot, delta=0.01,
+                        msg="%s/%s: rotation_deg" % (tpl.code, key))
+
+                    # (b) world-transformed door midpoint lies STRICTLY
+                    # inside the room. Reimplemented independently here
+                    # (not imported from kitchen_layout_engine or
+                    # corner_cabinet.esm.js) — clip=min(w,d)*0.42,
+                    # doorMid=(w - clip/2, d - clip/2) in the local
+                    # frame, THREE's rotation.y=theta convention (local
+                    # +x -> (cos,-sin), +z -> (sin,cos)) — so a shared
+                    # bug in a shared helper can't hide from this check.
+                    w_in = cl.width_in or 0.0
+                    d_in = cl.depth_in or 0.0
+                    clip_in = min(w_in, d_in) * 0.42
+                    mid_lx = w_in - clip_in / 2.0
+                    mid_lz = d_in - clip_in / 2.0
+                    theta = math.radians(cl.rotation_deg or 0)
+                    c, s = math.cos(theta), math.sin(theta)
+                    mid_x = cl.x_position_in + mid_lx * c + mid_lz * s
+                    mid_z = cl.z_position_in + mid_lx * (-s) + mid_lz * c
+                    self.assertTrue(
+                        0.0 < mid_x < design.room_width_in,
+                        "%s/%s: door midpoint x=%.2f not strictly "
+                        "inside room width [0, %.2f]"
+                        % (tpl.code, key, mid_x, design.room_width_in))
+                    self.assertTrue(
+                        0.0 < mid_z < design.room_depth_in,
+                        "%s/%s: door midpoint z=%.2f not strictly "
+                        "inside room depth [0, %.2f]"
+                        % (tpl.code, key, mid_z, design.room_depth_in))
+
+                    # (c) anchor-convention AABB touches exactly two
+                    # room walls — the geometric signature of a real
+                    # junction corner.
+                    x0, x1, z0, z1 = _footprint(cl)
+                    touches = []
+                    if abs(x0) <= _WALL_TOUCH_EPS_MM:
+                        touches.append("left")
+                    if abs(x1 - room_w_mm) <= _WALL_TOUCH_EPS_MM:
+                        touches.append("right")
+                    if abs(z0) <= _WALL_TOUCH_EPS_MM:
+                        touches.append("back")
+                    if abs(z1 - room_d_mm) <= _WALL_TOUCH_EPS_MM:
+                        touches.append("front")
+                    self.assertGreaterEqual(
+                        len(touches), 2,
+                        "%s/%s: AABB %r touches %r — expected 2 room "
+                        "walls" % (tpl.code, key, (x0, x1, z0, z1), touches))
+            covered_templates.append(tpl.code)
+
+        self.assertGreaterEqual(
+            len(covered_templates), 1,
+            "no template instantiated successfully — nothing was "
+            "actually verified (skipped: %r)" % skipped_templates)
+        _logger.info(
+            "[corner-orientation template matrix] %d/%d active "
+            "template(s) instantiated and verified (%d derived corner "
+            "line(s) checked); %d template(s) skipped for reasons "
+            "unrelated to corner orientation: %r",
+            len(covered_templates), len(all_templates), checked_corner_lines,
+            len(skipped_templates), skipped_templates)
 
     # ── catalogue invariants (repaired-catalogue state, not per-design) ─
 

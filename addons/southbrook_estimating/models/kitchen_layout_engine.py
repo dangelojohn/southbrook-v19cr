@@ -701,31 +701,107 @@ _CORNER_STANDALONE = {
 # indexed by corner name for the pose math below.
 _CORNER_XZ_KEYS = {name: (xk, zk) for name, _walls, (xk, zk) in _CORNER_SPECS}
 
-# How each _CORNER_RESOLVE corner PRESENTS: (wall tag persisted to
-# kitchen.design.line, rotation_deg). `host_wall` (in _CORNER_RESOLVE above)
-# stays solely the adjoining-run cursor bookkeeping key — it must NOT be
-# assumed to be the emitted `wall`/orientation, because for back-left that
-# coupling IS the "vanishing cabinet" bug: host_wall="back" has rotation 0
-# (_WALL_SPEC["back"]["rot"]), which is visually IDENTICAL to an ordinary
-# back-wall cabinet, so the corner rendered flat on the back wall instead of
-# turning into the corner.
-#   back-left  -> "left" / 90 (left wall's rotation). Re-tagging + rotating
-#                 to the LEFT wall's convention makes the corner read as the
-#                 turn into the left run — the fix for the reported bug, and
-#                 it also happens to be the wall this whole plan is about
-#                 keeping visible.
-#   back-right -> "right" / 270 (right wall's rotation). host_wall="right"
-#                 already gives a non-zero, distinct rotation — unchanged;
-#                 this is the regression guard the plan calls out as
-#                 "already correct".
-#   front-left -> "front" / 180 (front wall's rotation). host_wall="front"
-#                 likewise already gives a non-zero, distinct rotation —
-#                 unchanged, second regression guard.
-_CORNER_RESOLVE_PRESENTATION = {
-    "back-left":   ("left",  90),
-    "back-right":  ("right", 270),
-    "front-left":  ("front", 180),
+# ── ROOM_CORNER_PLACEMENT — the ONE presentation table (corner-orientation
+# fix, 2026-07-31) ───────────────────────────────────────────────────────
+# SUPERSEDES `_CORNER_RESOLVE_PRESENTATION` (the per-corner (wall_tag,
+# rotation_deg) table this used to be, and the per-side "host_wall"/
+# hardcoded-standalone-rotation ad-hoc math scattered through
+# `resolve_and_layout` below). Root-caused (verified by recomputing the
+# transforms, 2026-07-31): the renderer applies `grp.rotation.y =
+# rotation_deg` (kitchen_canvas.esm.js's `_placeCabinetGroup`) to a corner
+# mesh whose LOCAL frame (corner_cabinet.esm.js) fixes local (0,0) at the
+# ANCHOR and the diagonal/pie door face at local (width_in, depth_in) with
+# outward normal (+1/√2, +1/√2). THREE's rotation.y=θ convention: local +x
+# -> world (cosθ, -sinθ), local +z -> world (sinθ, cosθ) (matches this
+# module's own `obb_corners_from_anchor_mm`, pinned by test against
+# `footprint_from_anchor_mm`). So the correct θ for a given room corner is
+# whichever value makes BOTH local-axis images point INTO the room (away
+# from this corner's own two walls) — solving that for each of the four
+# room corners gives the table below. The anchor itself is ALWAYS the room
+# corner point exactly — (x_key, z_key) never need an ext_x/ext_z offset —
+# because `_corner_node_pose_rect` + `anchor_pose_mm` (untouched by this
+# fix) are already engineered so ANY of the four ALLOWED_ROTATIONS, paired
+# with the matching node_w/node_d swap, converts a `_corner_cell_rect`
+# anchored at (x_key, z_key) back to that SAME (x_key, z_key) anchor point
+# — that invariant is exactly what let the pre-fix code "self-consistently"
+# emit a WRONG rotation (90 instead of 0 for back-left) whose anchor-
+# convention AABB was still pixel-identical to the correct one for a
+# SQUARE cabinet: (x=0, z=0, rot=0) and (x=0, z=36in, rot=90) both cover
+# footprint (0,36,0,36) — invisible to any AABB/occupancy-only audit (both
+# prior corner-remediation passes checked exactly that and missed it). A
+# NON-square corner (asymmetric legs, M2 rule-driven) makes the same wrong
+# choice visibly wrong even in the AABB (see
+# test_layout_engine.py::test_asymmetric_corner_rejects_wrong_rotation),
+# which is why that shape is now a pinned regression test, not just the
+# legacy square.
+#
+# Historical note — an EARLIER fix (pre-Task-8, when corner cabinets still
+# rendered as a plain box via `buildOtherCabinet`, no real diagonal
+# geometry) deliberately picked wall="left"/rot=90 for back-left specifically
+# to stop the corner LOOKING like an ordinary back-wall cabinet ("vanishing"
+# — a plain box has no visual tell for which way it's turned). That concern
+# is now moot: `corner_cabinet.esm.js` (Task 8, 2026-07-30) renders a real
+# diagonal-cut/pie-cut notch, which is visually distinct from a plain
+# cabinet at ANY rotation — so there is no longer a reason to prefer a
+# rotation other than the geometrically-correct one, and the geometrically
+# correct one for back-left is 0.
+#
+# `wall_tag` (persisted to kitchen.design.line.wall) is derived from
+# rotation_deg via `_wall_tag_for_rotation` — the wall whose OWN
+# `_WALL_SPEC` rotation matches, so wall_tag and rotation_deg are always
+# self-consistent. This is REQUIRED, not cosmetic: kitchen_design.py's
+# `_check_production_ready` motion-envelope check (#12) derives which
+# neighbouring wall's flush cabinet is the corner's OWN legitimate run
+# continuation (`_facing_neighbor_wall`) from `_CORNER_RESOLVE[cname]` +
+# the line's persisted `wall` — that derivation only lines up with the
+# envelope's REAL facing direction (which comes from rotation_deg) when
+# wall_tag and rotation_deg agree via this SAME `_WALL_SPEC` pairing.
+#
+#   back-left   -> rot 0   (matches "back" wall's own convention — by
+#                  coincidence of geometry, NOT a re-introduction of the
+#                  pre-Task-8 "vanishing" bug; see the historical note).
+#   back-right  -> rot 270 (matches "right"). UNCHANGED — already correct
+#                  pre-fix; pinned as a regression guard
+#                  (test_room_corner_placement_back_right_unchanged).
+#   front-left  -> rot 90  (matches "left"). Was 180 pre-fix.
+#   front-right -> rot 180 (matches "front"). Was hardcoded 0 pre-fix (the
+#                  `_CORNER_STANDALONE` branch below never went through
+#                  `_CORNER_RESOLVE_PRESENTATION` at all).
+ROOM_CORNER_PLACEMENT = {
+    # corner name  -> (x_key, z_key, rotation_deg). x_key/z_key MUST match
+    # `_CORNER_SPECS`'s own keys for the same corner — pinned by
+    # test_room_corner_placement_matches_corner_specs_xz_keys so the two
+    # tables can never silently drift apart.
+    "back-left":   ("0", "0", 0),
+    "back-right":  ("W", "0", 270),
+    "front-left":  ("0", "D", 90),
+    "front-right": ("W", "D", 180),
 }
+
+
+def _wall_tag_for_rotation(rotation_deg):
+    """The WALLS member whose own `_WALL_SPEC` rotation equals
+    `rotation_deg` — i.e. which wall's presentation convention this
+    rotation matches. Keeps a corner node's persisted `wall` field and
+    its `rotation_deg` self-consistent (see the module-level comment
+    above `ROOM_CORNER_PLACEMENT`)."""
+    rot = int(round(rotation_deg)) % 360
+    return next(w for w, spec in _WALL_SPEC.items() if spec["rot"] == rot)
+
+
+def room_corner_anchor_pose(corner_name, room):
+    """The exact (x, z, rotation_deg) anchor pose for `corner_name`
+    (one of `ROOM_CORNER_PLACEMENT`'s keys) in `room` — resolves the
+    table's symbolic x_key/z_key ("0"/"W"/"0"/"D") against this room's
+    actual width/depth. Pure convenience wrapper; the anchor is always
+    exactly the room corner point (see the module comment above), never
+    offset by a cabinet's own width/depth."""
+    xk, zk, rotation_deg = ROOM_CORNER_PLACEMENT[corner_name]
+    room_w = room.get("width_mm", 0)
+    room_d = room.get("depth_mm", 0)
+    x = 0.0 if xk == "0" else float(room_w)
+    z = 0.0 if zk == "0" else float(room_d)
+    return {"x": x, "z": z, "rotation_deg": rotation_deg}
 
 
 def _corner_node_pose(xk, zk, room, corner_size_mm, rotation_deg, y_floor):
@@ -919,6 +995,8 @@ def resolve_and_layout(cabinets, room, corner_size_mm=_CORNER_FOOTPRINT_MM,
             cell = (room_w - ext_x, room_w, room_d - ext_z, room_d)
             y_floor = zl.get("wall" if layer == "wall" else "base_run",
                              ("ground", 0, 0))[1]
+            _xk_fr, _zk_fr, fr_rotation_deg = ROOM_CORNER_PLACEMENT[
+                corner["corner"]]
             node = {
                 "id": "corner-%s-%s" % (corner["corner"], layer),
                 "corner_cabinet": True,
@@ -927,14 +1005,20 @@ def resolve_and_layout(cabinets, room, corner_size_mm=_CORNER_FOOTPRINT_MM,
                 "layer": layer,
                 "cabinet_type": "wall" if layer == "wall" else "base",
                 "family": "wall" if layer == "wall" else "base",
-                # rot 0 → width spans X, depth spans Z (footprint_mm).
+                # rot 180 (ROOM_CORNER_PLACEMENT["front-right"]) → width
+                # still spans X, depth still spans Z (footprint_mm: both
+                # rot 0 and rot 180 keep width on the along-X axis).
                 "width_mm": ext_x,
                 "depth_mm": ext_z,
                 "height_mm": height_mm,
                 "zone": "wall" if layer == "wall" else "base_run",
-                "wall": "right",
-                # Explicit pose (rot 0) whose AABB is exactly the cell.
-                "__pose": _corner_node_pose_rect(cell, 0, y_floor),
+                "wall": _wall_tag_for_rotation(fr_rotation_deg),
+                # Explicit pose whose AABB is exactly the cell, oriented
+                # so the door notch (local (w,d), normal (+1/√2,+1/√2))
+                # faces into the room instead of into the front/right
+                # walls — see the ROOM_CORNER_PLACEMENT module comment.
+                "__pose": _corner_node_pose_rect(
+                    cell, fr_rotation_deg, y_floor),
                 "replaced_ids": [],
             }
             if rule is not None:
@@ -954,7 +1038,7 @@ def resolve_and_layout(cabinets, room, corner_size_mm=_CORNER_FOOTPRINT_MM,
         # used ONLY to find which two standard cabinets to remove and to
         # reserve that run's cursor space (via `offsets[host_wall]` below).
         # It is deliberately NOT used to derive the emitted `wall`/rotation
-        # (see `_CORNER_RESOLVE_PRESENTATION`) — the corner gets an explicit
+        # (see `ROOM_CORNER_PLACEMENT`) — the corner gets an explicit
         # `__pose` centred in ITS OWN corner cell, so it renders in the
         # corner regardless of which run's cursor it was bookkept against.
         host_first = _run_end(assigned, host_wall, layer, "first")
@@ -962,14 +1046,16 @@ def resolve_and_layout(cabinets, room, corner_size_mm=_CORNER_FOOTPRINT_MM,
         for c in (host_first, other_cab):
             if c is not None:
                 removed_ids.add(c["id"])
-        wall_tag, rotation_deg = _CORNER_RESOLVE_PRESENTATION[corner["corner"]]
+        _xk_p, _zk_p, rotation_deg = ROOM_CORNER_PLACEMENT[corner["corner"]]
+        wall_tag = _wall_tag_for_rotation(rotation_deg)
         # M2 — a rule may pin which wall the box runs along (`host_leg`):
         # "x" → the pair's X-running wall (wall_a), "z" → Z-running
         # (wall_b). A blind corner genuinely runs flush along one wall —
-        # its presentation IS that wall's, even when the legacy table
-        # would tag the other (e.g. back-left defaults to left/90, but a
-        # host_leg="x" blind box lies along the back wall at rot 0 and
-        # correctly renders like a normal back cabinet with a blind face).
+        # its presentation IS that wall's, even when the default table
+        # would tag the other (e.g. back-left defaults to back/0, but a
+        # host_leg="z" blind box lies along the left wall at rot 90 and
+        # correctly renders like a normal left-wall cabinet with a blind
+        # face).
         if rule is not None and rule.get("host_leg") in ("x", "z"):
             pair = next(ws for n, ws, _xz in _CORNER_SPECS
                         if n == corner["corner"])

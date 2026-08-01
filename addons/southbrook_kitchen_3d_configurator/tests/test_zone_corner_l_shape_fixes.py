@@ -195,12 +195,21 @@ class TestPlaceLinesOnWallRespectsExistingCorner(TransactionCase):
         # A pre-existing DERIVED base-layer corner cabinet at back-left,
         # exactly as action_auto_arrange would have created it (C8: zone
         # set; layout_key matches the "corner-<design_id>-<name>-<layer>"
-        # convention _place_lines_on_wall's C3 parser expects).
+        # convention _place_lines_on_wall's C3 parser expects). Corner-
+        # orientation fix (2026-07-31): back-left's own presentation is
+        # wall="back"/rotation_deg=0 (kitchen_layout_engine.
+        # ROOM_CORNER_PLACEMENT) — this reservation logic doesn't consult
+        # `wall`/`rotation_deg` off THIS field to decide which walls to
+        # reserve (that comes from the corner name in `layout_key` via
+        # `_CORNER_SPECS`, unaffected by this fix), but the fixture is
+        # kept in sync with the real engine output anyway so it isn't a
+        # misleading "impossible" (wall, rotation) pairing.
         Line.create({
             "design_id": design.id, "product_id": self.corner_prod.id,
             "quantity": 1, "price_unit": 625.0, "cabinet_type": "corner",
             "zone": "base_run", "width_in": 36.0, "height_in": 34.5,
-            "depth_in": 36.0, "wall": "left", "run_seq": -1,
+            "depth_in": 36.0, "wall": "back", "rotation_deg": 0,
+            "run_seq": -1,
             "pinned": False, "origin": "configurator",
             "layout_key": "corner-%s-back-left-base" % design.id,
             "layout_role": "derived",

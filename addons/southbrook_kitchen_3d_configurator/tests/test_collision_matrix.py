@@ -353,11 +353,13 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
         corner_line = design.cabinet_line_ids.filtered(
             lambda l: l.cabinet_type == "corner")
         self.assertEqual(len(corner_line), 1, corner_line)
-        # back-left with no host_leg override presents on the left wall,
-        # rotation 90 (_CORNER_RESOLVE_PRESENTATION) — asserted so a
-        # future presentation change fails loudly here instead of
-        # silently mis-deriving the envelope zone below.
-        self.assertEqual(corner_line.rotation_deg, 90)
+        # back-left with no host_leg override presents on the back wall,
+        # rotation 0 (kitchen_layout_engine.ROOM_CORNER_PLACEMENT,
+        # corner-orientation fix 2026-07-31) — asserted so a future
+        # presentation change fails loudly here instead of silently
+        # mis-deriving the envelope zone below.
+        self.assertEqual(corner_line.wall, "back")
+        self.assertEqual(corner_line.rotation_deg, 0)
 
         # Compute the SAME envelope box the validator computes, via the
         # same public engine helper, so the planted cabinet's position
@@ -402,7 +404,20 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
         envelope), this needs a SURVIVING same-wall neighbour after
         corner resolution — _make_corner_design's single-cabinet-per-
         wall shape has no survivor (both get consumed by the corner),
-        so this uses two back-wall cabinets.
+        so this uses two same-wall cabinets.
+
+        Corner-orientation fix (2026-07-31): back-left now presents on
+        the BACK wall (wall="back", rotation_deg=0 —
+        kitchen_layout_engine.ROOM_CORNER_PLACEMENT), so its motion
+        envelope now faces +Z, reaching into the LEFT wall's continuing
+        run (the "other_wall" leg of _CORNER_RESOLVE["back-left"]) —
+        NOT the back wall's own continuing run, which is what it faced
+        pre-fix (when back-left presented on the LEFT wall at
+        rotation_deg=90, facing +X into the back wall's run). This test
+        therefore now needs two LEFT-wall cabinets (one absorbed, one
+        surviving flush after the corner) instead of two back-wall ones
+        — same regression coverage, mirrored onto the wall the fix
+        actually changed the envelope's facing direction to.
         """
         Design = self.env["southbrook.kitchen.design"]
         if not _validator_source_has(Design, "MOTION_ENVELOPE_COLLISION"):
@@ -428,10 +443,8 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
             "room_height_in": 96.0, "state": "draft",
         })
         Line = self.env["southbrook.kitchen.design.line"]
-        # TWO back-wall cabinets: run_seq 0 is absorbed by the corner
-        # (host_wall="back" for back-left), run_seq 1 SURVIVES and
-        # becomes the real, engine-placed, flush-against-the-corner
-        # neighbour this test exercises.
+        # ONE back-wall cabinet: absorbed by the corner (host_wall="back"
+        # for back-left).
         Line.create({
             "design_id": design.id, "product_id": self.base_prod.id,
             "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
@@ -439,13 +452,10 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
             "wall": "back", "run_seq": 0, "origin": "configurator",
             "layout_key": "cm-neighbor-back-0",
         })
-        Line.create({
-            "design_id": design.id, "product_id": self.base_prod.id,
-            "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
-            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
-            "wall": "back", "run_seq": 1, "origin": "configurator",
-            "layout_key": "cm-neighbor-back-1",
-        })
+        # TWO left-wall cabinets: run_seq 0 is absorbed by the corner
+        # (other_wall="left" for back-left), run_seq 1 SURVIVES and
+        # becomes the real, engine-placed, flush-against-the-corner
+        # neighbour this test exercises.
         Line.create({
             "design_id": design.id, "product_id": self.base_prod.id,
             "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
@@ -453,19 +463,42 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
             "wall": "left", "run_seq": 0, "origin": "configurator",
             "layout_key": "cm-neighbor-left-0",
         })
+        Line.create({
+            "design_id": design.id, "product_id": self.base_prod.id,
+            "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "wall": "left", "run_seq": 1, "origin": "configurator",
+            "layout_key": "cm-neighbor-left-1",
+        })
         design.action_auto_arrange()
 
         corner_line = design.cabinet_line_ids.filtered(
             lambda l: l.cabinet_type == "corner")
         self.assertEqual(len(corner_line), 1, corner_line)
+        self.assertEqual(corner_line.wall, "back")
         survivor = design.cabinet_line_ids.filtered(
-            lambda l: l.layout_key == "cm-neighbor-back-1")
-        self.assertTrue(survivor, "back run_seq=1 must survive corner "
+            lambda l: l.layout_key == "cm-neighbor-left-1")
+        self.assertTrue(survivor, "left run_seq=1 must survive corner "
                                    "substitution and be repositioned "
                                    "flush after it")
-        self.assertAlmostEqual(survivor.x_position_in,
-                                corner_line.x_position_in
-                                + corner_line.width_in, delta=0.1)
+        # Footprint-touching check (robust to which edge each rotation's
+        # anchor convention persists — rot 0 low edge, rot 90 high edge):
+        # the survivor's LOW z-edge must sit exactly at the corner's HIGH
+        # z-edge, cross-axis (X) span overlapping — genuinely flush, not
+        # merely "close".
+        corner_fp = E.footprint_from_anchor_mm(
+            {"width_mm": corner_line.width_in * MM,
+             "depth_mm": corner_line.depth_in * MM},
+            {"x": corner_line.x_position_in * MM,
+             "z": corner_line.z_position_in * MM,
+             "rotation_deg": corner_line.rotation_deg})
+        survivor_fp = E.footprint_from_anchor_mm(
+            {"width_mm": survivor.width_in * MM,
+             "depth_mm": survivor.depth_in * MM},
+            {"x": survivor.x_position_in * MM,
+             "z": survivor.z_position_in * MM,
+             "rotation_deg": survivor.rotation_deg})
+        self.assertAlmostEqual(survivor_fp[2], corner_fp[3], delta=3.0)
 
         issues = design._check_production_ready()
         codes = [i["code"] for i in issues]
@@ -483,6 +516,17 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
         (zero clearance at all) and no other check backstops it (flush
         footprints don't overlap, so #7 FOOTPRINT_COLLISION can't catch
         it either).
+
+        Corner-orientation fix (2026-07-31): back-left's facing-axis
+        wall (the one its motion envelope actually reaches into) is now
+        "left" (see the comment on
+        test_motion_envelope_excludes_legitimate_adjoining_run_neighbor
+        above), and its OWN presentation wall is "back" (was "left"
+        pre-fix). The flush edge the envelope starts from is therefore
+        now the corner's HIGH z-edge (was its high x-edge pre-fix), and
+        the "wrong wall" tag to plant the intruder with is "back" (was
+        "left" pre-fix) — same test intent, mirrored onto the axis the
+        fix actually swapped.
         """
         Design = self.env["southbrook.kitchen.design"]
         if not _validator_source_has(Design, "MOTION_ENVELOPE_COLLISION"):
@@ -510,7 +554,8 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
         corner_line = design.cabinet_line_ids.filtered(
             lambda l: l.cabinet_type == "corner")
         self.assertEqual(len(corner_line), 1, corner_line)
-        self.assertEqual(corner_line.rotation_deg, 90)
+        self.assertEqual(corner_line.wall, "back")
+        self.assertEqual(corner_line.rotation_deg, 0)
 
         cab = {"width_mm": corner_line.width_in * MM,
                "depth_mm": corner_line.depth_in * MM}
@@ -520,22 +565,23 @@ class TestCollisionMatrixMotionEnvelopeAndFiller(TransactionCase):
         fx0, fx1, fz0, fz1 = E.footprint_from_anchor_mm(cab, place)
 
         # Plant a cabinet FLUSH at the corner's own edge (zero standoff
-        # — fx1 is exactly where the envelope starts, the SAME boundary
-        # a legitimate back-wall neighbour would touch) with its z-span
+        # — fz1 is exactly where the envelope starts now that the
+        # corner presents at rot=0/faces +Z, the SAME boundary a
+        # legitimate left-wall neighbour would touch) with its x-span
         # inside the corner's cross extent — geometrically identical
         # touch pattern to test (a)'s legitimate survivor. Tag it
-        # wall="left" (the corner's OWN presentation wall, i.e. NOT the
-        # facing-axis wall "back") so only the wall-identity check can
+        # wall="back" (the corner's OWN presentation wall, i.e. NOT the
+        # facing-axis wall "left") so only the wall-identity check can
         # tell it apart from a legitimate neighbour.
-        plant_w_mm = 200.0
-        plant_d_mm = 300.0
+        plant_w_mm = 300.0
+        plant_d_mm = 200.0
         self.env["southbrook.kitchen.design.line"].create({
             "design_id": design.id, "product_id": self.base_prod.id,
             "quantity": 1, "price_unit": 200.0, "cabinet_type": "base",
             "width_in": plant_w_mm / MM, "height_in": 34.5,
             "depth_in": plant_d_mm / MM,
-            "x_position_in": fx1 / MM, "z_position_in": fz0 / MM,
-            "rotation_deg": 0, "wall": "left", "run_seq": -1,
+            "x_position_in": fx0 / MM, "z_position_in": fz1 / MM,
+            "rotation_deg": 0, "wall": "back", "run_seq": -1,
             "origin": "configurator", "layout_key": "cm-zero-standoff-plant",
         })
 

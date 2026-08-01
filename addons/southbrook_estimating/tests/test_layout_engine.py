@@ -8,6 +8,7 @@ and design-line seeding through the engine (P0.2) cannot regress existing
 straight kitchens.
 """
 import copy
+import math
 
 from odoo.tests.common import TransactionCase
 from odoo.addons.southbrook_estimating.models import kitchen_layout_engine as E
@@ -212,13 +213,22 @@ class TestKitchenLayoutEngine(TransactionCase):
         pl = {p["id"]: p for p in r["placements"]}
         cc = pl["corner-back-left-base"]
         cc_node = next(c for c in r["cabinets"] if c["id"] == "corner-back-left-base")
-        # 2026-07-12 (Task 2): the corner node renders IN the corner — tagged
-        # "left" (not the misrepresentative "back" of the pre-fix bug) with
-        # the left wall's rotation, its footprint exactly the back-left cell.
-        self.assertEqual(cc_node["wall"], "left")
-        self.assertAlmostEqual(cc["x"], 0)
-        self.assertAlmostEqual(cc["z"], E._CORNER_FOOTPRINT_MM / 2.0)
-        self.assertAlmostEqual(cc["rotation_deg"], 90)
+        # Corner-orientation fix (2026-07-31) — the corner node renders IN
+        # the corner, tagged "back" (its own actual presentation — see
+        # ROOM_CORNER_PLACEMENT) with rotation 0. This USED TO assert
+        # wall="left"/rotation=90: that was the verified bug (the door
+        # notch faced the back wall instead of into the room) — its
+        # anchor-convention AABB was pixel-identical to the correct pose
+        # for this SQUARE corner (see the ROOM_CORNER_PLACEMENT module
+        # comment in kitchen_layout_engine.py), which is exactly why nobody
+        # caught it from occupancy/footprint checks alone. wall="back" here
+        # is NOT a reversion to the old pre-Task-8 "vanishing cabinet" bug
+        # (see that same comment) — corner_cabinet.esm.js now renders a
+        # real diagonal notch, visually distinct at any rotation.
+        self.assertEqual(cc_node["wall"], "back")
+        self.assertAlmostEqual(cc["x"], E._CORNER_FOOTPRINT_MM / 2.0)
+        self.assertAlmostEqual(cc["z"], 0)
+        self.assertAlmostEqual(cc["rotation_deg"], 0)
         # nothing overlaps the corner cell; runs stay within wall lengths
         back = [pl[c["id"]] for c in r["cabinets"]
                 if c.get("wall") == "back" and not c.get("corner_cabinet")]
@@ -318,7 +328,13 @@ class TestKitchenLayoutEngine(TransactionCase):
         r = E.resolve_and_layout(cabs, ROOM, auto_assign=False)
         fl = [c for c in r["cabinets"] if c.get("corner") == "front-left"]
         self.assertEqual(len(fl), 1)
-        self.assertEqual(fl[0]["wall"], "front")
+        # Corner-orientation fix (2026-07-31): front-left's own
+        # presentation wall is "left" (rotation_deg=90 —
+        # ROOM_CORNER_PLACEMENT), not "front" (was "front"/180 pre-fix).
+        # `host_wall`="front" (below) stays the run-cursor bookkeeping
+        # key only — see the module comment on ROOM_CORNER_PLACEMENT for
+        # why that must NOT be assumed to be the emitted wall/rotation.
+        self.assertEqual(fl[0]["wall"], "left")
         self.assertEqual(fl[0]["run_seq"], -1)
         pl = self._assert_clean(r, ROOM)
         # sits in the front-left cell: low x, high z (near the front wall)
@@ -373,14 +389,27 @@ class TestKitchenLayoutEngine(TransactionCase):
         self.assertTrue(q["front-left"]["x"] < 3000 and q["front-left"]["z"] > 2500)
         self.assertTrue(q["front-right"]["x"] > 3000 and q["front-right"]["z"] > 2500)
 
-    # ── Corner node wall + orientation (2026-07-12, Task 2) ─────────────
-    # The "flat on the back wall" bug: the inserted back-left corner node
-    # used to be tagged wall="back" with rotation_deg=0 — geometrically
-    # inside the corner cell, but visually INDISTINGUISHABLE from an
-    # ordinary back-wall cabinet (same wall tag, same rotation), which is
-    # why the corner "vanished" into the back run instead of reading as a
-    # corner transition into the left wall. Every corner node must render
-    # IN its own corner cell with a wall tag that doesn't misrepresent it.
+    # ── Corner node wall + orientation ───────────────────────────────────
+    # History: an EARLIER fix (2026-07-12, Task 2, pre-Task-8) required
+    # every corner node's wall/rotation to differ from its "host" wall's
+    # own natural (wall, rotation) pair — back then corner cabinets
+    # rendered as a plain box (`buildOtherCabinet`), so back-left tagged
+    # wall="back"/rotation=0 was visually IDENTICAL to an ordinary back-
+    # wall cabinet ("vanished" instead of reading as a corner).
+    #
+    # Corner-orientation fix (2026-07-31): that same wall="back"/rotation=0
+    # pairing for back-left is now the CORRECT one (see the
+    # ROOM_CORNER_PLACEMENT module comment in kitchen_layout_engine.py —
+    # recomputing the actual local->world door-normal transform shows
+    # rotation=0 is what makes the notch face INTO the room for this
+    # corner). It is not a reversion to the 2026-07-12 bug: Task 8
+    # (corner_cabinet.esm.js) shipped a real diagonal/pie-cut notch mesh,
+    # which is visually distinct from a plain box at ANY rotation — the
+    # "vanishing" failure mode this test used to guard against is
+    # structurally impossible now, regardless of which rotation is
+    # correct. What every corner node must still guarantee: it renders
+    # EXACTLY in its own corner cell (M1's exact-cell bar) at the
+    # ROOM_CORNER_PLACEMENT-correct orientation.
     def test_corner_node_tagged_and_oriented_for_its_corner(self):
         cs = E._CORNER_FOOTPRINT_MM
 
@@ -391,28 +420,36 @@ class TestKitchenLayoutEngine(TransactionCase):
             pl = {p["id"]: p for p in r["placements"]}
             return nodes[0], pl[nodes[0]["id"]]
 
-        # back-left — the bug. Both runs' LOW ends meet at the origin.
+        # back-left — the corner-orientation bug lived here. Both runs'
+        # LOW ends meet at the origin.
         cabs_bl = ([self._mkw(("B", s), "back", s) for s in range(2)]
                    + [self._mkw(("L", s), "left", s) for s in range(2)])
         node_bl, place_bl = _single_corner_node(cabs_bl, ROOM)
         self.assertEqual(node_bl["corner"], "back-left")
         self.assertIn(node_bl["wall"], E.WALLS)          # valid Selection value
-        self.assertNotEqual(node_bl["wall"], "back")     # no longer misrepresented
+        self.assertEqual(node_bl["wall"], "back")        # ROOM_CORNER_PLACEMENT
         cell_bl = E._corner_cell_aabb("0", "0", ROOM, cs)
-        self.assertTrue(E.footprints_overlap(
-            E.footprint_mm(node_bl, place_bl), cell_bl))
+        fp_bl = E.footprint_mm(node_bl, place_bl)
+        # M1: exact-cell equality, same bar as back-right/front-left below
+        # (upgraded from the old mere-overlap check — a future
+        # off-by-something pose regression must not slip through on a
+        # loose overlap test).
+        for got_edge, want_edge in zip(fp_bl, cell_bl):
+            self.assertAlmostEqual(got_edge, want_edge)
         self.assertIn(int(round(place_bl["rotation_deg"])) % 360,
                       E.ALLOWED_ROTATIONS)
-        self.assertNotEqual(int(round(place_bl["rotation_deg"])) % 360, 0)
+        self.assertEqual(int(round(place_bl["rotation_deg"])) % 360, 0)
 
-        # back-right — regression guard (already correct pre-fix: the back
-        # run's HIGH end meets the right run's LOW end at (W, 0)).
+        # back-right — regression guard (already correct pre-fix AND
+        # post-fix, unchanged: the back run's HIGH end meets the right
+        # run's LOW end at (W, 0)).
         room_br = {"width_mm": 4300, "depth_mm": 3000, "height_mm": 2400}
         cabs_br = ([self._mkw(("B2", s), "back", s) for s in range(6)]
                    + [self._mkw(("R2", s), "right", s) for s in range(3)])
         node_br, place_br = _single_corner_node(cabs_br, room_br)
         self.assertEqual(node_br["corner"], "back-right")
         self.assertIn(node_br["wall"], E.WALLS)
+        self.assertEqual(node_br["wall"], "right")
         cell_br = E._corner_cell_aabb("W", "0", room_br, cs)
         fp_br = E.footprint_mm(node_br, place_br)
         # M1: exact-cell equality (not just overlap) — the node's footprint
@@ -421,21 +458,23 @@ class TestKitchenLayoutEngine(TransactionCase):
         # mere overlap check.
         for got_edge, want_edge in zip(fp_br, cell_br):
             self.assertAlmostEqual(got_edge, want_edge)
-        self.assertNotEqual(int(round(place_br["rotation_deg"])) % 360, 0)
+        self.assertEqual(int(round(place_br["rotation_deg"])) % 360, 270)
 
-        # front-left — mirror (already correct pre-fix: the front run's LOW
-        # end meets the left run's HIGH end at (0, D)).
+        # front-left — mirror. Was already non-zero pre-fix (180), but the
+        # SPECIFIC value changed (180 -> 90, see ROOM_CORNER_PLACEMENT):
+        # the front run's LOW end meets the left run's HIGH end at (0, D).
         cabs_fl = ([self._mkw(("F3", s), "front", s) for s in range(4)]
                    + [self._mkw(("L3", s), "left", s) for s in range(4)])
         node_fl, place_fl = _single_corner_node(cabs_fl, ROOM)
         self.assertEqual(node_fl["corner"], "front-left")
         self.assertIn(node_fl["wall"], E.WALLS)
+        self.assertEqual(node_fl["wall"], "left")
         cell_fl = E._corner_cell_aabb("0", "D", ROOM, cs)
         fp_fl = E.footprint_mm(node_fl, place_fl)
         # M1: exact-cell equality — see back-right comment above.
         for got_edge, want_edge in zip(fp_fl, cell_fl):
             self.assertAlmostEqual(got_edge, want_edge)
-        self.assertNotEqual(int(round(place_fl["rotation_deg"])) % 360, 0)
+        self.assertEqual(int(round(place_fl["rotation_deg"])) % 360, 90)
 
     # ── Layer-scoped corner offset (2026-07-12, review I1) ──────────────
     # A base-only corner used to offset the WHOLE host wall via
@@ -483,6 +522,279 @@ class TestKitchenLayoutEngine(TransactionCase):
         self.assertEqual(len(base_back), 1)
         self.assertAlmostEqual(
             pl[base_back[0]["id"]]["x"] - 300, E._CORNER_FOOTPRINT_MM)
+
+
+class TestRoomCornerPlacement(TransactionCase):
+    """Corner-orientation fix (2026-07-31) — dedicated regression suite
+    for `kitchen_layout_engine.ROOM_CORNER_PLACEMENT`, the ONE table that
+    replaced the per-side ad-hoc (wall_tag, rotation_deg) math
+    (`_CORNER_RESOLVE_PRESENTATION` + the standalone front-right branch's
+    hardcoded rotation=0/wall="right").
+    """
+
+    # A room genuinely NOT square in either axis, so "the anchor is
+    # exactly the room corner" can't be confused with "the anchor is
+    # exactly the room centre" or any other coincidental symmetry.
+    ROOM = {"width_mm": 5200.0, "depth_mm": 3700.0, "height_mm": 2400.0}
+
+    def test_room_corner_placement_matches_corner_specs_xz_keys(self):
+        """The x_key/z_key baked into ROOM_CORNER_PLACEMENT must be
+        IDENTICAL to _CORNER_SPECS's own keys for the same corner name —
+        two independent tables that must never silently drift apart
+        (_CORNER_SPECS also drives `wall_graph()`'s junction set, so a
+        mismatch there would misplace which room corner a junction
+        resolves against)."""
+        specs_xz = {name: (xk, zk) for name, _walls, (xk, zk) in E._CORNER_SPECS}
+        self.assertEqual(set(specs_xz), set(E.ROOM_CORNER_PLACEMENT))
+        for name, (xk, zk) in specs_xz.items():
+            got_xk, got_zk, _rot = E.ROOM_CORNER_PLACEMENT[name]
+            self.assertEqual((got_xk, got_zk), (xk, zk), name)
+
+    def test_room_corner_placement_back_right_unchanged(self):
+        """back-right (270°) is the ONE corner the verified bug report
+        calls already-correct pre-fix — pinned so a future edit can't
+        silently perturb the one known-good unit while fixing the other
+        three."""
+        xk, zk, rot = E.ROOM_CORNER_PLACEMENT["back-right"]
+        self.assertEqual((xk, zk, rot), ("W", "0", 270))
+
+    def test_room_corner_placement_values(self):
+        """The full corrected table, pinned literally (item 1 of the
+        corner-orientation fix brief): back_left=(0,0,0),
+        back_right=(rw,0,270), front_left=(0,rd,90),
+        front_right=(rw,rd,180)."""
+        self.assertEqual(E.ROOM_CORNER_PLACEMENT, {
+            "back-left":   ("0", "0", 0),
+            "back-right":  ("W", "0", 270),
+            "front-left":  ("0", "D", 90),
+            "front-right": ("W", "D", 180),
+        })
+
+    @staticmethod
+    def _world_point(anchor, local_x, local_z):
+        """The SAME local->world transform the renderer applies
+        (kitchen_canvas.esm.js `_placeCabinetGroup`: `grp.rotation.y =
+        rotation_deg`, THREE.js convention) — reimplemented independently
+        here (not imported from production code) so this test cannot be
+        fooled by a shared bug in a shared helper. local +x -> world
+        (cosθ, -sinθ), local +z -> world (sinθ, cosθ), then translated by
+        the anchor position — matches this module's own
+        `obb_corners_from_anchor_mm`, which is itself pinned against
+        `footprint_from_anchor_mm` by test."""
+        theta = math.radians(anchor["rotation_deg"])
+        c, s = math.cos(theta), math.sin(theta)
+        wx = anchor["x"] + local_x * c + local_z * s
+        wz = anchor["z"] + local_x * (-s) + local_z * c
+        return wx, wz
+
+    def test_room_corner_placement_anchors_and_door_faces_into_room(self):
+        """Item 3(a) of the corner-orientation fix brief: for EVERY
+        ROOM_CORNER_PLACEMENT entry, (1) the world-transform of local
+        (0,0) — the mesh's anchor/origin, per corner_cabinet.esm.js's
+        documented local frame — equals the actual room corner point
+        within 0.01in (0.254mm), and (2) the world door midpoint (the
+        diagonal/pie notch's own doorMid, corner_cabinet.esm.js's
+        `diagCornerShape`/`pieCornerShape`: clip = min(w,d)*0.42,
+        doorMid = (w - clip/2, d - clip/2) in the LOCAL frame) lies
+        STRICTLY inside the room — i.e. the notch genuinely opens into
+        the room, not into a wall, which is the exact defect the
+        verified bug report describes (back-left's door midpoint used to
+        land at a point whose nearest room boundary was the BACK wall)."""
+        TOL_MM = 0.254   # 0.01in
+        w_in, d_in = 36.0, 36.0
+        w_mm, d_mm = w_in * 25.4, d_in * 25.4
+        clip = min(w_mm, d_mm) * 0.42
+        door_mid_local = (w_mm - clip / 2.0, d_mm - clip / 2.0)
+
+        expect_corner_mm = {
+            "back-left":   (0.0, 0.0),
+            "back-right":  (self.ROOM["width_mm"], 0.0),
+            "front-left":  (0.0, self.ROOM["depth_mm"]),
+            "front-right": (self.ROOM["width_mm"], self.ROOM["depth_mm"]),
+        }
+        for name, (xk, zk, rot) in E.ROOM_CORNER_PLACEMENT.items():
+            with self.subTest(corner=name):
+                anchor = E.room_corner_anchor_pose(name, self.ROOM)
+                self.assertEqual(anchor["rotation_deg"], rot)
+                want_x, want_z = expect_corner_mm[name]
+                self.assertAlmostEqual(anchor["x"], want_x, delta=TOL_MM)
+                self.assertAlmostEqual(anchor["z"], want_z, delta=TOL_MM)
+
+                # anchor-transform of local (0,0) is, by construction,
+                # just the anchor itself — asserted explicitly anyway so
+                # this test does not silently depend on that being true.
+                origin_wx, origin_wz = self._world_point(anchor, 0.0, 0.0)
+                self.assertAlmostEqual(origin_wx, want_x, delta=TOL_MM)
+                self.assertAlmostEqual(origin_wz, want_z, delta=TOL_MM)
+
+                mid_wx, mid_wz = self._world_point(anchor, *door_mid_local)
+                self.assertTrue(
+                    0.0 < mid_wx < self.ROOM["width_mm"],
+                    "%s: door midpoint x=%.2f not strictly inside room "
+                    "width [0, %.2f]" % (name, mid_wx, self.ROOM["width_mm"]))
+                self.assertTrue(
+                    0.0 < mid_wz < self.ROOM["depth_mm"],
+                    "%s: door midpoint z=%.2f not strictly inside room "
+                    "depth [0, %.2f]" % (name, mid_wz, self.ROOM["depth_mm"]))
+
+    def test_room_corner_placement_rejects_the_verified_bug_pose(self):
+        """Direct regression pin for the exact bug report (recomputed
+        here in inches, matching the report's own units): back-left at
+        (x=0, z=36in, rotation_deg=90) — the OLD persisted values — put
+        the door midpoint at world (28.44, 7.56)in, i.e. right against
+        the BACK wall (z within 8in of z=0, out of a 96in-deep room),
+        reading as "the notch faces the back wall". The FIXED pose
+        (x=0, z=0, rotation_deg=0) puts the SAME local door-midpoint
+        point at world (28.44, 28.44)in — identical X (this is purely a
+        Z-axis collapse toward the back wall, not some unrelated shift),
+        comfortably deep into the room-corner cell instead of pinned to
+        the wall face."""
+        w_in, d_in = 36.0, 36.0
+        clip_in = min(w_in, d_in) * 0.42
+        door_mid_local_in = (w_in - clip_in / 2.0, d_in - clip_in / 2.0)
+
+        old_bug_anchor = {"x": 0.0, "z": d_in, "rotation_deg": 90}
+        bug_x_in, bug_z_in = self._world_point(old_bug_anchor,
+                                                *door_mid_local_in)
+        self.assertAlmostEqual(bug_x_in, 28.44, places=2)
+        self.assertAlmostEqual(bug_z_in, 7.56, places=2)   # the verified bug
+
+        fixed_anchor_mm = E.room_corner_anchor_pose("back-left", self.ROOM)
+        fixed_anchor_in = {"x": fixed_anchor_mm["x"] / 25.4,
+                            "z": fixed_anchor_mm["z"] / 25.4,
+                            "rotation_deg": fixed_anchor_mm["rotation_deg"]}
+        fixed_x_in, fixed_z_in = self._world_point(fixed_anchor_in,
+                                                    *door_mid_local_in)
+        self.assertAlmostEqual(fixed_x_in, bug_x_in, places=2)  # X unaffected
+        self.assertAlmostEqual(fixed_z_in, 28.44, places=2)     # Z corrected
+        self.assertGreater(fixed_z_in - bug_z_in, 15.0,
+                            "the fix must move the door midpoint well "
+                            "away from the back wall, not by a rounding "
+                            "amount")
+
+    # ── Item 3(b) — a DELIBERATELY non-square corner ────────────────────
+    # A square corner's anchor-convention AABB is footprint-identical
+    # regardless of which of the 4 ALLOWED_ROTATIONS is chosen (that
+    # invariant is exactly why two prior occupancy-level audits missed
+    # the bug — see the ROOM_CORNER_PLACEMENT module comment). An
+    # asymmetric (rule-driven, M2) corner does NOT enjoy that immunity
+    # for its own reported width_mm/depth_mm: picking the wrong rotation
+    # swaps which physical leg (leg_x_mm, along the back/front wall, vs.
+    # leg_z_mm, along the left/right wall) gets reported as "width" vs.
+    # "depth" — invisible for a 36x36 square, a real manufacturing defect
+    # for a genuine 36x24 blind corner (a "36 wide" cabinet mislabeled
+    # 24 wide / 36 deep).
+    def test_asymmetric_corner_width_depth_not_swapped(self):
+        room = {"width_mm": 4000.0, "depth_mm": 3000.0, "height_mm": 2400.0}
+        cabs = ([self._mkw(("B", s), "back", s) for s in range(2)]
+                + [self._mkw(("L", s), "left", s) for s in range(2)])
+        leg_x_mm, leg_z_mm = 914.4, 609.6    # 36in x 24in — deliberately not square
+        rule = {"rule_id": "asym-1", "sku": "SB-CORNER-BLIND", "tier": "base",
+                "sequence": 1, "leg_x_mm": leg_x_mm, "leg_z_mm": leg_z_mm,
+                "height_mm": 876.3, "min_leg_x_mm": 0, "min_leg_z_mm": 0}
+        r = E.resolve_and_layout(cabs, room, auto_assign=False,
+                                  corner_rules=[rule])
+        node = next(n for n in r["inserted"] if n["corner"] == "back-left")
+        place = {p["id"]: p for p in r["placements"]}[node["id"]]
+
+        # width_mm is the ALONG-THE-BACK-WALL leg (leg_x_mm); depth_mm is
+        # the ALONG-THE-LEFT-WALL leg (leg_z_mm) — NOT swapped.
+        self.assertAlmostEqual(node["width_mm"], leg_x_mm)
+        self.assertAlmostEqual(node["depth_mm"], leg_z_mm)
+
+        anchor = E.anchor_pose_mm(node, place)
+        self.assertAlmostEqual(anchor["x"], 0.0, delta=0.01)
+        self.assertAlmostEqual(anchor["z"], 0.0, delta=0.01)
+        self.assertEqual(int(round(anchor["rotation_deg"])) % 360, 0)
+
+        # The footprint must be EXACTLY the asymmetric cell — 36in along
+        # X (the back wall), 24in along Z (the left wall) — not the
+        # 24x36 a swapped-rotation bug would have produced.
+        fp = E.footprint_from_anchor_mm(node, anchor)
+        self.assertEqual(
+            tuple(round(v, 2) for v in fp),
+            (0.0, round(leg_x_mm, 2), 0.0, round(leg_z_mm, 2)))
+
+    # ── CLIENT EMPHASIS (2026-07-31) — tier coverage EXPLICIT ────────────
+    # "the orientation bug affects the TOP (wall-layer) corner cabinets as
+    # well as the base ones" — design 108's back-left junction carries
+    # BOTH a base-tier corner (SB-CORNER, zone base_run) and a wall-tier
+    # corner (SB-WALL-CORNER, zone 'wall', elevated) at the SAME x/z cell.
+    # `resolve_and_layout`'s `layer` loop (base/wall) runs the IDENTICAL
+    # ROOM_CORNER_PLACEMENT lookup for both — the table is keyed by
+    # corner NAME only, never by layer — so this is provable, not just
+    # assumed. This test proves it for every one of the four junctions
+    # (not just back-left): a full G-shape kitchen with BOTH base and
+    # wall (upper) cabinets on all four walls, so all four junctions
+    # resolve a base AND a wall corner each.
+    def test_base_and_wall_tier_corners_at_same_junction_agree_in_pose(self):
+        room = {"width_mm": 6200.0, "depth_mm": 5000.0, "height_mm": 2400.0}
+        wall_counts = {"back": 9, "front": 9, "left": 7, "right": 7}
+        cabs = []
+        for wall, n in wall_counts.items():
+            cabs += [self._mkw((wall, "base", s), wall, s, "base")
+                     for s in range(n)]
+            cabs += [self._mkw((wall, "wall", s), wall, s, "wall")
+                     for s in range(n)]
+        r = E.resolve_and_layout(cabs, room, auto_assign=False)
+        places = {p["id"]: p for p in r["placements"]}
+
+        by_corner = {}
+        for node in r["inserted"]:
+            by_corner.setdefault(node["corner"], {})[node["layer"]] = node
+        self.assertEqual(
+            set(by_corner), set(E.ROOM_CORNER_PLACEMENT),
+            "expected all four junctions to resolve a corner")
+
+        for cname, by_layer in by_corner.items():
+            with self.subTest(corner=cname):
+                self.assertEqual(
+                    set(by_layer), {"base", "wall"},
+                    "%s: expected BOTH a base-tier and a wall-tier "
+                    "corner node — the bug (and this fix) applies to "
+                    "both, not just base" % cname)
+                base_node, wall_node = by_layer["base"], by_layer["wall"]
+                base_anchor = E.anchor_pose_mm(base_node, places[base_node["id"]])
+                wall_anchor = E.anchor_pose_mm(wall_node, places[wall_node["id"]])
+
+                # Both tiers match ROOM_CORNER_PLACEMENT.
+                xk, zk, want_rot = E.ROOM_CORNER_PLACEMENT[cname]
+                want_x = 0.0 if xk == "0" else room["width_mm"]
+                want_z = 0.0 if zk == "0" else room["depth_mm"]
+                for tier, anchor in (("base", base_anchor), ("wall", wall_anchor)):
+                    self.assertAlmostEqual(
+                        anchor["x"], want_x, delta=0.254,
+                        msg="%s/%s tier x" % (cname, tier))
+                    self.assertAlmostEqual(
+                        anchor["z"], want_z, delta=0.254,
+                        msg="%s/%s tier z" % (cname, tier))
+                    self.assertEqual(
+                        int(round(anchor["rotation_deg"])) % 360, want_rot,
+                        "%s/%s tier rotation" % (cname, tier))
+
+                # The stacked pair at one junction shares its x/z cell —
+                # IDENTICAL x/z/rotation_deg between tiers — only y
+                # (elevation, via _CORNER_HEIGHT_MM[layer]/y_floor)
+                # legitimately differs.
+                self.assertAlmostEqual(base_anchor["x"], wall_anchor["x"],
+                                       delta=0.01, msg=cname)
+                self.assertAlmostEqual(base_anchor["z"], wall_anchor["z"],
+                                       delta=0.01, msg=cname)
+                self.assertEqual(base_anchor["rotation_deg"],
+                                 wall_anchor["rotation_deg"], cname)
+                self.assertNotEqual(
+                    base_anchor["y"], wall_anchor["y"],
+                    "%s: base/wall corners should sit at DIFFERENT "
+                    "elevations (only x/z/rot are shared)" % cname)
+
+    @staticmethod
+    def _mkw(cid, wall, seq, ct="base"):
+        return {"id": cid, "width_mm": 600,
+                "height_mm": 876 if ct != "wall" else 720,
+                "depth_mm": 600 if ct != "wall" else 320,
+                "family": ct if ct == "wall" else "base", "cabinet_type": ct,
+                "zone": "wall" if ct == "wall" else "base_run",
+                "wall": wall, "run_seq": seq}
 
 
 class TestAnchorConversion(TransactionCase):

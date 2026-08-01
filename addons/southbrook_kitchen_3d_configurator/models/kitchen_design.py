@@ -217,8 +217,8 @@ def placed_width_in(product):
 # a corner cabinet physically bridges TWO walls (it sits IN the junction,
 # consuming real run length on both legs) but its `wall` field carries
 # only ONE presentational tag (kitchen_layout_engine.
-# _CORNER_RESOLVE_PRESENTATION — e.g. a back-left corner is tagged
-# wall="left" even though its footprint also occupies the back wall's
+# ROOM_CORNER_PLACEMENT — e.g. a front-left corner is tagged
+# wall="left" even though its footprint also occupies the front wall's
 # run). The engine itself already reserves BOTH adjoining walls' run
 # space for a corner via `corner_walls_by_name` / `wall_start_offsets`
 # (see `_place_lines_on_wall` below) — grouping strictly by the `wall`

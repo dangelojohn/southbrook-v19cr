@@ -246,3 +246,8 @@ from . import test_quote_reconcile_dedup
 # $0-appliance draft SO. Tests-and-evidence only — findings documented
 # inline, no production files touched by this task.
 from . import test_quote_lifecycle_probe
+
+# Corner-orientation fix (2026-07-31) — regression suite for the
+# 19.0.5.36.1 repair migration (back-left/front-left/front-right corner
+# lines persisted under the old verified-wrong presentation).
+from . import test_corner_orientation_repair_migration
