@@ -11,7 +11,8 @@
  */
 
 import {
-    Component, markup, onMounted, onWillStart, onWillUnmount, useState, xml,
+    Component, markup, onMounted, onPatched, onWillStart, onWillUnmount,
+    useRef, useState, xml,
 } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
@@ -91,6 +92,24 @@ export function countCabinetBuckets(items) {
         + counts.corner_count + counts.filler_count + counts.panel_count
         + counts.appliance_count;
     return counts;
+}
+
+// Task 34 (SBK-019) — pure, DOM-agnostic detector for the "side panels
+// collapsed by default under 1024px" boot decision (see setup()'s own
+// comment on `narrowAtBoot`). Exported — not just inlined — so it's
+// independently unit-testable without a jsdom mount, same rationale as
+// `countCabinetBuckets` above. Accepts an explicit `win` argument
+// (rather than reading the global `window`) so a test can pass a bare
+// `{ matchMedia }` fake; guards both a missing `matchMedia` (the jsdom
+// test harness has no polyfill — confirmed, no `window.matchMedia` at
+// all) and a thrown call (some embedders/older browsers).
+export function isNarrowViewportAtBoot(win) {
+    try {
+        return !!(win && typeof win.matchMedia === "function"
+            && win.matchMedia("(max-width: 1023px)").matches);
+    } catch (_) {
+        return false;
+    }
 }
 
 // ─── P2 icons-everywhere — synthetic counter-strip family icons ────────────
@@ -213,6 +232,23 @@ class SouthbrookKitchenConfigurator extends Component {
         // where the component has decided "there's an id" but is still
         // rendering the landing screen, or vice versa.
         const initialDesignId = params.design_id || restoredDesignId || null;
+
+        // Task 34 (SBK-019) — sidebar collapse default. Decided ONCE
+        // here, at boot, from the viewport width — deliberately NOT a
+        // live-updating media-query watcher. A few sections up in this
+        // file, the 2026-07-25 overflow fix exists specifically
+        // because a continuously-enforced width rule on this same
+        // workspace grid used to fire off a false-narrow signal from
+        // the HOST backend window (DevTools split-screen), silently
+        // wrecking the layout — see ".o_sbk_workspace" in the SCSS for
+        // the full incident writeup. A one-shot default avoids
+        // refighting that: from here on the rep has an explicit
+        // toggle (see `_toggleControlsPanel`/`_toggleInventoryPanel`
+        // below) that works regardless of how the host window is
+        // sized. See `isNarrowViewportAtBoot` (pure, exported below)
+        // for the guarded matchMedia check itself.
+        const narrowAtBoot = isNarrowViewportAtBoot(
+            typeof window !== "undefined" ? window : null);
 
         // ── Reactive state ────────────────────────────────────────────────────
         this.state = useState({
@@ -386,6 +422,14 @@ class SouthbrookKitchenConfigurator extends Component {
             // everything else so the template's existing `state.foo`
             // convention holds; `_syncToastView()` is the only writer.
             toastView: { visible: [], overflowCount: 0 },
+            // Task 34 (SBK-019) — independent collapse state for the
+            // left "Room" controls aside and the right "Cabinet
+            // Inventory" aside. See `narrowAtBoot` above for the
+            // default and `_toggleControlsPanel`/
+            // `_toggleInventoryPanel` for the explicit toggle every
+            // width can always reach regardless of this default.
+            controlsCollapsed:  narrowAtBoot,
+            inventoryCollapsed: narrowAtBoot,
         });
         // Auto-save debounce timer (not reactive; managed imperatively).
         this._autoSaveTimer = null;
@@ -415,6 +459,42 @@ class SouthbrookKitchenConfigurator extends Component {
         // demand. Populated by _onCanvasReady once the child's
         // onMounted finishes initScene + buildScene.
         this._canvasApi = null;
+
+        // Task 34 (SBK-020) — focus management for the two opened-
+        // panel/drawer surfaces this component owns: the "Selected
+        // Cabinet" edit drawer (.o_sbk_detail, gated on
+        // `state.selected.layout_key`) and the catalog preview block
+        // (.o_sbk_catalog_preview, gated on `state.catalogPreview`).
+        // `useRef` targets are read inside the `onPatched` hook below
+        // (once the DOM has the newly-opened panel), never read
+        // synchronously here — the panel doesn't exist in the DOM
+        // until OWL renders the state change that opens it.
+        this.detailRef         = useRef("sbkDetailPanel");
+        this.catalogPreviewRef = useRef("sbkCatalogPreview");
+        // Whether each panel was open as of the LAST patch — compared
+        // against the current render in `onPatched` to detect an
+        // open/close TRANSITION (never re-steal focus on every update
+        // to an already-open panel, e.g. re-selecting a different
+        // already-open cabinet).
+        this._panelWasOpen = { detail: false, catalogPreview: false };
+        // The element that had focus right before each panel opened —
+        // captured in `onPatched` at the moment of the open
+        // transition (before this component ever calls `.focus()`),
+        // restored when the panel closes. `document.contains(...)`
+        // guards a since-removed opener (e.g. the "+ Add" button of a
+        // row that scrolled out of a since-re-filtered list).
+        this._panelOpener = { detail: null, catalogPreview: null };
+        // Task 22's ←/→ cycling (`_cycleSelection`) and the
+        // hydration/refresh auto-select-first-item paths
+        // (`_hydrateFromDesign`, `_refreshLayout`) both write
+        // `state.selected` WITHOUT a user gesture aimed at the
+        // drawer — cycling is explicitly designed to keep keyboard
+        // focus on the canvas (Task 22), and auto-select-on-load must
+        // never yank focus into a drawer the rep never asked to open.
+        // Both call sites set this true immediately before that
+        // write; `onPatched` consumes (and always resets) it, so it
+        // only ever suppresses the ONE patch it was set for.
+        this._suppressDetailFocus = false;
 
         // Only _onKeyDown remains pre-bound — it attaches to `window`
         // so we need a stable reference for add/removeEventListener.
@@ -502,6 +582,29 @@ class SouthbrookKitchenConfigurator extends Component {
             });
         });
 
+        // Task 34 (SBK-020) — panel/drawer focus management. Runs after
+        // EVERY re-render (cheap — a handful of boolean reads/compares
+        // unless an open/close transition actually happened), looking
+        // for the specific open<->close edges of the detail drawer and
+        // the catalog preview block. See the field comments on
+        // `detailRef`/`_panelWasOpen`/`_panelOpener`/
+        // `_suppressDetailFocus` above for the full contract.
+        onPatched(() => {
+            this._syncPanelFocus(
+                "detail",
+                !!(this.state.selected && this.state.selected.layout_key),
+                this.detailRef,
+                this._suppressDetailFocus,
+            );
+            this._suppressDetailFocus = false;
+            this._syncPanelFocus(
+                "catalogPreview",
+                !!this.state.catalogPreview,
+                this.catalogPreviewRef,
+                false,
+            );
+        });
+
         onWillUnmount(() => {
             // 24e — no scene to destroy at parent scope. Clear the
             // pending auto-save (so we don't fire after unmount) and
@@ -528,6 +631,48 @@ class SouthbrookKitchenConfigurator extends Component {
     // room change, wall select) and nowhere else.
     _markUserAction() {
         this._userActed = true;
+    }
+
+    // ─── Task 34 (SBK-020) — panel/drawer focus management ─────────────────────
+    // Called from `onPatched` (see setup()) once per named panel, per
+    // render. Detects the open<->close TRANSITION only — an
+    // already-open panel receiving a content update (e.g. a different
+    // cabinet becomes selected while the drawer is already showing)
+    // does nothing here, matching the WAI-ARIA APG expectation that
+    // opening a panel moves focus in ONCE, not on every internal
+    // update.
+    //   - opening (was closed, now open, not suppressed): remember
+    //     whatever currently has focus as this panel's "opener", then
+    //     move focus onto the panel container itself (it carries
+    //     tabindex="-1" in the template — focusable programmatically,
+    //     never part of the normal Tab order).
+    //   - closing (was open, now closed): return focus to the
+    //     captured opener, if it's still attached to the document
+    //     (a design switch or list re-filter can remove it — silently
+    //     doing nothing is the safe fallback, never throwing).
+    _syncPanelFocus(key, isOpen, ref, suppress) {
+        const wasOpen = this._panelWasOpen[key];
+        if (isOpen && !wasOpen) {
+            if (!suppress) {
+                this._panelOpener[key] =
+                    (typeof document !== "undefined" && document.activeElement) || null;
+                if (ref.el && typeof ref.el.focus === "function") {
+                    ref.el.focus({ preventScroll: true });
+                }
+            } else {
+                // Suppressed open (keyboard cycling / auto-select on
+                // load) — no opener to restore to later either.
+                this._panelOpener[key] = null;
+            }
+        } else if (!isOpen && wasOpen) {
+            const opener = this._panelOpener[key];
+            this._panelOpener[key] = null;
+            if (opener && typeof opener.focus === "function"
+                && typeof document !== "undefined" && document.contains(opener)) {
+                opener.focus({ preventScroll: true });
+            }
+        }
+        this._panelWasOpen[key] = isOpen;
     }
 
     // ─── SBK-030 — local toast discipline ───────────────────────────────────────
@@ -683,6 +828,22 @@ class SouthbrookKitchenConfigurator extends Component {
     // option overwrites partnerName with the canonical record label.
     _onCustomerTyped(ev) {
         this.state.partnerName = ev.target.value || "";
+    }
+
+    // Task 34 (SBK-020) — Esc closes the customer-picker dropdown.
+    // The global window keydown handler (`_onKeyDown`) bails out
+    // immediately for any INPUT target (needed so typing in this very
+    // field, or any other, never triggers a hotkey), so Esc-to-close
+    // needs its own listener scoped to this field. Focus never leaves
+    // the input — it opened the dropdown by gaining focus in the
+    // first place, so it's already its own "opener"; nothing to
+    // restore.
+    _onCustomerInputKeydown(ev) {
+        if (ev.key === "Escape" && this.state.pickerOpen) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            this.state.pickerOpen = false;
+        }
     }
 
     async _setCustomer(partner) {
@@ -889,6 +1050,10 @@ class SouthbrookKitchenConfigurator extends Component {
             const hasRealCabinet = this.state.items.some(
                 it => it.cabinet_type !== "filler");
             if (this.state.items.length && hasRealCabinet) {
+                // Task 34 (SBK-020) — this is an auto-select on load,
+                // not a user gesture aimed at the drawer; don't yank
+                // focus into it on boot (see _syncPanelFocus).
+                this._suppressDetailFocus = true;
                 this.state.selected = this.state.items[0];
             }
             this._recomputeLayoutFromItems();
@@ -980,6 +1145,9 @@ class SouthbrookKitchenConfigurator extends Component {
             this.state.warnings   = result.warnings || [];
             if (result.channel) this.state.channel = result.channel;
             if (!this.state.selected && this.state.items.length) {
+                // Task 34 (SBK-020) — same auto-select-on-generate
+                // reasoning as the hydration path above.
+                this._suppressDetailFocus = true;
                 this.state.selected = this.state.items[0];
             }
             // Forced regen on a hydrated design succeeded: the layout is
@@ -1053,6 +1221,15 @@ class SouthbrookKitchenConfigurator extends Component {
         this._hydratedFromDesign = false;
         this._hydrationFailed = false;
         this._userActed = false;
+        // Task 34 (SBK-020) — a session switch invalidates any opener
+        // captured for the OLD session's panels; the elements it
+        // pointed at belong to a design that's about to disappear.
+        // Discarding them here means the close-transition
+        // `_syncPanelFocus` runs on the state clears above (drawer was
+        // open -> now null) resolves to a harmless no-op instead of
+        // trying to refocus something from a design that's gone.
+        this._panelOpener.detail = null;
+        this._panelOpener.catalogPreview = null;
     }
 
     // The landing screen's "New Design" button. This — a genuine,
@@ -1109,6 +1286,21 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.errorCode = "";
         this._hydrationFailed = false;
         this._loadRecentDesigns();
+    }
+
+    // ─── Task 34 (SBK-019) — collapsible side panels ───────────────────────────
+    // Independent toggles for the left "Room" controls aside and the
+    // right "Cabinet Inventory" aside — see `narrowAtBoot` in setup()
+    // for the default and the SCSS (.o_sbk_workspace.is-*-collapsed)
+    // for how each state maps to the grid layout. Both stay reachable
+    // from the topbar regardless of viewport width or which panel is
+    // currently hidden.
+    _toggleControlsPanel() {
+        this.state.controlsCollapsed = !this.state.controlsCollapsed;
+    }
+
+    _toggleInventoryPanel() {
+        this.state.inventoryCollapsed = !this.state.inventoryCollapsed;
     }
 
     // ─── Templates (T3): top-frame entry to the four-dropdown picker ────────────
@@ -2589,8 +2781,20 @@ class SouthbrookKitchenConfigurator extends Component {
             return;
         }
 
-        // D6 — Esc clears the cabinet selection.
+        // D6 / Task 34 (SBK-020) — Esc closes whichever "opened panel"
+        // is on top first: the catalog preview block (opened most
+        // recently in normal use — browsing a row after already
+        // having a cabinet selected) takes priority over the detail
+        // drawer, so a single Esc always closes ONE thing at a time
+        // rather than both at once. `_syncPanelFocus` (onPatched)
+        // handles returning focus to whatever opened the panel that
+        // closes; this handler only ever touches the state field.
         if (k === "Escape") {
+            if (this.state.catalogPreview) {
+                this._dismissCatalogPreview();
+                e.preventDefault();
+                return;
+            }
             if (this.state.selected) {
                 // 24e — child observes state.selected and clears its
                 // own highlight via onWillUpdateProps.
@@ -2721,6 +2925,10 @@ class SouthbrookKitchenConfigurator extends Component {
         // lands somewhere sensible rather than skipping an item.
         if (idx === -1) idx = dir > 0 ? -1 : 0;
         idx = ((idx + dir) % selectable.length + selectable.length) % selectable.length;
+        // Task 34 (SBK-020) — ←/→ cycling is Task 22's canvas-focused
+        // keyboard flow; it must keep focus on the canvas, never yank
+        // it into the detail drawer on every keypress.
+        this._suppressDetailFocus = true;
         this._selectCabinet(selectable[idx]);
     }
 
@@ -3223,6 +3431,28 @@ class SouthbrookKitchenConfigurator extends Component {
 SouthbrookKitchenConfigurator.template = xml`
 <div class="o_sbk_root">
 
+  <!-- Task 34 (SBK-019) — below-768px mobile gate. Always in the DOM
+       (regardless of state.screen — landing/loading/error/workspace
+       all get gated the same way) but display:none above 767px; the
+       SCSS also hides every OTHER direct child of .o_sbk_root at that
+       width, so this is the only thing that renders on a phone —
+       including the topbar's own brand mark, hence the small eyebrow
+       repeating it here so this screen isn't unbranded.
+       Prodboard itself gates the full 3D planner to tablet/desktop —
+       this mirrors that boundary rather than attempting a phone
+       layout (brief: SBK-019). Copy matches the app's own terse,
+       action-first voice elsewhere (e.g. the read-only view banner:
+       "switch to Iso, Top or Perspective to move cabinets") rather
+       than a generic "please" apology. -->
+  <div class="o_sbk_mobile_gate">
+    <div class="o_sbk_mobile_gate_brand">SOUTHBROOK KITCHEN</div>
+    <strong class="o_sbk_mobile_gate_title">Best on tablet or desktop</strong>
+    <p class="o_sbk_mobile_gate_body">
+      This 3D kitchen configurator needs a wider screen. Switch to a
+      tablet, laptop, or desktop, or rotate your device to landscape.
+    </p>
+  </div>
+
   <!-- Task 20 (SBK-034) — minimal landing state. Shown whenever the
        configurator was opened with no design id (the bare menu entry,
        or a direct "new" URL) — instead of the old behavior of
@@ -3348,6 +3578,7 @@ SouthbrookKitchenConfigurator.template = xml`
              t-on-focus="_openCustomerPicker"
              t-on-blur="_closeCustomerPicker"
              t-on-input="_onCustomerTyped"
+             t-on-keydown="_onCustomerInputKeydown"
              aria-label="Assign customer to this design"/>
       <div t-if="state.pickerOpen" class="o_sbk_customer_dropdown" role="listbox">
         <div t-if="state.pickerLoading" class="o_sbk_customer_hint">Loading recent customers…</div>
@@ -3391,6 +3622,35 @@ SouthbrookKitchenConfigurator.template = xml`
       <span class="o_sbk_channel_label" t-esc="state.channel.channel_label"/>
     </div>
     <div class="o_sbk_actions">
+      <!-- Task 34 (SBK-019) — collapsible-panel toggles. Always
+           reachable here in the topbar regardless of which panel (or
+           both) is currently collapsed, and regardless of viewport
+           width — see narrowAtBoot (kitchen_configurator.js setup())
+           for the collapsed-by-default-under-1024px rule these
+           override. aria-pressed reflects the PANEL's open state (a
+           pressed toggle = "the thing it controls is showing"), not
+           the collapsed flag directly.
+           Icon choice: U+25E9/U+25EA (diagonal-split squares), NOT the
+           horizontal-split U+25E7/U+25E8 the view-switcher toolbar
+           below already uses for its Left/Right camera buttons — reusing
+           those here would collide two unrelated meanings onto the
+           same glyphs in the same page (design-review catch, Task 34). -->
+      <div class="o_sbk_panel_toggles" role="group" aria-label="Toggle side panels">
+        <button type="button" class="o_sbk_btn o_sbk_btn_ghost o_sbk_panel_toggle"
+                t-att-aria-pressed="state.controlsCollapsed ? 'false' : 'true'"
+                t-att-aria-label="state.controlsCollapsed ? 'Show room panel' : 'Hide room panel'"
+                t-att-title="state.controlsCollapsed ? 'Show room panel' : 'Hide room panel'"
+                t-on-click="_toggleControlsPanel">
+          <span aria-hidden="true">&#x25E9;</span>
+        </button>
+        <button type="button" class="o_sbk_btn o_sbk_btn_ghost o_sbk_panel_toggle"
+                t-att-aria-pressed="state.inventoryCollapsed ? 'false' : 'true'"
+                t-att-aria-label="state.inventoryCollapsed ? 'Show cabinet inventory panel' : 'Hide cabinet inventory panel'"
+                t-att-title="state.inventoryCollapsed ? 'Show cabinet inventory panel' : 'Hide cabinet inventory panel'"
+                t-on-click="_toggleInventoryPanel">
+          <span aria-hidden="true">&#x25EA;</span>
+        </button>
+      </div>
       <!-- Task 12 (corner-remediation, SBK-021/022 claim 5) — these
            buttons now target state.room[_stretchAxisField()] (width for
            back/front/no wall, depth for left/right — see _stretchWidth's
@@ -3462,7 +3722,14 @@ SouthbrookKitchenConfigurator.template = xml`
   </div>
 
   <!-- Main workspace -->
-  <div t-else="" class="o_sbk_workspace">
+  <!-- Task 34 (SBK-019) — is-controls-collapsed / is-inventory-
+       collapsed drive the responsive grid-template-columns overrides
+       in the SCSS (placed after the pinned desktop default there —
+       see that file's own comment for why the pin exists). -->
+  <div t-else=""
+       t-att-class="'o_sbk_workspace'
+                    + (state.controlsCollapsed ? ' is-controls-collapsed' : '')
+                    + (state.inventoryCollapsed ? ' is-inventory-collapsed' : '')">
 
     <!-- Left controls -->
     <aside class="o_sbk_controls">
@@ -3677,6 +3944,7 @@ SouthbrookKitchenConfigurator.template = xml`
                      draggedProduct="state.draggedProduct"
                      dragHover="state.dragHover"
                      activeWall="state.activeWall"
+                     designName="state.designName"
                      onWallSelect="(w) => this._onWallSelect(w)"
                      onSelectItem="(item) => this._onCanvasSelect(item)"
                      onMoveItem="(p) => this._onCanvasMove(p)"
@@ -3815,10 +4083,22 @@ SouthbrookKitchenConfigurator.template = xml`
            ToastStore.getView()) with an "N more" rollup; every close
            target is a real ≥32×32 <button>; "Dismiss all" clears the
            whole stack including the rolled-up overflow in one click. -->
+      <!-- Task 34 (SBK-020) — container stays role="status"/aria-live
+           "polite" for the common (non-blocking) case; a STICKY toast
+           is, by construction, one that demands a decision before it
+           goes away (a refusal + "Add anyway", a save failure that
+           disables further saves — see toast_store.esm.js's header
+           and every sticky:true call site in this file) — those
+           get role="alert" on the individual toast so assistive tech
+           announces them immediately/assertively rather than waiting
+           for the next polite-queue opening. undefined (not a falsy
+           string) so the attribute is fully ABSENT, not role="", on a
+           non-sticky toast. -->
       <div t-if="state.toastView.visible.length" class="o_sbk_toast_stack"
            role="status" aria-live="polite">
         <div t-foreach="state.toastView.visible" t-as="toast" t-key="toast.id"
-             t-att-class="'o_sbk_toast o_sbk_toast_' + toast.type">
+             t-att-class="'o_sbk_toast o_sbk_toast_' + toast.type"
+             t-att-role="toast.sticky ? 'alert' : undefined">
           <div class="o_sbk_toast_body">
             <span class="o_sbk_toast_message">
               <t t-esc="toast.message"/>
@@ -3868,7 +4148,17 @@ SouthbrookKitchenConfigurator.template = xml`
            looked at, not repeated on all ~48 rows. Fixed icon size and
            a couple of short text lines keep this compact by design so
            it never pushes the grouped list below the fold. -->
-      <div t-if="state.catalogPreview" class="o_sbk_catalog_preview">
+      <!-- Task 34 (SBK-020) — t-ref/tabindex="-1"/role/aria-label make
+           this an opened-panel focus target for _syncPanelFocus
+           (kitchen_configurator.js setup()/onPatched): programmatically
+           focusable (never in the normal Tab order — tabindex="-1"),
+           named so a screen reader announces what focus just landed
+           in. Escape (global keydown) and the × button below both
+           close it; either way _syncPanelFocus returns focus to
+           whichever row/opener triggered the preview. -->
+      <div t-if="state.catalogPreview" class="o_sbk_catalog_preview"
+           t-ref="sbkCatalogPreview" tabindex="-1"
+           role="region" aria-label="Product preview">
         <button type="button" class="o_sbk_catalog_preview_dismiss"
                 t-on-click="_dismissCatalogPreview"
                 aria-label="Close product preview">×</button>
@@ -4051,9 +4341,20 @@ SouthbrookKitchenConfigurator.template = xml`
            real placed layout item (one with a layout_key), never a
            catalog-preview product; the t-if gate now says so directly
            rather than relying solely on the action methods' guards. -->
-      <div t-if="state.selected &amp;&amp; state.selected.layout_key" class="o_sbk_detail">
+      <!-- Task 34 (SBK-020) — same opened-panel focus-target contract
+           as .o_sbk_catalog_preview above: t-ref/tabindex="-1" so
+           _syncPanelFocus can move focus in when the drawer opens
+           (a canvas click, an inventory "+ Add", or a fresh add) and
+           Escape/Remove/deselect all route back through the SAME
+           close-transition, which returns focus to whatever opened
+           it. aria-labelledby names the panel from its own visible
+           heading instead of duplicating that text in a fresh
+           aria-label. -->
+      <div t-if="state.selected &amp;&amp; state.selected.layout_key" class="o_sbk_detail"
+           t-ref="sbkDetailPanel" tabindex="-1"
+           role="region" aria-labelledby="sbkDetailHeading">
         <div class="o_sbk_detail_head">
-          <h4>Selected Cabinet</h4>
+          <h4 id="sbkDetailHeading">Selected Cabinet</h4>
           <button class="o_sbk_detail_remove"
                   aria-label="Remove this cabinet from the layout"
                   title="Remove cabinet"
