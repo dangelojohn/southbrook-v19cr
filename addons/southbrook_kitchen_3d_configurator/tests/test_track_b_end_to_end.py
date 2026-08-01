@@ -339,7 +339,16 @@ class TestTrackBEndToEnd(TransactionCase):
         """
         tmpl = self._make_cabinet_template("Track-B savepoint",
                                            cabinet_type="base")
-        design = self._make_design(with_lines=True, templates=[tmpl])
+        # Task 15 (SBK-027) — a companion wall cabinet so this fixture's
+        # lone base cabinet (this test's own concern is the confirm-
+        # failure savepoint, not wall/base coordination) doesn't trip
+        # the new WALL_RUN_SHORTER_THAN_BASE gate at action_create_
+        # quotation's D12 check. Mirrors test_05's own base+wall pair
+        # (line ~296 above), which already passes this gate unmodified.
+        wall_tmpl = self._make_cabinet_template("Track-B savepoint wall",
+                                                cabinet_type="wall")
+        design = self._make_design(with_lines=True,
+                                   templates=[tmpl, wall_tmpl])
         sale_cls = type(self.SaleOrder)
 
         def _raise_gate(self, *args, **kwargs):
@@ -700,9 +709,16 @@ class TestTrackBEndToEnd(TransactionCase):
         tmpl = self._make_cabinet_template(
             "Track-B cancel sync", cabinet_type="base",
         )
+        # Task 15 (SBK-027) — see test_06's identical comment: a
+        # companion wall cabinet keeps this fixture past the new
+        # WALL_RUN_SHORTER_THAN_BASE gate; this test's own concern is
+        # the cancel-sync state machine, not wall/base coordination.
+        wall_tmpl = self._make_cabinet_template(
+            "Track-B cancel sync wall", cabinet_type="wall",
+        )
         design = self._make_design(
             name="Track-B cancel sync design",
-            with_lines=True, templates=[tmpl],
+            with_lines=True, templates=[tmpl, wall_tmpl],
         )
         design.action_create_quotation()
         so = design.sale_order_id

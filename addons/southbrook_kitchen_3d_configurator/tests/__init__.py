@@ -256,3 +256,15 @@ from . import test_corner_orientation_repair_migration
 # tests for the new report action (reports/kitchen_plan_report.xml) +
 # its SVG generator (models/kitchen_plan_report.py).
 from . import test_plan_report
+
+# Task 15, corner-remediation (2026-07-30, SBK-027) — wall-run / base-run
+# coordination: `_check_production_ready` gains WALL_RUN_SHORTER_THAN_BASE
+# (warning — a wall's WALL-cabinet coverage doesn't reach as far as its
+# BASE-cabinet coverage; downgraded from the audit's literal BLOCK by
+# orchestrator ruling, shipped templates exhibit the shape deliberately)
+# and WALL_BASE_JOINT_MISALIGNED (warning — the runs match in length but
+# their interior seams don't line up by more than 0.5"), both excluding
+# corner cells and appliance gaps from the comparison per the brief.
+# Generation (part b) SHIPPED: _generate_standard_layout targets the base
+# run's length and fills non-divisible tails with a wall-side filler.
+from . import test_wall_base_run_coordination

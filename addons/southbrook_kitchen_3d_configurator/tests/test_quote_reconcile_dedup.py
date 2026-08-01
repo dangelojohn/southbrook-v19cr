@@ -397,6 +397,20 @@ class TestQuoteReuseExistingReconcileOrder(TransactionCase):
                 "sequence": i * 10, "origin": "configurator",
                 "layout_key": "t27-%d" % i,
             })
+            # Task 15 (SBK-027) — a matching wall-cabinet run so this
+            # fixture's base run (this test's actual concern is SO
+            # reuse/dedup, not wall/base coordination) doesn't trip the
+            # new WALL_RUN_SHORTER_THAN_BASE gate at action_create_
+            # quotation's D12 check. Reuses the same ad hoc product —
+            # only the LINE's own cabinet_type drives the engine's
+            # base-vs-wall family split and this check's classification.
+            self.Line.create({
+                "design_id": design.id, "product_id": self.base_prod.id,
+                "quantity": 1, "price_unit": 200.0, "cabinet_type": "wall",
+                "width_in": width_in, "height_in": 30.0, "depth_in": 12.0,
+                "sequence": i * 10 + 5, "origin": "configurator",
+                "layout_key": "t27-wall-%d" % i,
+            })
         return design
 
     def test_reconcile_created_order_is_reused_not_orphaned(self):
