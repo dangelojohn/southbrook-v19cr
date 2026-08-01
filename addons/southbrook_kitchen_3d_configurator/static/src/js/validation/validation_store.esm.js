@@ -16,27 +16,40 @@
  * literals in `message` (Task 15's copy hygiene, kept intact here —
  * this module never rewrites `message`). `dedupeIssues` below is a
  * defensive SECOND pass on the same contract — collapsing on (code,
- * sorted layout_keys) — so a client-side re-render racing a fresh
- * fetch (e.g. two /validate responses landing out of order) can never
- * show a duplicate row either. It can never disagree with the server's
- * own dedupe because it uses the identical two-part key shape.
+ * sorted line_ids) — so a client-side re-render racing a fresh fetch
+ * (e.g. two /validate responses landing out of order) can never show a
+ * duplicate row either.
+ *
+ * Review fix (fix round 1, Important) — this MUST key on `line_ids`,
+ * not `layout_keys`. A backend/manual-origin design line (created on
+ * the record form's editable list, never touched by the 3D
+ * configurator) carries no `layout_key` at all — `_sb_quote_line_key`'s
+ * fallback (models/kitchen_design.py) exists precisely because that's
+ * a real, supported case, not an edge case to paper over. Two DIFFERENT
+ * such lines firing the SAME issue code both carry `layout_keys: []`;
+ * keying on layout_keys collapsed them into one panel entry while the
+ * server-truth `counts` (which the chip renders from, unchanged) still
+ * counted both — chip said "2 warnings", panel showed 1, a real issue
+ * silently hidden. `line_ids` is always populated (every design line
+ * has a real database id) and is exactly the field the server's own
+ * dedupe already keys on, so this can no longer disagree with it.
  */
 
 /**
- * Dedupe an issue list by (code, sorted layout_keys) — the brief's
- * "dedupe by rule+line". Issues with no `layout_keys` at all (a design-
- * level issue with nothing to point at, e.g. MISSING_CUSTOMER) dedupe
- * on `code` alone, which is correct: a design has at most one active
+ * Dedupe an issue list by (code, sorted line_ids) — the brief's "dedupe
+ * by rule+line". Issues with no `line_ids` at all (a design-level issue
+ * with nothing to point at, e.g. MISSING_CUSTOMER) dedupe on `code`
+ * alone, which is correct: a design has at most one active
  * customer-missing state.
- * @param {{code?:string, layout_keys?:string[]}[]} issues
+ * @param {{code?:string, line_ids?:number[]}[]} issues
  * @returns {object[]}
  */
 export function dedupeIssues(issues) {
     const seen = new Set();
     const out = [];
     for (const issue of issues || []) {
-        const keys = [...(issue.layout_keys || [])].sort().join(",");
-        const dedupeKey = (issue.code || "") + "|" + keys;
+        const ids = [...(issue.line_ids || [])].sort().join(",");
+        const dedupeKey = (issue.code || "") + "|" + ids;
         if (seen.has(dedupeKey)) continue;
         seen.add(dedupeKey);
         out.push(issue);

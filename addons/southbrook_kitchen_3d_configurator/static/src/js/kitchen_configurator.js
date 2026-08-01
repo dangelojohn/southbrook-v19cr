@@ -1883,6 +1883,23 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.validation.panelOpen = false;
     }
 
+    // Review fix (fix round 1, Minor) — the panel's one wired fix
+    // action. Calls the EXACT existing `_useWalkInCustomer()` flow
+    // (Task 18) unchanged — never a second implementation — but,
+    // unlike the topbar customer-picker's own walk-in button (which
+    // only needs to close ITS OWN dropdown), this call site also needs
+    // to close the validation panel and re-fetch /validate once the
+    // assignment lands, or the panel keeps showing the now-stale
+    // MISSING_CUSTOMER row until the next save/arrange happens to
+    // refresh it. `_useWalkInCustomer` itself never throws (it catches
+    // and toasts internally) and never rejects, so awaiting it here is
+    // always safe — no separate try/catch needed.
+    async _fixMissingCustomerFromPanel() {
+        await this._useWalkInCustomer();
+        this.state.validation.panelOpen = false;
+        await this._refreshValidation();
+    }
+
     // F14 — inventory row click is catalog BROWSING, not layout
     // SELECTION. Previously the row's click handler called
     // `_selectCabinet(product)` directly with the raw catalog product
@@ -4102,7 +4119,7 @@ SouthbrookKitchenConfigurator.template = xml`
               <div class="o_sbk_validation_group_title">Blocking</div>
               <ul class="o_sbk_validation_list">
                 <li t-foreach="_groupedValidationIssues().blocking" t-as="issue"
-                    t-key="issue.code + ':' + (issue.layout_keys || []).join(',')"
+                    t-key="issue.code + ':' + (issue.line_ids || []).join(',')"
                     class="o_sbk_validation_issue">
                   <!-- Click selects+reveals the offending cabinet (AC) —
                        reuses _selectCabinet/state.selected (Task 22),
@@ -4117,10 +4134,15 @@ SouthbrookKitchenConfigurator.template = xml`
                   <span t-else="" class="o_sbk_validation_issue_text" t-esc="issue.message"/>
                   <!-- The one wired fix action (Task 18's existing
                        walk-in flow); every other conceivable fix stays
-                       unimplemented per the brief ("others...inert"). -->
+                       unimplemented per the brief ("others...inert").
+                       _fixMissingCustomerFromPanel wraps _useWalkInCustomer
+                       with a panel-close + /validate re-fetch so the chip/
+                       panel reflect the fix immediately (fix round 1,
+                       Minor) — the topbar picker's own walk-in button
+                       still calls _useWalkInCustomer directly, unchanged. -->
                   <button t-if="issue.code === 'MISSING_CUSTOMER'" type="button"
                           class="o_sbk_btn o_sbk_btn_ghost o_sbk_validation_fix"
-                          t-on-click="_useWalkInCustomer">
+                          t-on-click="_fixMissingCustomerFromPanel">
                     Assign walk-in customer
                   </button>
                 </li>
@@ -4130,7 +4152,7 @@ SouthbrookKitchenConfigurator.template = xml`
               <div class="o_sbk_validation_group_title">Warnings</div>
               <ul class="o_sbk_validation_list">
                 <li t-foreach="_groupedValidationIssues().warning" t-as="issue"
-                    t-key="issue.code + ':' + (issue.layout_keys || []).join(',')"
+                    t-key="issue.code + ':' + (issue.line_ids || []).join(',')"
                     class="o_sbk_validation_issue">
                   <button t-if="(issue.layout_keys || []).length" type="button"
                           class="o_sbk_validation_issue_btn"

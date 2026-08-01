@@ -25,9 +25,26 @@
  *   - an issue with no resolvable line renders as inert text, not a
  *     button;
  *   - MISSING_CUSTOMER carries the one wired fix action (Task 18's
- *     existing get_or_create_walkin_partner flow);
+ *     existing get_or_create_walkin_partner flow), which now ALSO
+ *     closes the panel and re-fetches /validate once it resolves (fix
+ *     round 1, Minor);
  *   - /validate is re-fetched after a successful save, auto-save, and
  *     arrange (the brief: "refreshed after save/arrange").
+ *
+ * Fix round 1 (review) — dedupeIssues MUST key on (code, line_ids), not
+ * (code, layout_keys). A backend/manual-origin design line (the record
+ * form's editable list; `_sb_quote_line_key`'s fallback in
+ * kitchen_design.py exists precisely for this real, supported case)
+ * carries no `layout_key` at all, so two DIFFERENT such lines firing
+ * the SAME issue code both carry `layout_keys: []` — keying on
+ * layout_keys collapsed them into one panel entry while the server-
+ * truth `counts` (which the chip renders from) still counted both: chip
+ * said "2 warnings", panel showed 1, a real issue silently hidden.
+ * `line_ids` is always populated and is the exact field the server's
+ * own dedupe already keys on. Part 1 below is rewritten to key on
+ * line_ids throughout, plus one new test reproducing the exact bug
+ * shape (two same-code issues, distinct line_ids, BOTH empty
+ * layout_keys) end to end through the mounted panel.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -39,28 +56,28 @@ import { tick } from "../harness/tick.mjs";
 
 // ─── Part 1 — pure reducer (no DOM) ─────────────────────────────────────────
 
-test("dedupeIssues: an identical (code, layout_keys) pair collapses to one entry, order-insensitive", () => {
+test("dedupeIssues: an identical (code, line_ids) pair collapses to one entry, order-insensitive", () => {
     const issues = [
-        { code: "CABINET_COLLISION", layout_keys: ["k1", "k2"], message: "a" },
-        { code: "CABINET_COLLISION", layout_keys: ["k2", "k1"], message: "a" },
+        { code: "CABINET_COLLISION", line_ids: [11, 12], layout_keys: ["k1", "k2"], message: "a" },
+        { code: "CABINET_COLLISION", line_ids: [12, 11], layout_keys: ["k2", "k1"], message: "a" },
     ];
     assert.equal(dedupeIssues(issues).length, 1,
-        "same code + same line-set (any order) is one issue");
+        "same code + same line-id-set (any order) is one issue");
 });
 
-test("dedupeIssues: the SAME code on a DIFFERENT line-set is kept as a distinct issue", () => {
+test("dedupeIssues: the SAME code on a DIFFERENT line-id-set is kept as a distinct issue", () => {
     const issues = [
-        { code: "CABINET_COLLISION", layout_keys: ["k1", "k2"], message: "a" },
-        { code: "CABINET_COLLISION", layout_keys: ["k3", "k4"], message: "b" },
+        { code: "CABINET_COLLISION", line_ids: [11, 12], layout_keys: ["k1", "k2"], message: "a" },
+        { code: "CABINET_COLLISION", line_ids: [13, 14], layout_keys: ["k3", "k4"], message: "b" },
     ];
     assert.equal(dedupeIssues(issues).length, 2,
         "a different pair of cabinets is a different, real issue — must not be swallowed");
 });
 
-test("dedupeIssues: issues with no layout_keys at all dedupe on code alone", () => {
+test("dedupeIssues: issues with no line_ids at all dedupe on code alone", () => {
     const issues = [
-        { code: "MISSING_CUSTOMER", message: "a" },
-        { code: "MISSING_CUSTOMER", message: "a" },
+        { code: "MISSING_CUSTOMER", line_ids: [], layout_keys: [], message: "a" },
+        { code: "MISSING_CUSTOMER", line_ids: [], layout_keys: [], message: "a" },
     ];
     assert.equal(dedupeIssues(issues).length, 1,
         "a design has at most one active customer-missing state");
@@ -69,6 +86,22 @@ test("dedupeIssues: issues with no layout_keys at all dedupe on code alone", () 
 test("dedupeIssues: an empty/undefined list never throws", () => {
     assert.deepEqual(dedupeIssues([]), []);
     assert.deepEqual(dedupeIssues(undefined), []);
+});
+
+test("fix round 1 (Important) regression: two same-code issues with DISTINCT line_ids but BOTH empty layout_keys must remain two entries", () => {
+    // The exact shape a backend/manual-origin design line produces (no
+    // layout_key at all — kitchen_design.py's _sb_quote_line_key
+    // fallback exists precisely for this case): keying dedupe on
+    // layout_keys collapsed these into one, silently hiding a real
+    // second issue behind server-truth counts that still said two.
+    const issues = [
+        { code: "NON_STANDARD_WIDTH", line_ids: [901], layout_keys: [], message: "Cabinet A is 37\" wide." },
+        { code: "NON_STANDARD_WIDTH", line_ids: [902], layout_keys: [], message: "Cabinet B is 41\" wide." },
+    ];
+    const out = dedupeIssues(issues);
+    assert.equal(out.length, 2,
+        "two distinct backend-origin lines firing the same code must both survive dedupe");
+    assert.deepEqual(out.map((i) => i.line_ids), [[901], [902]]);
 });
 
 test("groupBySeverity: splits blocking from warning, preserving each group's own order", () => {
@@ -161,6 +194,43 @@ test("_refreshValidation populates state.validation from /validate, deduped clie
         "the exact-duplicate MISSING_CUSTOMER pair collapses to one");
     assert.deepEqual(h.component.state.validation.counts, { blocking: 1, warning: 1 });
     assert.equal(h.component.state.validation.ready, false);
+    h.destroy();
+});
+
+test("fix round 1 (Important) regression: two backend-origin lines (no layout_key) firing the SAME code both render as distinct panel rows, matching the chip's count", async () => {
+    const h = await mountHydrated({
+        "/southbrook_kitchen/configurator/validate": () => ({
+            issues: [
+                { code: "NON_STANDARD_WIDTH", severity: "warning",
+                  message: "Cabinet A is 37\" wide.",
+                  line_ids: [901], layout_keys: [] },
+                { code: "NON_STANDARD_WIDTH", severity: "warning",
+                  message: "Cabinet B is 41\" wide.",
+                  line_ids: [902], layout_keys: [] },
+            ],
+            counts: { blocking: 0, warning: 2 },
+            ready: true,
+        }),
+    });
+    await h.component._refreshValidation();
+    assert.equal(h.component.state.validation.issues.length, 2,
+        "distinct backend-origin lines must NOT collapse just because both carry empty layout_keys");
+    await tick();
+
+    const chip = h.root.querySelector(".o_sbk_validation_chip");
+    assert.equal(chip.textContent.trim(), "2 warnings",
+        "chip count (server truth) must match what the panel is about to show");
+    chip.click();
+    await tick();
+
+    const rows = h.root.querySelectorAll(".o_sbk_validation_issue");
+    assert.equal(rows.length, 2, "the panel must render both rows, not one");
+    assert.ok(h.root.textContent.includes("Cabinet A is 37\" wide."));
+    assert.ok(h.root.textContent.includes("Cabinet B is 41\" wide."));
+    // Neither carries a resolvable layout_key -> both are inert text,
+    // never a button (see the separate "inert text" test for that
+    // contract in isolation).
+    assert.equal(h.root.querySelector(".o_sbk_validation_issue_btn"), null);
     h.destroy();
 });
 
@@ -284,7 +354,7 @@ test("an issue with no resolvable line renders as inert text, not a button", asy
     h.destroy();
 });
 
-test("MISSING_CUSTOMER carries the wired 'Assign walk-in customer' fix action (Task 18's existing flow)", async () => {
+test("MISSING_CUSTOMER carries the wired 'Assign walk-in customer' fix action (Task 18's existing flow); fixing it closes the panel and re-fetches /validate", async () => {
     let walkinCalls = 0;
     const h = await mountHydrated({
         "/southbrook_kitchen/configurator/validate": () => ({
@@ -312,11 +382,23 @@ test("MISSING_CUSTOMER carries the wired 'Assign walk-in customer' fix action (T
     const fixBtn = [...h.root.querySelectorAll(".o_sbk_validation_fix")]
         .find((b) => b.textContent.trim() === "Assign walk-in customer");
     assert.ok(fixBtn, "MISSING_CUSTOMER renders the one wired fix action");
+    const validateCallsBefore = h.rpcCalls("/southbrook_kitchen/configurator/validate").length;
+
     fixBtn.click();
-    await tick(30);   // _useWalkInCustomer chains rpc -> _setCustomer -> _loadProducts/_refreshLayout
+    await tick(30);   // _fixMissingCustomerFromPanel chains _useWalkInCustomer -> _setCustomer -> _refreshValidation
 
     assert.equal(walkinCalls, 1, "the SAME get_or_create_walkin_partner call the topbar picker already uses");
     assert.equal(h.component.state.partnerId, 4242);
+    // Fix round 1 (Minor) — the panel must not keep showing the now-
+    // stale MISSING_CUSTOMER row; it closes immediately, and a fresh
+    // /validate fetch is fired rather than waiting for the next save/
+    // arrange to happen to refresh it.
+    assert.equal(h.component.state.validation.panelOpen, false,
+        "fixing the issue from the panel closes it — no stale row left showing");
+    assert.ok(
+        h.rpcCalls("/southbrook_kitchen/configurator/validate").length > validateCallsBefore,
+        "the fix action must trigger a fresh /validate fetch, not wait for the next save/arrange",
+    );
     h.destroy();
 });
 
