@@ -449,17 +449,6 @@ $sbk-amber:      #B45309;
     }
 }
 
-// SBK-026 item 4 — live "Bottom of cabinet: NN.NN" preview text next
-// to the Wall Cabinet Top selector. Reuses .o_sbk_field's grid/color
-// but drops the label typography (this is a sentence, not a field).
-.o_sbk_wall_cab_helper {
-    font-size: 11px;
-    font-weight: 500;
-    text-transform: none;
-    letter-spacing: normal;
-    line-height: 1.4;
-    margin-top: -6px;
-}
 
 .o_sbk_input_row {
     display: flex;
@@ -1127,26 +1116,6 @@ $sbk-amber:      #B45309;
     }
 }
 
-// D4 — "Save as my default" link in left controls
-.o_sbk_save_default_link {
-    display: inline-block;
-    margin: 4px 0 8px;
-    padding: 0;
-    background: transparent;
-    border: 0;
-    color: #1866d4;
-    font-size: 11px;
-    text-decoration: underline;
-    cursor: pointer;
-    align-self: flex-start;
-    transition: color var(--sb-transition);
-    &:hover { color: #0f3a8a; }
-    &:focus-visible {
-        outline: 2px solid var(--sb-blue);
-        outline-offset: 2px;
-        border-radius: 2px;
-    }
-}
 
 // D3 — Channel pricing badge (topbar, between brand and action cluster)
 .o_sbk_channel_badge {

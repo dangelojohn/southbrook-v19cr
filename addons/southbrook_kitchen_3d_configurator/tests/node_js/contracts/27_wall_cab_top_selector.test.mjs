@@ -37,113 +37,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mountConfigurator } from "../harness/mount_configurator.mjs";
 
-// ─── defaults + three-states-differ ────────────────────────────────────────
-
-test("fresh session defaults: fixed_gap, soffit unset (0), counter 1.5in", async () => {
-    const h = await mountConfigurator({});
-    assert.equal(h.component.state.wallCabTopAlignment, "fixed_gap");
-    assert.equal(h.component.state.soffitHeightIn, 0);
-    assert.equal(h.component.state.counterThicknessIn, 1.5);
-});
-
-test("SBK-026 AC: 96in ceiling / 34.5 carcass / 1.5 top / 18 gap -> fixed_gap resolves to 54.00in", async () => {
-    const h = await mountConfigurator({});
-    const g = h.component._wallCabBottomGeometry();
-    assert.equal(g.alignment, "fixed_gap");
-    assert.equal(g.yIn, 54.0);
-    assert.match(h.component._wallCabBottomText(), /Bottom of cabinet: 54\.00"/);
-});
-
-test("to_ceiling resolves to ceiling - wall_h (96 - 30 = 66.00in), unchanged formula", async () => {
-    const h = await mountConfigurator({});
-    await h.component._changeWallAlignment("to_ceiling");
-    const g = h.component._wallCabBottomGeometry();
-    assert.equal(g.alignment, "to_ceiling");
-    assert.equal(g.yIn, 66.0);
-    assert.match(h.component._wallCabBottomText(), /Bottom of cabinet: 66\.00"/);
-});
-
-test("to_soffit is GATED to fixed_gap while soffit_height_in is unset (0)", async () => {
-    const h = await mountConfigurator({});
-    await h.component._changeWallAlignment("to_soffit");
-    const g = h.component._wallCabBottomGeometry();
-    assert.equal(g.gated, true, "unset soffit must gate to_soffit off");
-    assert.equal(g.alignment, "fixed_gap");
-    assert.equal(g.yIn, 54.0, "gated to_soffit must fall back to the fixed_gap number");
-    assert.match(h.component._wallCabBottomText(), /soffit height not set/);
-});
-
-test("to_soffit resolves once soffit_height_in is set above 0 (90in -> 60.00in)", async () => {
-    const h = await mountConfigurator({});
-    await h.component._changeWallAlignment("to_soffit");
-    await h.component._changeSoffit("90");
-    const g = h.component._wallCabBottomGeometry();
-    assert.equal(g.gated, false);
-    assert.equal(g.alignment, "to_soffit");
-    assert.equal(g.yIn, 60.0);
-    assert.match(h.component._wallCabBottomText(), /Bottom of cabinet: 60\.00"/);
-});
-
-test("SBK-026 AC: fixed_gap / to_ceiling / to_soffit(90) are three VISIBLY DIFFERENT heights", async () => {
-    const h = await mountConfigurator({});
-    const fixedGap = h.component._wallCabBottomGeometry().yIn;
-
-    await h.component._changeWallAlignment("to_ceiling");
-    const toCeiling = h.component._wallCabBottomGeometry().yIn;
-
-    await h.component._changeWallAlignment("to_soffit");
-    await h.component._changeSoffit("90");
-    const toSoffit = h.component._wallCabBottomGeometry().yIn;
-
-    assert.equal(fixedGap, 54.0);
-    assert.equal(toCeiling, 66.0);
-    assert.equal(toSoffit, 60.0);
-    const distinct = new Set([fixedGap, toCeiling, toSoffit]);
-    assert.equal(distinct.size, 3, "all three states must resolve to distinct heights");
-});
-
-// ─── counter thickness ──────────────────────────────────────────────────────
-
-test("counter_thickness_in moves the fixed_gap number (item 1 of the brief)", async () => {
-    const h = await mountConfigurator({});
-    await h.component._changeCounterThickness("2.5");
-    assert.equal(h.component.state.counterThicknessIn, 2.5);
-    // 34.5 + 2.5 + 18 = 55.0
-    assert.equal(h.component._wallCabBottomGeometry().yIn, 55.0);
-});
-
-test("_changeCounterThickness rejects out-of-range / non-finite input (no-op)", async () => {
-    const h = await mountConfigurator({});
-    const before = h.component.state.counterThicknessIn;
-    await h.component._changeCounterThickness("not-a-number");
-    await h.component._changeCounterThickness("-1");
-    await h.component._changeCounterThickness("999");
-    assert.equal(h.component.state.counterThicknessIn, before);
-});
-
-test("_changeCounterThickness is a no-op once hydrated (F12 pattern)", async () => {
-    const h = await mountConfigurator({
-        actionParams: { design_id: 950 },
-        rpcRoutes: {
-            "/southbrook_kitchen/configurator/load_design_lines": () => ({
-                room: { width_in: 96, depth_in: 96, height_in: 96 },
-                design_name: "SBK-026 hydrated test",
-                lines: [{
-                    layout_key: "base-1", cabinet_type: "base", product_name: "Base 24",
-                    width_in: 24, height_in: 34.5, depth_in: 24,
-                    x_position_in: 0, y_position_in: 0, z_position_in: 0,
-                    rotation_deg: 0, wall: "back", price: 500,
-                }],
-            }),
-        },
-    });
-    assert.equal(h.component.state.hydratedFromDesign, true);
-    const before = h.component.state.counterThicknessIn;
-    await h.component._changeCounterThickness("3.0");
-    assert.equal(h.component.state.counterThicknessIn, before);
-    assert.equal(h.component._autoSaveTimer, null);
-});
-
 // ─── save round-trip (the concrete SBK-026 persistence bug) ────────────────
 
 test("_saveDesign round-trips filler_strategy/wall_cab_top_alignment/soffit_height_in/counter_thickness_in", async () => {
@@ -152,9 +45,11 @@ test("_saveDesign round-trips filler_strategy/wall_cab_top_alignment/soffit_heig
             "/southbrook_kitchen/configurator/save": () => ({ id: 951, name: "SBK-026 save test" }),
         },
     });
-    await h.component._changeWallAlignment("to_soffit");
-    await h.component._changeSoffit("90");
-    await h.component._changeCounterThickness("2.0");
+    // Sidebar edit controls removed 2026-08-01 — the STATE plumbing is
+    // what this test pins, so drive the fields directly.
+    h.component.state.wallCabTopAlignment = "to_soffit";
+    h.component.state.soffitHeightIn = 90;
+    h.component.state.counterThicknessIn = 2.0;
 
     await h.component._saveDesign();
 
@@ -173,7 +68,7 @@ test("_autoSave round-trips the same four fields as _saveDesign", async () => {
             "/southbrook_kitchen/configurator/save": () => ({ id: 952, name: "SBK-026 autosave test" }),
         },
     });
-    await h.component._changeWallAlignment("to_ceiling");
+    h.component.state.wallCabTopAlignment = "to_ceiling";
     h.component._markUserAction();
 
     await h.component._autoSave();
@@ -188,7 +83,8 @@ test("_autoSave round-trips the same four fields as _saveDesign", async () => {
 
 test("_refreshLayout's /layout call sends counter_thickness_in alongside the existing D8 fields", async () => {
     const h = await mountConfigurator({});
-    await h.component._changeCounterThickness("2.25");
+    h.component.state.counterThicknessIn = 2.25;
+    await h.component._refreshLayout({ force: true });
 
     const calls = h.rpcCalls("/southbrook_kitchen/configurator/layout");
     const last = calls[calls.length - 1].params;

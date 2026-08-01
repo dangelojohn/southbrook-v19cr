@@ -807,7 +807,7 @@ class SouthbrookKitchenConfigurator extends Component {
     // Scoping note (see task-35-report.md "Concerns" for the full
     // writeup): this button is the ONLY auto-arrange call site gated
     // behind the confirm dialog. The pre-existing IMPLICIT triggers
-    // (_changeRoom, _stretchWidth, the canvas width/depth drag
+    // (_changeRoom, the canvas width/depth drag
     // handles) are left unguarded on purpose — those are routine,
     // continuous room-dimension edits where re-deriving the layout
     // through the engine is already the established, expected
@@ -952,20 +952,6 @@ class SouthbrookKitchenConfigurator extends Component {
             }
         } catch (_) {
             this._userDefaults = null;
-        }
-    }
-
-    async _saveAsMyDefault() {
-        try {
-            await rpc("/southbrook_kitchen/configurator/user_defaults", {
-                save:   true,
-                width:  this.state.room.width_in,
-                depth:  this.state.room.depth_in,
-                height: this.state.room.height_in,
-            });
-            this._toast("Saved as your default room size.", { type: "success" });
-        } catch (e) {
-            this._toast("Couldn't save default: " + (e.message || e), { type: "danger" });
         }
     }
 
@@ -1596,9 +1582,8 @@ class SouthbrookKitchenConfigurator extends Component {
 
     // Task 12 (corner-remediation 2026-07-30, SBK-021/022) — mirrors the
     // server's ROOM_WIDTH_MIN_IN/MAX_IN etc. (models/kitchen_design.py,
-    // controllers/main.py save_design). Kept as ONE lookup table so
-    // _changeRoom and _stretchWidth (below) can never drift against each
-    // other. Not the model constraint itself (that's server-side and
+    // controllers/main.py save_design). One lookup table for every
+    // client-side room-dimension clamp. Not the model constraint itself (that's server-side and
     // authoritative) — this only prevents an obviously-bad value from
     // ever leaving the browser, and gives the honest inline message
     // V5-partc's claim 6 found missing entirely.
@@ -1632,157 +1617,6 @@ class SouthbrookKitchenConfigurator extends Component {
         this._queueAutoSave();    // D5
     }
 
-    // Task 12 — which room dimension the ±24in buttons (and their
-    // disabled state, in the template) target: back/front walls run
-    // ALONG the room's WIDTH axis; left/right walls run along DEPTH
-    // (COORDINATE_CONTRACT.md — the same axis convention _addCabinet
-    // FromProduct and the multi-wall engine already use). No wall
-    // selected keeps the pre-existing width-only behavior. Before this
-    // fix the buttons unconditionally mutated width_in regardless of
-    // which wall the rep was looking at (V5-partc SBK-021/022 claim 5).
-    _stretchAxisField() {
-        const wall = this.state.activeWall;
-        return (wall === WALLS.LEFT || wall === WALLS.RIGHT)
-            ? "depth_in" : "width_in";
-    }
-
-    async _stretchWidth(delta) {
-        this._markUserAction();
-        const field = this._stretchAxisField();
-        const bounds = SouthbrookKitchenConfigurator.ROOM_DIM_BOUNDS[field];
-        this.state.room[field] = Math.min(
-            bounds.max, Math.max(bounds.min, this.state.room[field] + delta));
-        // A button click can't itself submit an out-of-range value (it's
-        // clamped above), so any stale message on this axis is now moot.
-        this.state.roomDimErrors[field] = "";
-        if (this._usesEngineResize()) {
-            await this._rearrangeOnServer();
-            return;
-        }
-        await this._refreshLayout({ force: true });   // room resize regenerates, saved designs included
-        this._queueAutoSave();    // D5
-    }
-
-    // D7 — Change the filler placement strategy + re-emit the layout.
-    //
-    // F12 fix (2026-07-27) — once hydrated from a saved design,
-    // `_refreshLayout()` below is a guaranteed no-op for this control
-    // (see its own early-return comment): it never regenerates the
-    // filler placement. Before this fix the handler still mutated
-    // `state.fillerStrategy` and queued an auto-save regardless — the
-    // control looked live (the select's value changed, the "Auto-saved"
-    // pill lit up) while doing nothing to the actual layout. Early-return
-    // BEFORE any state write or auto-save so a no-op edit never claims to
-    // have saved. The <select> is also disabled in the template for the
-    // same reason (belt + suspenders: a stale bundle or a direct call
-    // still can't lie).
-    async _changeFillerStrategy(value) {
-        if (this._hydratedFromDesign) return;
-        const allowed = ["split", "left", "right", "scribe"];
-        const v = (value || "").toLowerCase();
-        if (!allowed.includes(v)) return;
-        this._markUserAction();   // T7 gate
-        this.state.fillerStrategy = v;
-        await this._refreshLayout();
-        this._queueAutoSave();
-    }
-
-    // D8 — Wall-cab top alignment selector. Re-runs layout so the
-    // wall cabinets snap to the chosen mode immediately.
-    //
-    // F12 fix (2026-07-27) — same rationale as _changeFillerStrategy
-    // above: dead post-hydration, so guarded the same way.
-    async _changeWallAlignment(value) {
-        if (this._hydratedFromDesign) return;
-        const allowed = ["fixed_gap", "to_ceiling", "to_soffit"];
-        const v = (value || "").toLowerCase();
-        if (!allowed.includes(v)) return;
-        this._markUserAction();   // T7 gate
-        this.state.wallCabTopAlignment = v;
-        await this._refreshLayout();
-        this._queueAutoSave();
-    }
-
-    // F12 fix (2026-07-27) — soffit height only ever feeds the
-    // to_soffit wall-cab-top alignment mode, which _refreshLayout()
-    // stops regenerating post-hydration exactly like the two controls
-    // above; guarded the same way for the same reason.
-    async _changeSoffit(rawValue) {
-        if (this._hydratedFromDesign) return;
-        const v = parseFloat(rawValue);
-        if (!Number.isFinite(v) || v < 36 || v > 144) return;
-        this._markUserAction();   // T7 gate
-        this.state.soffitHeightIn = v;
-        // Only re-emit if the alignment actually consults soffit.
-        if (this.state.wallCabTopAlignment === "to_soffit") {
-            await this._refreshLayout();
-        }
-        this._queueAutoSave();
-    }
-
-    // SBK-026 — countertop thickness feeding the fixed_gap formula.
-    // Same dead-post-hydration / re-emit-only-if-consulted pattern as
-    // _changeSoffit; fixed_gap and the industry-minimum floor under
-    // to_ceiling/to_soffit both consult it (see _wallCabBottomIn),
-    // so unlike soffit it re-emits for every alignment mode.
-    async _changeCounterThickness(rawValue) {
-        if (this._hydratedFromDesign) return;
-        const v = parseFloat(rawValue);
-        if (!Number.isFinite(v) || v < 0.25 || v > 6) return;
-        this._markUserAction();   // T7 gate
-        this.state.counterThicknessIn = v;
-        await this._refreshLayout();
-        this._queueAutoSave();
-    }
-
-    // SBK-026 — live geometry backing the Wall Cabinet Top helper text.
-    // Mirrors southbrook.kitchen.design._wall_cab_top_geometry
-    // (models/kitchen_design.py) exactly for the DEFAULT 34.5"/30"
-    // carcass + fixed 18" gap case — keep the two in sync if this
-    // changes. Task 14 review, minor finding — known, accepted
-    // divergence: unlike the Python original, this getter does NOT
-    // scan state.items for an already-placed base/wall cabinet taller
-    // than the 34.5"/30" default, so it can UNDER-state the real
-    // number for such a design; the Python method (which drives the
-    // actual persisted arrange) is authoritative, this is a same-
-    // session preview only. Pure getter — the template calls it
-    // directly, no state duplication.
-    _wallCabBottomGeometry() {
-        const baseH = 34.5;
-        const wallH = 30.0;
-        const ctrT = this.state.counterThicknessIn || 1.5;
-        const gap = 18.0;
-        const minIn = baseH + ctrT + gap;
-        const soffitIn = this.state.soffitHeightIn || 0;
-        const requested = this.state.wallCabTopAlignment || "fixed_gap";
-        const gated = requested === "to_soffit" && soffitIn <= 0;
-        let alignment = "fixed_gap";
-        let yIn = minIn;
-        if (requested === "to_ceiling") {
-            alignment = "to_ceiling";
-            yIn = Math.max(minIn, (this.state.room.height_in || 0) - wallH);
-        } else if (requested === "to_soffit" && soffitIn > 0) {
-            alignment = "to_soffit";
-            yIn = Math.max(minIn, soffitIn - wallH);
-        }
-        return { yIn, topIn: yIn + wallH, alignment, gated, gap };
-    }
-
-    // SBK-026 — the actual helper-text sentence rendered next to the
-    // Wall Cabinet Top selector (item 4 of the brief): live
-    // bottom-of-cabinet height, so fixed_gap/to_ceiling/to_soffit read
-    // as visibly different the moment the selector changes.
-    _wallCabBottomText() {
-        const g = this._wallCabBottomGeometry();
-        const modeLabel = g.alignment === "to_ceiling" ? "up to ceiling"
-            : g.alignment === "to_soffit" ? "up to soffit"
-            : g.gap.toFixed(1) + "\" gap above counter";
-        const gatedNote = g.gated
-            ? " (soffit height not set — using fixed-gap height)" : "";
-        return "Bottom of cabinet: " + g.yIn.toFixed(2)
-            + "\" · Top: " + g.topIn.toFixed(2) + "\" (" + modeLabel + ")"
-            + gatedNote;
-    }
 
     // D7 — Apply the server's snap hint: round room width to the
     // nearest module-clean value to eliminate the filler.
@@ -4057,23 +3891,6 @@ SouthbrookKitchenConfigurator.template = xml`
               t-on-click="_confirmedAutoArrange">
         Auto-arrange
       </button>
-      <!-- Task 12 (corner-remediation, SBK-021/022 claim 5) — these
-           buttons now target state.room[_stretchAxisField()] (width for
-           back/front/no wall, depth for left/right — see _stretchWidth's
-           own comment), not always width_in. The title makes the active
-           axis visible since the button label itself stays generic. -->
-      <button class="o_sbk_btn o_sbk_btn_ghost"
-              t-on-click="() => this._stretchWidth(-24)"
-              t-att-disabled="(_stretchAxisField() === 'depth_in' ? state.room.depth_in : state.room.width_in) &lt;= 12"
-              t-att-title="'Shrink room ' + (_stretchAxisField() === 'depth_in' ? 'depth' : 'width') + ' by 24 in'">
-        − 24 in
-      </button>
-      <button class="o_sbk_btn o_sbk_btn_ghost"
-              t-on-click="() => this._stretchWidth(24)"
-              t-att-disabled="(_stretchAxisField() === 'depth_in' ? state.room.depth_in : state.room.width_in) &gt;= 480"
-              t-att-title="'Grow room ' + (_stretchAxisField() === 'depth_in' ? 'depth' : 'width') + ' by 24 in'">
-        + 24 in
-      </button>
       <button class="o_sbk_btn o_sbk_btn_outline"
               t-on-click="_openDesigns">
         Kitchen Designs
@@ -4227,83 +4044,18 @@ SouthbrookKitchenConfigurator.template = xml`
 
     <!-- Left controls -->
     <aside class="o_sbk_controls">
-      <h3>Room</h3>
+      <h3>Summary</h3>
 
-      <!-- Width/Depth/Height moved to the topbar (2026-06-30). -->
-
-      <!-- D4 — Save current room dims as this user's default. -->
-      <button class="o_sbk_save_default_link"
-              t-on-click="_saveAsMyDefault"
-              title="Use these room dimensions as the prefill for every new design you open">
-        Save as my default
-      </button>
-
-      <!-- D7 — Filler placement strategy.
-           F12 fix (2026-07-27) — disabled once hydrated from a saved
-           design: _refreshLayout() never regenerates post-hydration, so
-           this control is dead then (see _changeFillerStrategy's guard);
-           disabling it here means it no longer LOOKS live when it isn't. -->
-      <label class="o_sbk_field"
-             t-att-title="state.hydratedFromDesign ? 'Reopen-safe mode — layout regeneration is disabled for a reopened design' : 'Filler placement strategy'">
-        <span>Filler strategy</span>
-        <select class="o_sbk_edit_select"
-                t-att-value="state.fillerStrategy"
-                t-att-disabled="state.hydratedFromDesign"
-                t-on-change="(ev) => this._changeFillerStrategy(ev.target.value)">
-          <option value="split"  t-att-selected="state.fillerStrategy === 'split'  ? 'selected' : ''">Split — both ends</option>
-          <option value="right"  t-att-selected="state.fillerStrategy === 'right'  ? 'selected' : ''">Right end only</option>
-          <option value="left"   t-att-selected="state.fillerStrategy === 'left'   ? 'selected' : ''">Left end only</option>
-          <option value="scribe" t-att-selected="state.fillerStrategy === 'scribe' ? 'selected' : ''">Scribe — no filler</option>
-        </select>
-      </label>
-
-      <!-- D8 — Wall cabinet top alignment + soffit height.
-           F12 fix (2026-07-27) — same disabled-once-hydrated treatment
-           as filler strategy above; both selects and the soffit input
-           are dead post-hydration. -->
-      <label class="o_sbk_field"
-             t-att-title="state.hydratedFromDesign ? 'Reopen-safe mode — layout regeneration is disabled for a reopened design' : 'Wall cabinet top alignment'">
-        <span>Wall cab top</span>
-        <select class="o_sbk_edit_select"
-                t-att-value="state.wallCabTopAlignment"
-                t-att-disabled="state.hydratedFromDesign"
-                t-on-change="(ev) => this._changeWallAlignment(ev.target.value)">
-          <option value="fixed_gap"  t-att-selected="state.wallCabTopAlignment === 'fixed_gap'  ? 'selected' : ''">18″ gap above counter</option>
-          <option value="to_ceiling" t-att-selected="state.wallCabTopAlignment === 'to_ceiling' ? 'selected' : ''">Up to ceiling</option>
-          <option value="to_soffit"  t-att-selected="state.wallCabTopAlignment === 'to_soffit'  ? 'selected' : ''">Up to soffit</option>
-        </select>
-      </label>
-      <!-- SBK-026 — countertop thickness feeding the fixed_gap formula
-           (base carcass + counter thickness + 18" gap) AND the
-           industry-minimum floor under to_ceiling/to_soffit. Always
-           visible (not gated to fixed_gap only) since every mode
-           consults it as the floor. -->
-      <label class="o_sbk_field"
-             t-att-title="state.hydratedFromDesign ? 'Reopen-safe mode — layout regeneration is disabled for a reopened design' : 'Countertop thickness'">
-        <span>Counter thickness (in)</span>
-        <input type="number" min="0.25" max="6" step="0.25"
-               class="o_sbk_edit_input"
-               t-att-value="state.counterThicknessIn"
-               t-att-disabled="state.hydratedFromDesign"
-               t-on-change="(ev) => this._changeCounterThickness(ev.target.value)"/>
-      </label>
-      <label t-if="state.wallCabTopAlignment === 'to_soffit'" class="o_sbk_field"
-             t-att-title="state.hydratedFromDesign ? 'Reopen-safe mode — layout regeneration is disabled for a reopened design' : 'Soffit height'">
-        <span>Soffit height (in)</span>
-        <input type="number" min="36" max="144" step="1"
-               class="o_sbk_edit_input"
-               t-att-value="state.soffitHeightIn"
-               t-att-disabled="state.hydratedFromDesign"
-               t-on-change="(ev) => this._changeSoffit(ev.target.value)"/>
-      </label>
-      <!-- SBK-026 item 4 — live helper text: the resulting
-           bottom-of-cabinet height, right next to the selector, so
-           fixed_gap / to_ceiling / to_soffit read as visibly different
-           the moment the selection changes (Front-view AC). Not gated
-           by hydration — it is read-only and always reflects the
-           design's CURRENT (last-regenerated) setting, same as any
-           other display-only field. -->
-      <div class="o_sbk_field o_sbk_wall_cab_helper" t-esc="_wallCabBottomText()"/>
+      <!-- Room-settings edit fields removed 2026-08-01 (John): filler
+           strategy, wall-cab top alignment, counter thickness, soffit
+           height, save-as-default, and the bottom-of-cabinet helper
+           line. The STATE behind them (state.fillerStrategy,
+           state.wallCabTopAlignment, state.counterThicknessIn,
+           state.soffitHeightIn) stays — it seeds from user defaults,
+           hydrates from saved designs, and still flows through the
+           layout-regeneration and autosave payloads; only the sidebar
+           editing surface is gone. The /user_defaults server route is
+           deliberately left in place. -->
 
       <!-- Summary metrics — Task 7 (SBK-033): base/wall/corner are
            always-visible (the V4-counters-templates.md AC: a U-shape

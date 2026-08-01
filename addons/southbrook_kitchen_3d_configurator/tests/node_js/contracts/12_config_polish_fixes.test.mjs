@@ -79,56 +79,9 @@ test("F12: a hydrated design marks state.hydratedFromDesign true", async () => {
     assert.equal(h.component._hydratedFromDesign, true);
 });
 
-test("F12: _changeFillerStrategy is a true no-op (no state write, no auto-save) once hydrated", async () => {
-    const h = await mountHydratedDesign();
-    const before = h.component.state.fillerStrategy;
 
-    await h.component._changeFillerStrategy("scribe");
 
-    assert.equal(h.component.state.fillerStrategy, before,
-        "fillerStrategy must not change post-hydration — the control is dead");
-    assert.equal(h.component._autoSaveTimer, null,
-        "no auto-save may be queued for a no-op edit (would light the 'Auto-saved' pill dishonestly)");
-});
 
-test("F12: _changeWallAlignment and _changeSoffit are also no-ops once hydrated", async () => {
-    const h = await mountHydratedDesign();
-    const beforeAlign = h.component.state.wallCabTopAlignment;
-    const beforeSoffit = h.component.state.soffitHeightIn;
-
-    await h.component._changeWallAlignment("to_ceiling");
-    await h.component._changeSoffit("60");
-
-    assert.equal(h.component.state.wallCabTopAlignment, beforeAlign);
-    assert.equal(h.component.state.soffitHeightIn, beforeSoffit);
-    assert.equal(h.component._autoSaveTimer, null);
-});
-
-test("F12: the filler-strategy and wall-cab-top controls render disabled in the DOM once hydrated", async () => {
-    const h = await mountHydratedDesign();
-    await tick();
-
-    const fillerSelect = fieldControl(h.root, "Filler strategy");
-    const wallTopSelect = fieldControl(h.root, "Wall cab top");
-    assert.ok(fillerSelect, "filler-strategy control found in rendered DOM");
-    assert.ok(wallTopSelect, "wall-cab-top control found in rendered DOM");
-    assert.equal(fillerSelect.disabled, true);
-    assert.equal(wallTopSelect.disabled, true);
-});
-
-test("F12: those same controls are ENABLED (non-regression) on a fresh, non-hydrated session", async () => {
-    const h = await mountConfigurator({});
-    await tick();
-
-    const fillerSelect = fieldControl(h.root, "Filler strategy");
-    const wallTopSelect = fieldControl(h.root, "Wall cab top");
-    assert.equal(fillerSelect.disabled, false);
-    assert.equal(wallTopSelect.disabled, false);
-
-    // And the handler still works normally pre-hydration.
-    await h.component._changeFillerStrategy("scribe");
-    assert.equal(h.component.state.fillerStrategy, "scribe");
-});
 
 // ─── F13 ─────────────────────────────────────────────────────────────────────
 

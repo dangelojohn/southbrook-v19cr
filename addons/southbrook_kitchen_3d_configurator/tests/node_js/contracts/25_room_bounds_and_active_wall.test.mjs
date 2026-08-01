@@ -8,7 +8,9 @@
  * cap) are covered by the Python test suite. This file locks the three
  * client-side sub-claims V5-partc confirmed:
  *
- *   5. "+24in mutates Width, not the active wall" — _stretchWidth used
+ *   5. (historical) "+24in mutates Width, not the active wall" — the
+ *      ±24in stretch buttons were REMOVED 2026-08-01 (John); their
+ *      axis-aware behavior note is kept for archaeology only. Was:
  *      to unconditionally write room.width_in regardless of
  *      state.activeWall. Fixed via _stretchAxisField(): back/front/no
  *      wall -> width_in, left/right -> depth_in.
@@ -91,72 +93,6 @@ test("_changeRoom renders the inline error text next to the field in the DOM", a
     assert.ok(errs.some(el => /480/.test(el.textContent)),
         "the rendered text must mention the actual bound, not a generic message");
     clearAutoSave(h);
-});
-
-// ─── _stretchWidth — targets the ACTIVE wall's axis ────────────────────────
-
-test("_stretchWidth affects width_in when no wall is active (pre-existing default)", async () => {
-    const h = await mountConfigurator({});
-    const d0 = h.component.state.room.depth_in;
-    const w0 = h.component.state.room.width_in;
-    await h.component._stretchWidth(24);
-    assert.equal(h.component.state.room.width_in, w0 + 24);
-    assert.equal(h.component.state.room.depth_in, d0, "must not touch depth");
-    clearAutoSave(h);
-});
-
-for (const wall of ["back", "front"]) {
-    test(`_stretchWidth affects width_in when activeWall="${wall}"`, async () => {
-        const h = await mountConfigurator({});
-        h.component.state.activeWall = wall;
-        const d0 = h.component.state.room.depth_in;
-        const w0 = h.component.state.room.width_in;
-        await h.component._stretchWidth(24);
-        assert.equal(h.component.state.room.width_in, w0 + 24);
-        assert.equal(h.component.state.room.depth_in, d0);
-        clearAutoSave(h);
-    });
-}
-
-for (const wall of ["left", "right"]) {
-    test(`_stretchWidth affects depth_in (not width_in) when activeWall="${wall}"`, async () => {
-        const h = await mountConfigurator({});
-        h.component.state.activeWall = wall;
-        const d0 = h.component.state.room.depth_in;
-        const w0 = h.component.state.room.width_in;
-        await h.component._stretchWidth(24);
-        assert.equal(h.component.state.room.depth_in, d0 + 24,
-            "SBK-021/022 claim 5 — the +/-24in buttons must target the "
-            + "active wall's axis (left/right -> depth), not always width");
-        assert.equal(h.component.state.room.width_in, w0,
-            "must not touch width when a left/right wall is active");
-        clearAutoSave(h);
-    });
-}
-
-test("_stretchWidth honours the 480 max on whichever axis is active", async () => {
-    const h = await mountConfigurator({});
-    h.component.state.activeWall = "left";
-    h.component.state.room.depth_in = 480;
-    await h.component._stretchWidth(24);
-    assert.equal(h.component.state.room.depth_in, 480,
-        "already at the ceiling — a further +24 must not exceed it");
-    clearAutoSave(h);
-});
-
-test("_stretchAxisField reports width_in / depth_in for every wall + null", async () => {
-    const h = await mountConfigurator({});
-    const c = h.component;
-    c.state.activeWall = null;
-    assert.equal(c._stretchAxisField(), "width_in");
-    c.state.activeWall = "back";
-    assert.equal(c._stretchAxisField(), "width_in");
-    c.state.activeWall = "front";
-    assert.equal(c._stretchAxisField(), "width_in");
-    c.state.activeWall = "left";
-    assert.equal(c._stretchAxisField(), "depth_in");
-    c.state.activeWall = "right";
-    assert.equal(c._stretchAxisField(), "depth_in");
 });
 
 // ─── _updateSelectedWidth — inline error instead of a silent no-op ────────
