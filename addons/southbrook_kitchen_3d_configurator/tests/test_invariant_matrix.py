@@ -502,6 +502,14 @@ class TestInvariantMatrix(TransactionCase):
         covered_templates = []
         skipped_templates = []
         checked_corner_lines = 0
+        # CLIENT EMPHASIS (2026-07-31) — tier coverage EXPLICIT, not
+        # implicit: "the orientation bug affects the TOP (wall-layer)
+        # corner cabinets as well as the base ones". A corner line's
+        # tier is its own `zone` (C8: the wall/upper corner is
+        # zone='wall'; everything else, including base_run, is the
+        # base tier) — the SAME split `_footprint_layer` (module-level
+        # helper above) and kitchen_design.py's own check #7 use.
+        checked_by_tier = {"base": 0, "wall": 0}
         for tpl in all_templates:
             # action_instantiate is itself already savepoint-atomic
             # (kitchen_template.py) — a fit/capacity failure rolls back
@@ -530,6 +538,12 @@ class TestInvariantMatrix(TransactionCase):
             room_w_mm = (design.room_width_in or 0) * _MM
             room_d_mm = (design.room_depth_in or 0) * _MM
             key_prefix = "corner-%s-" % design.id
+            # CLIENT EMPHASIS — "the stacked pair at one junction ...
+            # your fix must keep them IDENTICAL in x/z/rot after
+            # repair": {junction_name: {tier: line}}, checked below the
+            # loop for every junction this template resolved BOTH tiers
+            # at.
+            pose_by_junction = {}
             for cl in corners:
                 key = cl.layout_key or ""
                 self.assertTrue(
@@ -542,11 +556,14 @@ class TestInvariantMatrix(TransactionCase):
                     "%s: corner line %r names unknown junction %r"
                     % (tpl.code, key, cname))
                 checked_corner_lines += 1
+                tier = _footprint_layer(cl)
+                checked_by_tier[tier] += 1
+                pose_by_junction.setdefault(cname, {})[tier] = cl
                 xk, zk, want_rot = E.ROOM_CORNER_PLACEMENT[cname]
                 want_x_in = 0.0 if xk == "0" else design.room_width_in
                 want_z_in = 0.0 if zk == "0" else design.room_depth_in
 
-                with self.subTest(template=tpl.code, corner=key):
+                with self.subTest(template=tpl.code, corner=key, tier=tier):
                     # (a) pose matches ROOM_CORNER_PLACEMENT within
                     # 0.01in.
                     self.assertAlmostEqual(
@@ -604,19 +621,57 @@ class TestInvariantMatrix(TransactionCase):
                         len(touches), 2,
                         "%s/%s: AABB %r touches %r — expected 2 room "
                         "walls" % (tpl.code, key, (x0, x1, z0, z1), touches))
+
+            # Base/wall tier agreement at any junction this template
+            # resolved BOTH tiers at.
+            for cname, by_tier in pose_by_junction.items():
+                if set(by_tier) != {"base", "wall"}:
+                    continue
+                with self.subTest(template=tpl.code, corner=cname,
+                                  check="tier-agreement"):
+                    b, w = by_tier["base"], by_tier["wall"]
+                    self.assertAlmostEqual(
+                        b.x_position_in, w.x_position_in, delta=0.01,
+                        msg="%s/%s: base/wall x_position_in disagree"
+                        % (tpl.code, cname))
+                    self.assertAlmostEqual(
+                        b.z_position_in, w.z_position_in, delta=0.01,
+                        msg="%s/%s: base/wall z_position_in disagree"
+                        % (tpl.code, cname))
+                    self.assertAlmostEqual(
+                        (b.rotation_deg or 0) % 360,
+                        (w.rotation_deg or 0) % 360, delta=0.01,
+                        msg="%s/%s: base/wall rotation_deg disagree"
+                        % (tpl.code, cname))
             covered_templates.append(tpl.code)
 
         self.assertGreaterEqual(
             len(covered_templates), 1,
             "no template instantiated successfully — nothing was "
             "actually verified (skipped: %r)" % skipped_templates)
+        # CLIENT ASK (2026-07-31): "count and report corner lines per
+        # tier so the client sees e.g. 'N templates, B base corners + W
+        # wall corners, all asserted'" — the exact shape below.
         _logger.info(
             "[corner-orientation template matrix] %d/%d active "
-            "template(s) instantiated and verified (%d derived corner "
-            "line(s) checked); %d template(s) skipped for reasons "
+            "template(s) instantiated and verified: %d base-tier + %d "
+            "wall-tier corner line(s) checked (%d total), all against "
+            "ROOM_CORNER_PLACEMENT; %d template(s) skipped for reasons "
             "unrelated to corner orientation: %r",
-            len(covered_templates), len(all_templates), checked_corner_lines,
-            len(skipped_templates), skipped_templates)
+            len(covered_templates), len(all_templates),
+            checked_by_tier["base"], checked_by_tier["wall"],
+            checked_corner_lines, len(skipped_templates), skipped_templates)
+        if checked_by_tier["wall"] == 0:
+            _logger.warning(
+                "[corner-orientation template matrix] 0 wall-tier corner "
+                "lines were found across the shipped template catalog — "
+                "the client's ask ('affects the TOP/wall-layer corner "
+                "cabinets as well') is proven by the engine-level test "
+                "(test_layout_engine.py::TestRoomCornerPlacement::"
+                "test_base_and_wall_tier_corners_at_same_junction_agree_"
+                "in_pose) instead; no shipped template's fixed slot set "
+                "currently produces an upper/wall run that reaches a "
+                "junction.")
 
     # ── catalogue invariants (repaired-catalogue state, not per-design) ─
 

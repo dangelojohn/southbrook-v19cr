@@ -70,33 +70,56 @@ class TestCornerOrientationRepairMigration(TransactionCase):
 
     def test_design_108_shaped_back_left_lines_repaired_to_room_corner(self):
         """The exact verified prod shape (design 108, corner-remediation
-        brief item 2): a base-layer AND a wall-layer back-left corner
-        line, both persisted at the OLD wrong pose (x=0, z=36in,
-        rotation_deg=90) -> both become (x=0, z=0, rotation_deg=0)."""
+        brief item 2, CLIENT EMPHASIS 2026-07-31): a base-layer AND a
+        wall-layer (upper) back-left corner line — BOTH tiers, not just
+        base — both persisted at the OLD wrong pose (x=0, z=<their own
+        depth_in>, rotation_deg=90) -> both become (x=0, z=0,
+        rotation_deg=0). The base and wall lines carry DIFFERENT
+        y_position_in (real elevations, 0 vs 30in — a base corner sits on
+        the floor, a wall corner is mounted above the counter) to prove
+        the repair only ever touches x/z/rotation_deg."""
         design = self._design(room_width_in=120.0, room_depth_in=96.0)
         base_line = self._corner_line(
             design, "corner-%s-back-left-base" % design.id, self.corner_prod,
             zone="base_run", width_in=36.0, height_in=34.5, depth_in=36.0,
-            wall="left", rotation_deg=90.0,
+            wall="left", rotation_deg=90.0, y_position_in=0.0,
             x_position_in=0.0, z_position_in=36.0)
         wall_line = self._corner_line(
             design, "corner-%s-back-left-wall" % design.id,
             self.wall_corner_prod,
             zone="wall", width_in=24.0, height_in=30.0, depth_in=24.0,
-            wall="left", rotation_deg=90.0,
+            wall="left", rotation_deg=90.0, y_position_in=55.12,
             x_position_in=0.0, z_position_in=24.0)
 
         self.migration.migrate(self.env.cr, "19.0.5.36.0")
         base_line.invalidate_recordset()
         wall_line.invalidate_recordset()
 
-        for line in (base_line, wall_line):
+        for line, want_y in ((base_line, 0.0), (wall_line, 55.12)):
             self.assertAlmostEqual(line.x_position_in, 0.0, places=2,
                                     msg=line.layout_key)
             self.assertAlmostEqual(line.z_position_in, 0.0, places=2,
                                     msg=line.layout_key)
             self.assertAlmostEqual(line.rotation_deg, 0.0, places=1,
                                     msg=line.layout_key)
+            # y_position_in (elevation) is NEVER touched by this repair.
+            self.assertAlmostEqual(line.y_position_in, want_y, places=2,
+                                    msg=line.layout_key)
+
+        # CLIENT EMPHASIS: the stacked base+wall pair at ONE junction
+        # must agree in x/z/rotation_deg after repair — pinned directly,
+        # not just inferred from both matching the same target
+        # separately.
+        self.assertAlmostEqual(base_line.x_position_in,
+                               wall_line.x_position_in, places=2)
+        self.assertAlmostEqual(base_line.z_position_in,
+                               wall_line.z_position_in, places=2)
+        self.assertAlmostEqual(base_line.rotation_deg,
+                               wall_line.rotation_deg, places=1)
+        self.assertNotEqual(
+            base_line.y_position_in, wall_line.y_position_in,
+            "base and wall corners must keep their OWN, different "
+            "elevations — only x/z/rotation_deg are shared")
 
     def test_back_right_already_correct_line_is_a_noop(self):
         """back-right was already correct pre-fix (270 degrees) — a line
