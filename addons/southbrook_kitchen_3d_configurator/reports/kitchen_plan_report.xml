@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Task 36 (SBK-039) — dimensioned Plan PDF, first capability of the
+  SBK-039 print-suite sequencing (BOM/cut-list panel, CSV/DXF, finish
+  selector all come LATER, per the corner-remediation plan).
+
+  Backend/internal only (portal/public access explicitly NOT in scope
+  for this task) — bound to southbrook.kitchen.design, guarded by the
+  SAME record rules (security/kitchen_design_rules.xml) as the form
+  view itself: no .sudo() anywhere in this template or in
+  _generate_plan_svg (models/kitchen_plan_report.py), so a user who
+  cannot read a design cannot print its plan either.
+
+  Structure follows southbrook_estimating/reports/signature_spec_sheet
+  .xml (the house pattern): title strip -> meta block -> inlined SVG
+  floor plan -> line table -> footer total. wkhtmltopdf compatibility
+  notes carried over from that report + southbrook_room.to_svg():
+  hex colors only, inline `style="font-family: ..."` on text (no web
+  fonts in the PDF context), no `display:flex` anywhere, table-based
+  layout for the meta strip.
+
+  Zero side effects: every field referenced below is either a plain
+  stored field or an already-stored compute field (estimated_price) —
+  no pricelist recomputation, no write-triggering calls. Per-row
+  "total" is deliberately NOT shown (the brief's own wording point:
+  "reuse stored fields, do NOT recompute pricing in the report") —
+  only design.estimated_price (already stored) is displayed as the
+  grand total.
+-->
+<odoo>
+
+  <template id="report_kitchen_plan_document" name="Kitchen Plan Document">
+    <t t-call="web.html_container">
+      <t t-foreach="docs" t-as="o">
+        <t t-call="web.external_layout">
+          <div class="page southbrook-kitchen-plan">
+
+            <!-- Title strip: design name left, "Plan #<id>" right. -->
+            <table style="width:100%;border-collapse:collapse;border:none;margin-bottom:4px;">
+              <tr>
+                <td style="border:none;vertical-align:top;padding:0;">
+                  <div style="font-size:22px;font-weight:bold;color:#3D2F22;">
+                    <span t-out="o.name"/>
+                  </div>
+                  <div style="font-size:13px;color:#776B5C;margin-top:2px;">Dimensioned Plan</div>
+                </td>
+                <td style="border:none;vertical-align:top;padding:0;text-align:right;white-space:nowrap;">
+                  <div style="font-size:16px;font-weight:bold;letter-spacing:1px;color:#6e5b4f;text-transform:uppercase;">
+                    Plan #<span t-out="o.id"/>
+                  </div>
+                </td>
+              </tr>
+            </table>
+            <hr style="margin:6px 0 12px 0;border:0;border-top:2px solid #6e5b4f;"/>
+
+            <!-- Meta strip: customer + room dims left, date right. -->
+            <table style="width:100%;border-collapse:collapse;border:none;margin-bottom:10px;">
+              <tr>
+                <td style="border:none;vertical-align:top;padding:0;font-size:11px;line-height:1.7;">
+                  <div><strong>Customer:</strong> <span t-out="o.partner_id.name or '—'"/></div>
+                  <div>
+                    <strong>Room:</strong>
+                    <span t-esc="'%g' % (o.room_width_in or 0.0)"/>&quot; W
+                    ×
+                    <span t-esc="'%g' % (o.room_depth_in or 0.0)"/>&quot; D
+                    ×
+                    <span t-esc="'%g' % (o.room_height_in or 0.0)"/>&quot; H
+                  </div>
+                </td>
+                <td style="border:none;vertical-align:top;padding:0;text-align:right;font-size:11px;line-height:1.7;">
+                  <div><strong>Date:</strong> <span t-out="o.create_date" t-options="{'widget': 'date'}"/></div>
+                  <div><strong>Design ID:</strong> <span t-out="o.id"/></div>
+                </td>
+              </tr>
+            </table>
+
+            <!-- Floor plan — self-contained inline SVG (no external
+                 assets; wkhtmltopdf renders inline SVG fine). Derived
+                 straight from the persisted cabinet_line_ids via
+                 kitchen_layout_engine.footprint_from_anchor_mm — see
+                 models/kitchen_plan_report.py for why this is a NEW
+                 generator rather than an extension of an existing one. -->
+            <h2 style="font-size:14px;margin:6px 0 8px 0;color:#3D2F22;">Floor Plan</h2>
+            <div style="text-align:center;margin:8px 0;">
+              <t t-out="o._generate_plan_svg(720, 500)"/>
+            </div>
+            <p style="font-size:8pt;color:#776B5C;text-align:center;margin-top:4px;">
+              Top-down view, dimensions in inches. Verify against on-site
+              measurements before manufacture.
+            </p>
+
+            <!-- Cabinet schedule. Ref/name resolve from the LINE's own
+                 product (product.product — already the resolved
+                 variant, never the shared template default_code). -->
+            <h2 style="font-size:14px;margin:18px 0 8px 0;color:#3D2F22;">Cabinet Schedule</h2>
+            <table style="width:100%;border-collapse:collapse;font-size:9pt;">
+              <thead>
+                <tr>
+                  <th style="text-align:left;border-bottom:1px solid #ccc;padding:3px;">Ref</th>
+                  <th style="text-align:left;border-bottom:1px solid #ccc;padding:3px;">Cabinet</th>
+                  <th style="text-align:left;border-bottom:1px solid #ccc;padding:3px;">W × H × D (in)</th>
+                  <th style="text-align:left;border-bottom:1px solid #ccc;padding:3px;">Zone</th>
+                  <th style="text-align:right;border-bottom:1px solid #ccc;padding:3px;">Qty</th>
+                  <th style="text-align:right;border-bottom:1px solid #ccc;padding:3px;">Unit Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr t-foreach="o.cabinet_line_ids" t-as="line">
+                  <td style="padding:3px;" t-out="line.product_id.default_code or ''"/>
+                  <td style="padding:3px;" t-out="line.product_id.display_name"/>
+                  <td style="padding:3px;">
+                    <span t-esc="'%g' % (line.width_in or 0.0)"/> ×
+                    <span t-esc="'%g' % (line.height_in or 0.0)"/> ×
+                    <span t-esc="'%g' % (line.depth_in or 0.0)"/>
+                  </td>
+                  <td style="padding:3px;" t-out="dict(line._fields['zone'].selection).get(line.zone, '—')"/>
+                  <td style="padding:3px;text-align:right;" t-out="line.quantity"/>
+                  <td style="padding:3px;text-align:right;">
+                    <span t-out="o.currency_id.symbol"/><span t-esc="'%.2f' % (line.price_unit or 0.0)"/>
+                  </td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colspan="5" style="padding:6px 3px;text-align:right;font-weight:bold;border-top:2px solid #3D2F22;">Total</td>
+                  <td style="padding:6px 3px;text-align:right;font-weight:bold;border-top:2px solid #3D2F22;">
+                    <span t-out="o.currency_id.symbol"/><span t-esc="'%.2f' % (o.estimated_price or 0.0)"/>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+
+          </div>
+        </t>
+      </t>
+    </t>
+  </template>
+
+  <!-- Dedicated paperformat — Portrait A4, tighter margins than the
+       default so the schedule table doesn't get crowded off a second
+       page for a typical 8-15 line design. -->
+  <record id="paperformat_southbrook_kitchen_plan" model="report.paperformat">
+    <field name="name">Southbrook Kitchen Plan A4</field>
+    <field name="format">A4</field>
+    <field name="orientation">Portrait</field>
+    <field name="dpi">90</field>
+    <field name="margin_top">20</field>
+    <field name="margin_bottom">16</field>
+    <field name="margin_left">10</field>
+    <field name="margin_right">10</field>
+    <field name="header_spacing">16</field>
+    <field name="header_line" eval="False"/>
+  </record>
+
+  <!-- ir.actions.report — binding_type="report" surfaces this in the
+       standard Print menu on the design form; the explicit "Plan PDF"
+       header button (views/kitchen_design_views.xml) gives a one-click
+       path too, per the AC. -->
+  <record id="action_report_kitchen_plan" model="ir.actions.report">
+    <field name="name">Plan PDF</field>
+    <field name="model">southbrook.kitchen.design</field>
+    <field name="report_type">qweb-pdf</field>
+    <field name="report_name">southbrook_kitchen_3d_configurator.report_kitchen_plan_document</field>
+    <field name="report_file">southbrook_kitchen_3d_configurator.report_kitchen_plan_document</field>
+    <field name="print_report_name">'Plan - %s' % (object.name)</field>
+    <field name="paperformat_id" ref="paperformat_southbrook_kitchen_plan"/>
+    <field name="binding_model_id" ref="model_southbrook_kitchen_design"/>
+    <field name="binding_type">report</field>
+  </record>
+
+</odoo>

@@ -241,6 +241,19 @@
                             class="btn-secondary"
                             icon="fa-check"
                             invisible="not cabinet_line_ids"/>
+                    <!-- Task 36 (SBK-039) — dimensioned Plan PDF, first
+                         SBK-039 capability. type="action" against the
+                         report's own external id (reports/
+                         kitchen_plan_report.xml) is the standard Odoo
+                         "print button" pattern; the report's own
+                         binding_type="report" ALSO surfaces it in the
+                         generic Print menu, per the AC ("button ... +
+                         report action in the print menu"). -->
+                    <button name="%(action_report_kitchen_plan)d"
+                            type="action"
+                            string="Plan PDF"
+                            class="btn-secondary"
+                            icon="fa-file-pdf-o"/>
                     <field name="state" widget="statusbar"
                            statusbar_visible="draft,configured,quoted,ordered"/>
                 </header>

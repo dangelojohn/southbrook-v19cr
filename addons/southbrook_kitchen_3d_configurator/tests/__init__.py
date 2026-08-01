@@ -251,3 +251,8 @@ from . import test_quote_lifecycle_probe
 # 19.0.5.36.1 repair migration (back-left/front-left/front-right corner
 # lines persisted under the old verified-wrong presentation).
 from . import test_corner_orientation_repair_migration
+
+# Task 36 (SBK-039) — dimensioned Plan PDF: render + zero-side-effects
+# tests for the new report action (reports/kitchen_plan_report.xml) +
+# its SVG generator (models/kitchen_plan_report.py).
+from . import test_plan_report
