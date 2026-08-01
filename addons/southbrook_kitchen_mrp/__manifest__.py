@@ -41,26 +41,30 @@ contract, GAP-05 / SYN-02):
 M4 (catalog-wide BoM generator)
 --------------------------------
 
-* ``mrp.bom._southbrook_generate_catalog_boms()`` — walks every
-  ``southbrook_is_cabinet=True`` product.template with no 'normal' BoM
-  yet and CREATES one with real, non-empty ``bom_line_ids`` (panel
-  materials + real Marathon hardware SKUs). Never mutates or deletes an
-  existing BoM, and never creates an empty one — ``config_ok=True``
-  (per-variant-configured) templates are skipped unconditionally rather
-  than built from a template-level midpoint fallback. Idempotent. Wired
-  to a nightly ``ir.cron`` (``cron_southbrook_catalog_bom_generator``)
-  that can also be run manually from Settings > Technical > Automation >
-  Scheduled Actions.
-* ``mrp.bom._southbrook_cleanup_empty_catalog_boms()`` — one-time (but
-  repeatable/idempotent) cleanup for the empty ``KitchenAutoSeed-*`` /
-  ``CatalogAutoBOM-*`` template-level stubs the above defect left behind
-  on the 12 ``config_ok=True`` templates; refuses to delete any BoM
-  referenced by an ``mrp.production``.
+* ``mrp.bom._southbrook_generate_catalog_boms()`` — ensures every
+  ``southbrook_is_cabinet=True`` product.template ends up with a real,
+  non-empty ``bom_line_ids`` (panel materials + real Marathon hardware
+  SKUs, incl. corner mechanisms, fasteners, and edge-banding). As of
+  2026-07-31, ``config_ok=True`` templates are NO LONGER hard-skipped:
+  the generator fills real lines onto the existing empty "Canonical"
+  routing-carrier BoM shells (never unlinking/replacing them) and
+  additionally builds a correctly-dimensioned, product_id-scoped BoM
+  for every real, materialized variant via per-variant attribute
+  inference. Never mutates a non-empty or unrecognized-origin BoM.
+  Idempotent. Wired to a nightly ``ir.cron``
+  (``cron_southbrook_catalog_bom_generator``) that can also be run
+  manually from Settings > Technical > Automation > Scheduled Actions,
+  and via a post-migrate hook on upgrade (see migrations/19.0.1.7.0).
+* ``mrp.bom._southbrook_cleanup_empty_catalog_boms()`` — safety-net
+  cleanup for any ``KitchenAutoSeed-*``/``CatalogAutoBOM-*`` template-
+  level stub that is STILL empty (e.g. the generator above hasn't run
+  yet on a given database); refuses to delete any BoM referenced by an
+  ``mrp.production``.
 """,
     "author": "Southbrook Kitchens / OdooIQ",
     "license": "LGPL-3",
     "category": "Manufacturing",
-    "version": "19.0.1.6.0",
+    "version": "19.0.1.7.0",
     "depends": [
         "mrp",
         "sale",

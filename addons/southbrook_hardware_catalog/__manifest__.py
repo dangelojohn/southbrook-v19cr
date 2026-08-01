@@ -47,7 +47,7 @@ Outstanding:
     "author": "Southbrook Kitchens / OdooIQ",
     "license": "LGPL-3",
     "category": "Manufacturing",
-    "version": "19.0.2.2.0",
+    "version": "19.0.2.3.0",
     "depends": [
         "product",
         "purchase",

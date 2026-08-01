@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-"""Catalog-wide cabinet BoM generator — M4 gap-fix.
+"""Catalog-wide cabinet BoM generator — M4 gap-fix, extended for the
+"full BoM for every cabinet" task (2026-07-31).
 
-Root cause fixed here (see PUNCHLIST / M4 ticket): only two narrow, opt-in
-paths ever created an mrp.bom for a cabinet template —
+Root cause originally fixed here (see PUNCHLIST / M4 ticket): only two
+narrow, opt-in paths ever created an mrp.bom for a cabinet template —
 
   1. southbrook_kitchen_3d_configurator.kitchen_design._ensure_kitchen_bom,
      which only runs on the 3D-configurator "Create Quotation" action and
@@ -16,22 +17,65 @@ Fillers/accessories and any cabinet never pushed through the 3D
 configurator's quote flow got neither, so the Order Builder's BoM Preview
 warns and order confirmation spawns a placeholder MO with no cutlist.
 
-This module adds ``mrp.bom._southbrook_generate_catalog_boms()`` — an
+This module provides ``mrp.bom._southbrook_generate_catalog_boms()`` — an
 @api.model, catalog-wide, idempotent generator that MATERIALIZES real
 bom_line_ids (never an empty stub) from:
 
   * The panel geometry ``mrp.bom._compute_panel_dimensions`` already
-    computes (southbrook_estimating, ~mrp_bom.py) — previously computed
-    then only logged, per _ensure_kitchen_bom's docstring.
+    computes (southbrook_estimating, ~mrp_bom.py) — the G1-gated single
+    source of truth. NEVER re-derived here.
   * The real Marathon hardware SKUs resolved via
     ``southbrook.hardware.catalog.resolve()`` (southbrook_hardware_catalog,
     "Module 3") — the exact same resolution path
     sb.production.package.generate_from_mo() and the FreeCAD bridge
     already use to append hardware lines post-render.
 
-It is conservative by construction: it only ever CREATES a BoM for a
-template that has none; it never mutates or deletes an existing one
-(hand-built, Hermes-applied, or 3D-configurator stub alike).
+ARCHITECTURE CHANGE (2026-07-31) — config_ok is no longer a hard skip
+----------------------------------------------------------------------
+Every prior version of this generator hard-skipped every
+``config_ok=True`` template (``skipped_configurable``) on the reasoning
+that its template-level ``southbrook_width_in``/``_height_in``/
+``_depth_in`` scalars are a midpoint fallback, not a real customer's
+chosen dimension — see the (now superseded) "PROD DEFECT" section below,
+kept for history.
+
+Client instruction (2026-07-31): every ``southbrook_is_cabinet`` template
+must end up with a real, non-empty BoM — including the 19 ``config_ok=
+True`` templates, 11 of which already carry an EMPTY, hand-seeded
+"Canonical" ``mrp.bom`` shell (``southbrook_mrp_pm/data/routing_*.xml``)
+that OWNS an 8-station routing (Cut Panels -> ... -> Pack & Label). That
+routing is load-bearing infrastructure for the Manufacturing-PM Floor
+Manager flow and must never be orphaned by unlinking/replacing its BoM.
+
+The generator therefore now does TWO things for every cabinet template,
+config_ok or not:
+
+  1. Template-level "nominal" BoM (``product_id`` blank) — built from the
+     template's own scalar dims, exactly as the non-configurable path
+     always has. The "does a BoM already exist" guard is now "does a
+     NON-EMPTY normal BoM exist" (skip) vs. "is there an EMPTY normal BoM
+     whose code marks it as one of the three known auto-managed shell
+     origins" (``"<code> Canonical"`` / ``"CatalogAutoBOM-*"`` /
+     ``"KitchenAutoSeed-*"``) — write real lines ONTO that exact record
+     rather than creating a sibling. An empty BoM with any OTHER code is
+     presumed hand-built/unknown-origin and is still never touched (see
+     ``_southbrook_is_recognized_shell_code``). This is a deliberate,
+     client-directed change to the previously-documented "never touch an
+     existing BoM, even empty" invariant — flagged here explicitly per
+     the task's own instruction to call it out.
+  2. Per-VARIANT BoM (``product_id`` set, native Odoo variant scoping) —
+     ONLY for ``config_ok=True`` templates with real, materialized
+     ``product.product`` variants. Dimensions/family/door/drawer counts
+     are inferred from the variant's own configured attribute picks via
+     ``sb.production.package._resolve_dims_from_variant`` (the same
+     attribute-walking pattern ``_resolve_dims_from_order_line`` already
+     uses for the quote-time cutlist path, generalized to work off a bare
+     product.product). This gives a real customer's actual configured
+     cabinet a correctly-dimensioned BoM for costing/planning BEFORE an
+     order exists, while the template-level nominal BoM above remains as
+     Odoo's native fallback for any variant that doesn't have its own.
+     NEVER writes to the variant record itself — wizard-configured
+     variants are user data.
 
 KNOWN AMBIGUITY — panel/carcass raw material mapping (see
 _southbrook_get_or_create_raw_material's docstring): this codebase has NO
@@ -39,63 +83,31 @@ real purchasable sheet-stock product data anywhere for panel substrates
 (melamine/hardboard/plywood). Hardware lines bind to real, already-seeded
 Marathon SKUs (unambiguous). Panel lines bind to a clearly-labeled
 "Raw Material: ..." placeholder product, get-or-created once per
-substrate, counted 1-unit-per-panel (not per real sheet/area) — flagged
-in the module README and the delivery report rather than guessing a real
-SKU, supplier, or unit of measure that isn't in any of the source
-artifacts.
+substrate, counted 1-unit-per-panel (not per real sheet/area). Edge
+banding follows the same placeholder-product pattern (see
+``_southbrook_get_or_create_edge_banding_tape``) — no cost is set on
+either kind of placeholder; costing that catalog is the client's
+decision, not guessed here. See bom-research.md §2.4/§6 for the fuller
+"install sb_material_core/sb_material_mrp for real, costed materials"
+alternative, deliberately left as a separate decision for the client
+rather than a cross-module change bundled into this task.
 
-PROD DEFECT (confirmed 2026-07-06) — empty catalog BoMs on config_ok
-templates
+PROD DEFECT (confirmed 2026-07-06, historical) — empty catalog BoMs on
+config_ok templates
 --------------------------------------------------------------------
 The 12 catalog templates that are ``config_ok=True`` (SB-BASE-1DR,
 SB-BASE-2DR, SB-WALL-1DR, SB-WALL-2DR, SB-DRAWER, SB-SINK-BASE,
 SB-TALL-OVEN, SB-TALL-PANTRY, SB-CORNER, SB-VANITY, SB-ACCESSORY, and
-``worktop`` — the 11 tagged via
-southbrook_kitchen_3d_configurator/data/canonical_catalog_tag.xml plus
-``worktop`` itself, deliberately left untagged there) ended up with a
-template-level ``mrp.bom`` carrying ZERO ``bom_line_ids`` on prod.
-
-Root cause, confirmed by reading both BoM-seeding paths side by side:
-these are exactly the templates a customer/rep pushes through the 3D
-configurator's "Create Quotation" action, so
-``kitchen_design._ensure_kitchen_bom`` gets there FIRST and creates its
-known-empty ``KitchenAutoSeed-*`` stub (``bom_line_ids: []`` by design —
-see that method's own comment). When
-``_southbrook_generate_catalog_boms`` later runs, its "skip if a normal
-BoM already exists" guard (correct in isolation — never mutate a
-pre-existing BoM) treats that empty stub as "already handled" and moves
-on, so the hazardous empty BoM is never replaced with a real one and
-never flagged. Fixed-dimension, non-configurable cabinets (B24, W24, T24,
-FP3, etc. from demo_cabinets.xml) never go through that quote flow, so
-they had no pre-existing BoM and the generator built them correctly —
-matching the observed prod split (fixed cabinets: real lines;
-config_ok cabinets: empty).
-
-NOTE: this is NOT this generator directly manufacturing an empty BoM —
-_southbrook_build_cabinet_bom already refused to create with zero
-bom_line_vals before this fix, and still does (belt-and-suspenders). The
-actual gap is that this generator's own scope should never have included
-config_ok=True templates in the first place: those 12 templates DO carry
-non-zero template-level ``southbrook_width_in`` / ``_height_in`` /
-``_depth_in`` scalars (a MIDPOINT of the width envelope, per
-canonical_catalog_dimensions.xml's own comment — "this template-level
-scalar is a fallback the configurator uses when no variant is picked"),
-so ``_compute_panel_dimensions`` would happily return real-looking panel
-tuples from that midpoint fallback. Building a template-level BoM from a
-midpoint that isn't what any real customer chose is exactly the "invent
-a nominal dimension for a configurable cabinet" trap — wrong for a
-different, subtler reason than "empty". Configurable products get their
-real, correctly-dimensioned BoM per-VARIANT at config time via
-``kitchen_design._ensure_kitchen_bom`` / the config-session flow — that
-path is correct and untouched. This generator now hard-skips every
-``config_ok=True`` template up front (``skipped_configurable``) rather
-than attempting to build from template-scalar fallback dimensions, and
-separately refuses to ever CREATE a BoM that would materialize zero
-lines (``skipped_empty``) for the non-configurable remainder. See
-``_southbrook_cleanup_empty_catalog_boms`` below for removing the 12
-empty stubs already sitting on prod.
+``worktop``) ended up with a template-level ``mrp.bom`` carrying ZERO
+``bom_line_ids`` on prod, because ``kitchen_design._ensure_kitchen_bom``
+got there first with its known-empty ``KitchenAutoSeed-*`` stub and this
+generator's old "skip if a normal BoM already exists" guard treated that
+stub as "already handled." The 2026-07-31 architecture change above
+supersedes the old fix (hard-skip config_ok) with the client-directed
+fix (fill the shell in place, plus per-variant BoMs).
 """
 import logging
+import math
 
 from odoo import api, models
 
@@ -145,53 +157,74 @@ class MrpBom(models.Model):
         "ply_3_4": "Raw Material: 3/4in Plywood Panel Stock",
     }
 
+    # BOM-generation task (2026-07-31) — accessory_type (End Panel /
+    # Filler / Cornice / Pelmet / Plinth, southbrook_estimating/data/
+    # attributes.xml's attr_accessory_type) -> a real, purchasable SKU
+    # from southbrook_hardware_catalog/data/end_panel_seed.xml. Only 2 of
+    # the 5 accessory_type values have ANY seeded real product (End Panel,
+    # Filler) — Cornice/Pelmet/Plinth have no SKU anywhere in this
+    # catalog (bom-research.md §4 item 3), so they deliberately stay on
+    # the generic melamine placeholder rather than guessing a SKU that
+    # doesn't exist. "Standard"/"Base" is the least-wrong single default
+    # within each mapped type absent a dedicated style/class attribute
+    # anywhere on the accessory template (see _southbrook_resolve_
+    # accessory_product's docstring for the full ambiguity note).
+    _SOUTHBROOK_ACCESSORY_SKU_BY_TYPE = {
+        "end panel": "SB-EP-BASE-STD",
+        "filler": "SB-FILLER-BASE",
+    }
+
     @api.model
     def _southbrook_generate_catalog_boms(self):
-        """Catalog-wide cabinet BoM generator (M4).
+        """Catalog-wide cabinet BoM generator (M4, extended 2026-07-31).
 
         Searches every ``product.template`` flagged
-        ``southbrook_is_cabinet = True`` (the southbrook_kitchen_3d_
-        configurator catalog — B24, DB24, SB30, FP3 filler, etc. — incl.
-        accessories/fillers) that has no 'normal'-type mrp.bom yet, and
-        CREATES one with real, non-empty bom_line_ids. Never touches a
-        template that already has a normal BoM (of any origin), and never
-        creates an empty one — see the module docstring's "PROD DEFECT"
-        section for the confirmed root cause of the 12 empty catalog BoMs.
+        ``southbrook_is_cabinet = True`` and ensures each ends up with a
+        real, non-empty template-level ``mrp.bom`` — creating one,
+        writing lines onto a recognized empty shell, or leaving an
+        already-populated / unrecognized-origin BoM untouched. For
+        ``config_ok=True`` templates, ALSO ensures each real, materialized
+        ``product.product`` variant gets its own correctly-dimensioned,
+        product_id-scoped BoM (see the module docstring's "ARCHITECTURE
+        CHANGE" section).
 
-        Three categories are skipped without creating anything:
-          * ``skipped_existing_bom`` — a normal-type BoM already exists
-            (hand-built, Hermes-applied, or a 3D-configurator stub —
-            empty or not; never mutated or deleted here).
-          * ``skipped_configurable`` — ``config_ok=True``. These
-            templates' real dimensions are chosen per-VARIANT at config
-            time (``kitchen_design._ensure_kitchen_bom`` / the
-            config-session flow); the only dims available at the
-            template level are a midpoint fallback, and building a BoM
-            from that would be inventing a nominal dimension for a
-            genuinely configurable cabinet. Skipped unconditionally,
-            never attempted.
-          * ``skipped_empty`` — belt-and-suspenders: the non-configurable
-            build path genuinely produced zero materializable lines
-            (should not happen for real catalog data; see
-            ``_southbrook_build_cabinet_bom``).
+        Idempotent — safe to re-run. Once a BoM (shell-filled, newly
+        created, or per-variant) carries real lines, later runs treat it
+        as already-handled and leave it alone (never recompute/clobber a
+        BoM a human may since have hand-edited) — matching this
+        generator's existing, long-standing idempotence contract.
 
-        Idempotent — safe to re-run; the second pass finds every BoM
-        created by the first pass (now covered by skipped_existing_bom)
-        and skips those templates again.
-
-        Returns ``{"created": int, "skipped": int, "skipped_existing_bom":
-        int, "skipped_configurable": int, "skipped_empty": int, "details":
-        [...]}``. ``skipped`` is the sum of the three specific counters,
-        kept for callers (e.g. the nightly cron log line) that only care
-        about the total.
+        Returns a dict:
+          ``created`` / ``shell_filled`` — new template-level BoMs
+            created, and pre-existing EMPTY recognized shells that got
+            real lines written onto them.
+          ``skipped_existing_bom`` — a non-empty, or an empty-but-
+            unrecognized-origin, template-level BoM was left untouched.
+          ``skipped_configurable`` — retained for return-shape backward
+            compatibility; always 0 now (nothing is hard-skipped for
+            being config_ok anymore).
+          ``skipped_empty`` — the build path genuinely produced zero
+            materializable lines (belt-and-suspenders; should not happen
+            for real catalog data).
+          ``variant_created`` / ``variant_updated`` / ``variant_skipped``
+            — per-variant BoM counters (config_ok templates only).
+          ``skipped`` — sum of the three template-level skip counters.
+          ``details`` — list of {template_id, template, bom_id,
+            line_count} for every template-level BoM created or filled
+            this run.
         """
         Template = self.env["product.template"].sudo()
+        Bom = self.env["mrp.bom"].sudo()
         empty_result = {
             "created": 0,
+            "shell_filled": 0,
             "skipped": 0,
             "skipped_existing_bom": 0,
             "skipped_configurable": 0,
             "skipped_empty": 0,
+            "variant_created": 0,
+            "variant_updated": 0,
+            "variant_skipped": 0,
             "details": [],
         }
         if "southbrook_is_cabinet" not in Template._fields:
@@ -211,64 +244,459 @@ class MrpBom(models.Model):
         )
 
         created = 0
+        shell_filled = 0
         skipped_existing_bom = 0
-        skipped_configurable = 0
         skipped_empty = 0
+        variant_created = 0
+        variant_updated = 0
+        variant_skipped = 0
         details = []
+
         for tmpl in templates:
-            # Fast path — a normal-type BoM already exists (hand-built,
-            # Hermes-applied, or the 3D-configurator's own stub, empty or
-            # not). Never touch it. active_test=False so an archived
-            # normal BoM still counts (mirrors _ensure_kitchen_bom's own
-            # guard).
-            existing = tmpl.with_context(active_test=False).bom_ids.filtered(
-                lambda b: b.type == "normal"
+            normal_boms = tmpl.with_context(active_test=False).bom_ids.filtered(
+                lambda b: b.type == "normal" and not b.product_id
             )
-            if existing:
+            non_empty = normal_boms.filtered(lambda b: b.bom_line_ids)
+
+            if non_empty:
+                # Already has real lines (hand-built, Hermes-applied, a
+                # prior run of this generator, or already filled) — never
+                # touch it.
                 skipped_existing_bom += 1
-                continue
+            else:
+                reusable_shell = normal_boms.filtered(
+                    lambda b: self._southbrook_is_recognized_shell_code(b.code)
+                )
+                hand_built_stub = normal_boms - reusable_shell
+                if hand_built_stub:
+                    # An empty BoM of unrecognized origin — presumed
+                    # hand-built. Never mutate it, never create a sibling.
+                    skipped_existing_bom += 1
+                else:
+                    bom_line_vals, _shelf_count = self._southbrook_build_cabinet_bom_lines(tmpl)
+                    if not bom_line_vals:
+                        _logger.warning(
+                            "Southbrook catalog BoM generator: %s produced "
+                            "zero sensible bom_line_ids — skipped rather "
+                            "than creating/filling an empty BoM.",
+                            tmpl.display_name,
+                        )
+                        skipped_empty += 1
+                    elif reusable_shell:
+                        shell = reusable_shell[0]
+                        # (5, 0, 0) is a no-op here (the shell is empty by
+                        # construction of this branch) but keeps the write
+                        # correct/idempotent-shaped if this branch is ever
+                        # reached a second time for the same record.
+                        shell.write({"bom_line_ids": [(5, 0, 0)] + bom_line_vals})
+                        shell_filled += 1
+                        details.append({
+                            "template_id": tmpl.id,
+                            "template": tmpl.display_name,
+                            "bom_id": shell.id,
+                            "line_count": len(shell.bom_line_ids),
+                        })
+                    else:
+                        default_code = tmpl.default_code or ("TMPL-%d" % tmpl.id)
+                        bom = Bom.create({
+                            "product_tmpl_id": tmpl.id,
+                            "type": "normal",
+                            "product_qty": 1.0,
+                            "code": "CatalogAutoBOM-%s" % default_code,
+                            "bom_line_ids": bom_line_vals,
+                        })
+                        created += 1
+                        details.append({
+                            "template_id": tmpl.id,
+                            "template": tmpl.display_name,
+                            "bom_id": bom.id,
+                            "line_count": len(bom.bom_line_ids),
+                        })
 
-            # config_ok=True — the template's own scalar dims are a
-            # midpoint fallback, not what any real customer configured.
-            # Never build a template-level BoM from that; the real BoM
-            # is created per-variant elsewhere. getattr-defensive: some
-            # databases may not have product_configurator's config_ok
-            # field merged in yet, though southbrook_is_cabinet already
-            # implies southbrook_estimating (and hence product_
-            # configurator) is installed.
+            # Per-variant BoMs — config_ok templates only. Never touches
+            # the variant record itself (read-only attribute inspection).
             if getattr(tmpl, "config_ok", False):
-                skipped_configurable += 1
-                continue
+                v_created, v_updated, v_skipped = self._southbrook_ensure_variant_boms(tmpl)
+                variant_created += v_created
+                variant_updated += v_updated
+                variant_skipped += v_skipped
 
-            bom = self._southbrook_build_cabinet_bom(tmpl)
-            if not bom:
-                skipped_empty += 1
-                continue
-
-            created += 1
-            details.append({
-                "template_id": tmpl.id,
-                "template": tmpl.display_name,
-                "bom_id": bom.id,
-                "line_count": len(bom.bom_line_ids),
-            })
-
-        skipped = skipped_existing_bom + skipped_configurable + skipped_empty
+        skipped = skipped_existing_bom + skipped_empty
         _logger.info(
-            "Southbrook catalog BoM generator: created=%s "
-            "skipped_existing_bom=%s skipped_configurable=%s "
-            "skipped_empty=%s",
-            created, skipped_existing_bom, skipped_configurable,
-            skipped_empty,
+            "Southbrook catalog BoM generator: created=%s shell_filled=%s "
+            "skipped_existing_bom=%s skipped_empty=%s variant_created=%s "
+            "variant_updated=%s variant_skipped=%s",
+            created, shell_filled, skipped_existing_bom, skipped_empty,
+            variant_created, variant_updated, variant_skipped,
         )
         return {
             "created": created,
+            "shell_filled": shell_filled,
             "skipped": skipped,
             "skipped_existing_bom": skipped_existing_bom,
-            "skipped_configurable": skipped_configurable,
+            "skipped_configurable": 0,
             "skipped_empty": skipped_empty,
+            "variant_created": variant_created,
+            "variant_updated": variant_updated,
+            "variant_skipped": variant_skipped,
             "details": details,
         }
+
+    @api.model
+    def _southbrook_is_recognized_shell_code(self, code):
+        """True when ``code`` marks a BoM as one of the three known
+        auto-managed shell/stub origins this generator is allowed to
+        write real lines onto when empty:
+
+          * ``"<SKU> Canonical"`` — the 12 hand-seeded routing-carrier
+            BoMs from southbrook_mrp_pm/data/routing_*.xml. These OWN an
+            8-station mrp.routing.workcenter sequence for the
+            Manufacturing-PM Floor Manager flow and must never be
+            unlinked/replaced — only filled in place.
+          * ``"CatalogAutoBOM-*"`` — this generator's own prior stub
+            (belt-and-suspenders; should be unreachable since this
+            generator never creates an empty one, but a partially-applied
+            manual edit could leave one behind).
+          * ``"KitchenAutoSeed-*"`` — kitchen_design._ensure_kitchen_bom's
+            quote-time stub (deliberately empty by that method's own
+            design).
+
+        Anything else (a blank/None code, or a hand-typed one like
+        "PreexistingStub") is presumed hand-built/unknown-origin and is
+        NEVER written onto, even if empty.
+        """
+        code = code or ""
+        return (
+            code.endswith(" Canonical")
+            or code.startswith("CatalogAutoBOM-")
+            or code.startswith("KitchenAutoSeed-")
+        )
+
+    @api.model
+    def _southbrook_infer_corner_subtype(self, default_code):
+        """Best-effort corner sub-type from a SKU's default_code, per
+        bom-research.md §3.4/§5.8's mapping. Used to pick the right
+        corner-mechanism SKU + hinge override via
+        ``southbrook.hardware.catalog.resolve(corner_subtype=...)``.
+
+        Returns "blind" | "wall" | "diag" | None (None = not a corner
+        cabinet, or an unrecognized code — resolve() then falls back to
+        the coarse per_family["corner"] default).
+        """
+        code = (default_code or "").upper()
+        if "BLIND" in code:
+            return "blind"
+        if "WALL" in code and "CORNER" in code:
+            return "wall"
+        if "CORNER" in code:
+            # SB-CORNER, SB-CORNER-DIAG, SB-CORNER-LSUSAN — the diagonal /
+            # lazy-susan family is the default "plain corner" shape.
+            return "diag"
+        return None
+
+    def _southbrook_build_cabinet_bom_lines(self, tmpl):
+        """Build the template-level "nominal" bom_line_vals for a cabinet
+        template, from its own scalar dims (southbrook_width_in/_height_in/
+        _depth_in) and southbrook_cabinet_type. Used for every cabinet
+        template regardless of config_ok — see the module docstring's
+        "ARCHITECTURE CHANGE" section for why config_ok is no longer a
+        reason to skip this.
+
+        Returns (bom_line_vals, shelf_count).
+        """
+        w_in = tmpl.southbrook_width_in or 24.0
+        h_in = tmpl.southbrook_height_in or 34.5
+        d_in = tmpl.southbrook_depth_in or 24.0
+        width_mm = w_in * 25.4
+        height_mm = h_in * 25.4
+        depth_mm = d_in * 25.4
+
+        cabinet_type = tmpl.southbrook_cabinet_type or "base"
+        family = self._SOUTHBROOK_FAMILY_MAP.get(cabinet_type, "base")
+
+        # Rule 3 (Southbrook_Excel_to_Odoo_Mapping.md §3.4) — width -> door
+        # count for boxed families; accessories carry no door.
+        if family == "accessory":
+            door_count = 0
+        elif w_in >= 24.0:
+            door_count = 2
+        else:
+            door_count = 1
+
+        corner_subtype = None
+        if family == "corner":
+            corner_subtype = self._southbrook_infer_corner_subtype(tmpl.default_code)
+
+        return self._southbrook_compute_bom_line_vals(
+            family=family,
+            width_mm=width_mm, height_mm=height_mm, depth_mm=depth_mm,
+            door_count=door_count, drawer_count=0,
+            corner_subtype=corner_subtype,
+        )
+
+    def _southbrook_build_variant_bom_lines(self, tmpl, variant):
+        """Build bom_line_vals for ONE real, materialized product.product
+        variant of a config_ok=True cabinet template, using its own
+        configured attribute picks (via sb.production.package.
+        _resolve_dims_from_variant) rather than the template's midpoint
+        scalar. READ-ONLY on `variant` — never writes to it.
+
+        Returns (bom_line_vals, shelf_count).
+        """
+        dims = self.env["sb.production.package"]._resolve_dims_from_variant(variant, tmpl)
+        family = dims["family"]
+
+        corner_subtype = None
+        if family == "corner":
+            code = variant.default_code or tmpl.default_code
+            corner_subtype = self._southbrook_infer_corner_subtype(code)
+
+        return self._southbrook_compute_bom_line_vals(
+            family=family,
+            width_mm=dims["width_mm"], height_mm=dims["height_mm"],
+            depth_mm=dims["depth_mm"],
+            door_count=dims["door_count"], drawer_count=dims["drawer_count"],
+            corner_subtype=corner_subtype,
+            accessory_type=dims.get("accessory_type"),
+            soft_close=dims["soft_close"], slide_sku=dims.get("slide_sku"),
+        )
+
+    def _southbrook_compute_bom_line_vals(
+        self, family, width_mm, height_mm, depth_mm, door_count,
+        drawer_count=0, corner_subtype=None, accessory_type=None,
+        soft_close=None, slide_sku=None,
+    ):
+        """The shared core: panel/carcass lines + hardware lines for one
+        cabinet configuration. Used by BOTH the template-level nominal
+        builder and the per-variant builder so the two never drift.
+
+        Returns (bom_line_vals, shelf_count).
+        """
+        Bom = self.env["mrp.bom"].sudo()
+        bom_line_vals = []
+        shelf_count = 0
+
+        if family == "accessory":
+            # AMBIGUITY FLAG: a filler/decorative panel (southbrook_
+            # cabinet_type "filler"/"panel") is a single flat board, not a
+            # 6-panel box. Calling _compute_panel_dimensions here would
+            # wrongly synthesize sides/top/bottom/back/shelf for a product
+            # that is physically just one panel. Resolve to a real SKU
+            # when accessory_type maps to one (End Panel / Filler); fall
+            # back to the generic melamine placeholder otherwise (see
+            # _southbrook_resolve_accessory_product).
+            product = self._southbrook_resolve_accessory_product(accessory_type)
+            bom_line_vals.append((0, 0, {
+                "product_id": product.id,
+                "product_qty": 1.0,
+            }))
+        else:
+            # Drawer banks: _compute_panel_dimensions' "door" key is only
+            # ever populated by door_count, and a drawer bank has none —
+            # pass door_count=0 into the geometry call regardless of what
+            # the caller passed, so no phantom full-height door panel is
+            # ever synthesized for a drawer front.
+            panel_door_count = 0 if family == "drawer" else door_count
+            panel = Bom._compute_panel_dimensions(
+                width_mm=width_mm,
+                height_mm=height_mm,
+                depth_mm=depth_mm,
+                family=family,
+                door_count=panel_door_count,
+                drawer_count=drawer_count,
+                finished_sides="none",
+            )
+            # Drawer banks carry no adjustable shelves (bom-research.md
+            # §5.2's flagged gap: _compute_panel_dimensions' shelf logic is
+            # height-only and doesn't know about family, so it still
+            # returns a shelf tuple for a drawer bank -- suppressed here).
+            shelf_count = 0 if family == "drawer" else int(panel.get("shelf_count") or 0)
+
+            counts = {}
+            for key, substrate in self._SOUTHBROOK_PANEL_SUBSTRATE.items():
+                if family == "drawer" and key == "shelf":
+                    continue
+                value = panel.get(key)
+                if value is None:
+                    continue
+                if key == "shelf":
+                    qty = shelf_count
+                elif key == "door":
+                    qty = int(panel.get("door_count") or 0)
+                else:
+                    qty = 1
+                if qty <= 0:
+                    continue
+                counts[substrate] = counts.get(substrate, 0) + qty
+
+            # Drawer-front geometry (bom-research.md §5.2/§7) — ported
+            # from sb_cutlist.py's R3 drawer-front block. mrp_bom.py's
+            # _compute_panel_dimensions has no drawer-front equivalent (its
+            # "door" key is None whenever door_count==0, which a drawer
+            # bank always passes); the ACTUAL cut geometry
+            # (face_height_mm = (H - (N+1)*3mm) / N per drawer) lives only
+            # in sb.cutlist.generate_lines_from_panel_dict. For a
+            # catalog-level BoM (materials count, not exact cut sizes) we
+            # only need the LINE — one ply_3_4 substrate line per drawer
+            # front, matching a door's finished-face substrate.
+            if family == "drawer" and drawer_count > 0:
+                counts["ply_3_4"] = counts.get("ply_3_4", 0) + drawer_count
+
+            for substrate, qty in counts.items():
+                product = self._southbrook_get_or_create_raw_material(substrate)
+                bom_line_vals.append((0, 0, {
+                    "product_id": product.id,
+                    "product_qty": float(qty),
+                }))
+
+            # Edge banding (bom-research.md §4 item 1 — "100% absent as a
+            # BoM/purchasable line"). Converts the Phase-1 scalar
+            # edge_banding_length_mm into whole linear metres of banding
+            # tape, rounded up (buying in whole metres, not fractional).
+            edge_len_mm = panel.get("edge_banding_length_mm") or 0
+            if edge_len_mm > 0:
+                meters = max(1, math.ceil(edge_len_mm / 1000.0))
+                eb_product = self._southbrook_get_or_create_edge_banding_tape()
+                bom_line_vals.append((0, 0, {
+                    "product_id": eb_product.id,
+                    "product_qty": float(meters),
+                }))
+
+        # Hardware — real Marathon SKUs (+ the 5 southbrook_mrp_pm
+        # fastener products, wired via default_code — see hardware_map.
+        # json), the exact same resolution path Module 3/4 already use
+        # post-render (sb.production.package.generate_from_mo). Rule 4
+        # (bi-fold corner cabinets ship without soft-close) is the
+        # default when the caller doesn't supply an explicit soft_close
+        # (the per-variant path derives it from the configured slide;
+        # the template-level nominal path has no such signal).
+        if soft_close is None:
+            soft_close = (family != "corner")
+
+        Catalog = self.env["southbrook.hardware.catalog"]
+        hardware_picks = Catalog.resolve(
+            cabinet_family=family,
+            door_count=door_count,
+            drawer_count=drawer_count,
+            shelf_count=shelf_count,
+            soft_close=soft_close,
+            slide_sku=slide_sku,
+            corner_subtype=corner_subtype,
+        )
+        for product, qty in hardware_picks:
+            if qty <= 0:
+                continue
+            bom_line_vals.append((0, 0, {
+                "product_id": product.id,
+                "product_qty": float(qty),
+            }))
+
+        return bom_line_vals, shelf_count
+
+    def _southbrook_resolve_accessory_product(self, accessory_type):
+        """Resolve an accessory_type ("End Panel" / "Filler" / "Cornice" /
+        "Pelmet" / "Plinth") to a real, purchasable SKU where one is
+        seeded (End Panel -> SB-EP-BASE-STD, Filler -> SB-FILLER-BASE —
+        see end_panel_seed.xml), falling back to the generic melamine
+        placeholder otherwise.
+
+        HONEST AMBIGUITY (bom-research.md §4 item 3): the real SKU
+        catalog is keyed by style (Standard/Inline/T&G/Radius/Square) x
+        class (Base/Tall/Wall), but no attribute anywhere on the
+        accessory template/variant captures either axis — only the
+        coarse accessory_type. "Base"+"Standard" is used as the
+        least-wrong single default (same "least-wrong" convention
+        canonical_catalog_tag.xml's own comment already uses for tagging
+        the accessory template cabinet_type="panel"), not a guess dressed
+        as certainty. Cornice/Pelmet/Plinth have NO seeded SKU at all —
+        those stay on the placeholder, a real, flagged gap, not silently
+        invented.
+        """
+        sku = self._SOUTHBROOK_ACCESSORY_SKU_BY_TYPE.get((accessory_type or "").strip().lower())
+        if sku:
+            product = self.env["product.product"].sudo().search([
+                "|", ("x_marathon_sku", "=", sku), ("default_code", "=", sku),
+            ], limit=1)
+            if product:
+                return product
+            _logger.warning(
+                "Southbrook catalog BoM generator: accessory_type=%r maps "
+                "to SKU %s but it isn't in the installed catalog — falling "
+                "back to the generic melamine placeholder.",
+                accessory_type, sku,
+            )
+        return self._southbrook_get_or_create_raw_material("melamine_white_5_8")
+
+    @api.model
+    def _southbrook_ensure_variant_boms(self, tmpl):
+        """Ensure every real, materialized product.product variant of a
+        config_ok=True cabinet template has its own product_id-scoped
+        mrp.bom, correctly dimensioned from its own configured attribute
+        picks. NEVER writes to the variant record itself.
+
+        Idempotent per-variant, same shell/skip semantics as the
+        template-level generator: a non-empty product_id-scoped BoM
+        (ours or hand-built) is left alone; an empty one WE previously
+        created (code prefix "CatalogAutoBOM-Variant-") gets its lines
+        (re)written; anything else empty is presumed hand-built and left
+        untouched.
+
+        Returns (created, updated, skipped) counts.
+        """
+        Bom = self.env["mrp.bom"].sudo()
+        created = updated = skipped = 0
+
+        for variant in tmpl.product_variant_ids:
+            if not variant.product_template_attribute_value_ids:
+                # No configured attribute picks at all -- this variant IS
+                # the bare template (every product.template always has at
+                # least one product.product, even one with zero attribute
+                # lines). It is indistinguishable from "no variant chosen
+                # yet", so there is nothing per-variant to build: Odoo's
+                # native BoM fallback already resolves such a variant to
+                # the template-level nominal BoM above. Building a
+                # separate, identical product_id-scoped BoM here would
+                # only duplicate it.
+                continue
+
+            existing = Bom.with_context(active_test=False).search([
+                ("product_id", "=", variant.id),
+                ("type", "=", "normal"),
+            ])
+            non_empty = existing.filtered(lambda b: b.bom_line_ids)
+            if non_empty:
+                skipped += 1
+                continue
+
+            ours = existing.filtered(
+                lambda b: (b.code or "").startswith("CatalogAutoBOM-Variant-")
+            )
+            hand_built = existing - ours
+            if hand_built:
+                skipped += 1
+                continue
+
+            bom_line_vals, _shelf_count = self._southbrook_build_variant_bom_lines(tmpl, variant)
+            if not bom_line_vals:
+                skipped += 1
+                continue
+
+            if ours:
+                ours[0].write({"bom_line_ids": [(5, 0, 0)] + bom_line_vals})
+                updated += 1
+            else:
+                code_base = variant.default_code or tmpl.default_code or ("TMPL-%d" % tmpl.id)
+                Bom.create({
+                    "product_tmpl_id": tmpl.id,
+                    "product_id": variant.id,
+                    "type": "normal",
+                    "product_qty": 1.0,
+                    "code": "CatalogAutoBOM-Variant-%s" % code_base,
+                    "bom_line_ids": bom_line_vals,
+                })
+                created += 1
+
+        return created, updated, skipped
 
     @api.model
     def _southbrook_cleanup_empty_catalog_boms(self):
@@ -282,21 +710,29 @@ class MrpBom(models.Model):
         generator ever saw the template, which then treated the empty
         stub as "already handled").
 
+        NOTE (2026-07-31): since ``_southbrook_generate_catalog_boms`` no
+        longer hard-skips config_ok templates, re-running the generator
+        now fills these in place instead of leaving them empty — this
+        cleanup method is retained as a safety net for any
+        ``KitchenAutoSeed-*``/``CatalogAutoBOM-*`` stub that is STILL
+        empty for some other reason (e.g. the generator hasn't run yet on
+        this database), not as the primary fix anymore.
+
         This method finds every EMPTY (``bom_line_ids`` falsy),
         normal-type ``mrp.bom`` on a ``southbrook_is_cabinet=True``
         template whose ``code`` marks it as machine-autoseeded by one of
-        the two known auto-stub paths — ``CatalogAutoBOM-*`` (this
-        generator; should be unreachable after the fix above, but cheap
-        to also cover) or ``KitchenAutoSeed-*``
-        (``kitchen_design._ensure_kitchen_bom``, the actual source of the
-        12 empties on prod) — and unlinks it, UNLESS it is referenced by
+        the two known auto-stub paths — ``CatalogAutoBOM-*`` or
+        ``KitchenAutoSeed-*`` — and unlinks it, UNLESS it is referenced by
         any ``mrp.production`` (confirmed or not — an MO pointing at it
         means it is "in use", not orphaned, and must never be deleted
         out from under a production order).
 
         A hand-built or Hermes-applied BoM never carries either code
         prefix, so this can never delete real shop-authored data even if
-        it happens to be empty.
+        it happens to be empty. A "<SKU> Canonical" routing-carrier shell
+        also never carries either prefix, so it is never a cleanup
+        candidate — it should be FILLED (via the main generator), never
+        deleted.
 
         Idempotent — a second run finds nothing left to delete.
 
@@ -359,146 +795,6 @@ class MrpBom(models.Model):
             "refused_in_use": refused_in_use,
         }
 
-    def _southbrook_build_cabinet_bom(self, tmpl):
-        """Build ONE real mrp.bom for a single cabinet template.
-
-        Caller (``_southbrook_generate_catalog_boms``) only invokes this
-        for templates that already passed the ``config_ok`` and
-        "no existing BoM" guards, so ``tmpl`` here is always a
-        non-configurable, BoM-less cabinet — but this method still
-        builds ``bom_line_vals`` FIRST and only calls ``Bom.create()`` if
-        it ends up non-empty, as a second, independent line of defense:
-        never create the BoM record at all if nothing would end up on it.
-
-        Returns the created mrp.bom, or an empty recordset if there was
-        genuinely nothing sensible to put on it (defensive guard — should
-        not happen for real catalog data, but a BoM with zero
-        bom_line_ids would be no better than the stub this replaces, so
-        it is refused rather than created).
-        """
-        Bom = self.env["mrp.bom"].sudo()
-
-        w_in = tmpl.southbrook_width_in or 24.0
-        h_in = tmpl.southbrook_height_in or 34.5
-        d_in = tmpl.southbrook_depth_in or 24.0
-        width_mm = w_in * 25.4
-        height_mm = h_in * 25.4
-        depth_mm = d_in * 25.4
-
-        cabinet_type = tmpl.southbrook_cabinet_type or "base"
-        family = self._SOUTHBROOK_FAMILY_MAP.get(cabinet_type, "base")
-
-        # Rule 3 (Southbrook_Excel_to_Odoo_Mapping.md §3.4) — width -> door
-        # count for boxed families; accessories carry no door. Mirrors
-        # kitchen_design._ensure_kitchen_bom exactly, for consistency
-        # between the two BoM-seeding paths.
-        if family == "accessory":
-            door_count = 0
-        elif w_in >= 24.0:
-            door_count = 2
-        else:
-            door_count = 1
-
-        bom_line_vals = []
-        shelf_count = 0
-
-        if family == "accessory":
-            # AMBIGUITY FLAG: a filler/decorative panel (southbrook_
-            # cabinet_type "filler"/"panel") is a single flat board, not a
-            # 6-panel box. Calling _compute_panel_dimensions here would
-            # wrongly synthesize sides/top/bottom/back/shelf for a product
-            # that is physically just one panel — that would be guessing
-            # a wrong cutlist, which the task explicitly warns against.
-            # Minimal sensible BoM instead: one panel-stock line, the same
-            # substrate sb_cutlist.py's DEFAULT_SUBSTRATE_BY_PANEL falls
-            # back to for an unrecognized panel key ("melamine_white_5_8").
-            # The EXACT substrate a given filler/end-panel should consume
-            # (e.g. matching the door finish) is not modeled anywhere in
-            # this codebase yet — flagged in the delivery report, not
-            # guessed further here.
-            product = self._southbrook_get_or_create_raw_material(
-                "melamine_white_5_8"
-            )
-            bom_line_vals.append((0, 0, {
-                "product_id": product.id,
-                "product_qty": 1.0,
-            }))
-        else:
-            panel = Bom._compute_panel_dimensions(
-                width_mm=width_mm,
-                height_mm=height_mm,
-                depth_mm=depth_mm,
-                family=family,
-                door_count=door_count,
-                drawer_count=0,
-                finished_sides="none",
-            )
-            shelf_count = int(panel.get("shelf_count") or 0)
-            counts = {}
-            for key, substrate in self._SOUTHBROOK_PANEL_SUBSTRATE.items():
-                value = panel.get(key)
-                if value is None:
-                    continue
-                if key == "shelf":
-                    qty = shelf_count
-                elif key == "door":
-                    qty = int(panel.get("door_count") or 0)
-                else:
-                    qty = 1
-                if qty <= 0:
-                    continue
-                counts[substrate] = counts.get(substrate, 0) + qty
-            for substrate, qty in counts.items():
-                product = self._southbrook_get_or_create_raw_material(substrate)
-                bom_line_vals.append((0, 0, {
-                    "product_id": product.id,
-                    "product_qty": float(qty),
-                }))
-
-        # Hardware — real Marathon SKUs, the exact same resolution path
-        # Module 3/4 already use post-render
-        # (sb.production.package.generate_from_mo). soft_close mirrors
-        # Rule 4 (bi-fold corner cabinets ship without soft-close).
-        # drawer_count is always 0 here: this catalog's
-        # southbrook_cabinet_type selection has no drawer-count signal at
-        # all (verified — even "DB24 3-Drawer Base" in demo_cabinets.xml
-        # is tagged cabinet_type="base"), the exact same limitation
-        # kitchen_design._ensure_kitchen_bom already lives with.
-        Catalog = self.env["southbrook.hardware.catalog"]
-        hardware_picks = Catalog.resolve(
-            cabinet_family=family,
-            door_count=door_count,
-            drawer_count=0,
-            shelf_count=shelf_count,
-            soft_close=(family != "corner"),
-        )
-        for product, qty in hardware_picks:
-            if qty <= 0:
-                continue
-            bom_line_vals.append((0, 0, {
-                "product_id": product.id,
-                "product_qty": float(qty),
-            }))
-
-        if not bom_line_vals:
-            _logger.warning(
-                "Southbrook catalog BoM generator: %s produced zero "
-                "sensible bom_line_ids — skipped rather than creating an "
-                "empty BoM.",
-                tmpl.display_name,
-            )
-            return Bom.browse()
-
-        default_code = tmpl.default_code or ("TMPL-%d" % tmpl.id)
-        bom = Bom.create({
-            "product_tmpl_id": tmpl.id,
-            "type": "normal",
-            "product_qty": 1.0,
-            "code": "CatalogAutoBOM-%s" % default_code,
-            "bom_line_ids": bom_line_vals,
-        })
-        return bom
-
     def _southbrook_get_or_create_raw_material(self, substrate):
         """Get-or-create a placeholder raw-material product for a panel
         substrate slug (melamine_white_5_8 / hardboard_1_4 / ply_3_4).
@@ -538,6 +834,45 @@ class MrpBom(models.Model):
         product = Product.create({
             "name": label,
             "default_code": "RM-%s" % substrate.upper(),
+            "type": "consu",
+            "is_storable": True,
+            "purchase_ok": True,
+            "sale_ok": False,
+        })
+        self.env["ir.model.data"].create({
+            "module": "southbrook_kitchen_mrp",
+            "name": xmlid,
+            "model": "product.product",
+            "res_id": product.id,
+            "noupdate": True,
+        })
+        return product
+
+    def _southbrook_get_or_create_edge_banding_tape(self):
+        """Get-or-create a single placeholder edge-banding-tape product,
+        same get-or-create-by-stable-xmlid pattern as
+        ``_southbrook_get_or_create_raw_material`` (bom-research.md §4
+        item 1 — "no PVC/ABS edge-banding tape product.product exists
+        anywhere in this codebase"). Quantity on the BoM line is whole
+        linear metres (see ``_southbrook_compute_bom_line_vals``'s edge-
+        banding block) derived from the Phase-1 scalar
+        ``edge_banding_length_mm`` — not a per-edge/per-substrate-color
+        breakdown (that level of detail doesn't exist anywhere in the
+        engine yet — flagged, not invented). No cost is set: costing this
+        catalog is the client's decision, matching the raw-material
+        placeholders' convention.
+        """
+        xmlid = "edge_banding_tape_pvc_34"
+        product = self.env.ref(
+            "southbrook_kitchen_mrp.%s" % xmlid, raise_if_not_found=False
+        )
+        if product:
+            return product
+
+        Product = self.env["product.product"].sudo()
+        product = Product.create({
+            "name": "Edge Banding Tape — PVC 3/4in (per linear metre)",
+            "default_code": "RM-EDGEBAND-PVC-34",
             "type": "consu",
             "is_storable": True,
             "purchase_ok": True,

@@ -37,32 +37,47 @@
     </record>
 
     <!-- Fasteners (1.3) -->
+    <!-- default_code added (BOM-generation task, 2026-07-31) — these 5
+         products previously carried no code at all, so no code path could
+         ever bind a hardware_map.json rule to them (confirmed by grep at
+         the time: zero references to any of these 5 xmlids anywhere).
+         southbrook_hardware_catalog's resolve() now matches SKUs against
+         EITHER x_marathon_sku OR default_code (see southbrook_hardware_
+         catalog.py), so a plain default_code is enough to wire these into
+         the per_cabinet/per_door/per_drawer fastener rules without this
+         module needing a new hard dependency on southbrook_hardware_catalog
+         just to set x_marathon_sku. -->
     <record id="fast_confirmat_50" model="product.product">
       <field name="name">Confirmat Screw 7x50</field>
+      <field name="default_code">FAST-CONFIRMAT-50</field>
       <field name="categ_id" ref="cat_fasteners"/>
       <field name="list_price">0.05</field>
       <field name="type">consu</field>
     </record>
     <record id="fast_dowel_8mm" model="product.product">
       <field name="name">8mm Wood Dowel</field>
+      <field name="default_code">FAST-DOWEL-8MM</field>
       <field name="categ_id" ref="cat_fasteners"/>
       <field name="list_price">0.03</field>
       <field name="type">consu</field>
     </record>
     <record id="fast_cam" model="product.product">
       <field name="name">Minifix Cam Lock</field>
+      <field name="default_code">FAST-CAM</field>
       <field name="categ_id" ref="cat_fasteners"/>
       <field name="list_price">0.12</field>
       <field name="type">consu</field>
     </record>
     <record id="fast_handle_screw" model="product.product">
       <field name="name">Handle Screw M4</field>
+      <field name="default_code">FAST-HANDLE-SCR</field>
       <field name="categ_id" ref="cat_fasteners"/>
       <field name="list_price">0.02</field>
       <field name="type">consu</field>
     </record>
     <record id="fast_slide_screw" model="product.product">
       <field name="name">Drawer Slide Screw</field>
+      <field name="default_code">FAST-SLIDE-SCR</field>
       <field name="categ_id" ref="cat_fasteners"/>
       <field name="list_price">0.01</field>
       <field name="type">consu</field>

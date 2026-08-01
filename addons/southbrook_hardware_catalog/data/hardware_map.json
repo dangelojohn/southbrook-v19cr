@@ -1,31 +1,39 @@
 {
-  "_comment": "Hardware-resolution rules. SKUs must match x_marathon_sku on product.product records. per_door_soft_close is picked when the configurator's soft_close flag is true; per_door otherwise. per_family adds cabinet-family-specific extras on top of per_cabinet.",
+  "_comment": "Hardware-resolution rules. SKUs must match x_marathon_sku OR default_code on product.product records (resolve() checks both — the 5 southbrook_mrp_pm fastener products carry only default_code, no x_marathon_sku). per_door_soft_close is picked when the configurator's soft_close flag is true; per_door otherwise. per_family adds cabinet-family-specific extras on top of per_cabinet. per_family_subtype (keyed '<family>:<subtype>') REPLACES the coarser per_family[family] entry when resolve() is called with a matching corner_subtype -- see per_family_subtype_comment.",
 
   "per_door_soft_close": {
     "BLM-110-SC": 2,
     "MRH-DOORBUMP-CL": 2,
-    "MRH-HDL-PUL128": 1
+    "MRH-HDL-PUL128": 1,
+    "FAST-HANDLE-SCR": 2
   },
 
   "per_door": {
     "BLM-110-NSC": 2,
     "MRH-DOORBUMP-CL": 2,
-    "MRH-HDL-PUL128": 1
+    "MRH-HDL-PUL128": 1,
+    "FAST-HANDLE-SCR": 2
   },
 
   "per_drawer": {
     "BLM-MOV-450": 1,
-    "MRH-HDL-PUL128": 1
+    "MRH-HDL-PUL128": 1,
+    "FAST-SLIDE-SCR": 4
   },
 
   "per_shelf": {
     "MRH-SHLFPIN-5MM": 4
   },
 
+  "_fastener_comment": "The 3 FAST-* entries in per_cabinet are a flat per-cabinet estimate, not a real per-joint count -- no per-joint (RTA panel-to-panel) fastener formula exists anywhere in this codebase, and inventing one is new estimating logic, not a wiring gap. Kept flat and clearly documented rather than guessed at joint granularity.",
+
   "per_cabinet": {
     "MRH-CAMLOCK-KIT": 1,
     "MRH-LVL-50": 4,
-    "MRH-MTGSCR-25PK": 1
+    "MRH-MTGSCR-25PK": 1,
+    "FAST-CONFIRMAT-50": 4,
+    "FAST-DOWEL-8MM": 8,
+    "FAST-CAM": 4
   },
 
   "per_family": {
@@ -34,7 +42,28 @@
     },
     "sink": {
       "MRH-WATERBARRIER-1M": 1
+    },
+    "corner": {
+      "SB-CM-CPOS": 1
     }
+  },
+
+  "per_family_subtype_comment": "Keys are '<cabinet_family>:<corner_subtype>'. corner_subtype is inferred by the caller from the cabinet's default_code (BLIND / WALL-CORNER / else diagonal) -- see mrp_bom_catalog.py's _southbrook_infer_corner_subtype. When resolve(corner_subtype=...) matches a key here, its dict REPLACES per_family['corner'] entirely for that call (not additive) so a blind-corner cabinet gets exactly the BCO mechanism, not BCO+CPOS. 'corner:wall' is deliberately an EMPTY override -- per the corner-engine research corpus, a simple diagonal wall corner is a self-contained box needing no mechanism or filler, unlike a base blind/diagonal corner.",
+
+  "per_family_subtype": {
+    "corner:blind": {
+      "SB-CM-BCO": 1
+    },
+    "corner:diag": {
+      "SB-CM-CPOS": 1
+    },
+    "corner:wall": {}
+  },
+
+  "per_family_subtype_hinge_comment": "When resolve(corner_subtype=...) matches a key here, the standard BLM-110-SC/BLM-110-NSC per-door hinge SKU is swapped for the given SKU at the same quantity -- a blind-corner cabinet's exposed door needs the Salice 165deg blind-corner hinge, not a standard 110deg hinge (the reduced swing angle is required so the door clears the blind bay).",
+
+  "per_family_subtype_hinge": {
+    "corner:blind": "SAL-C2R-165"
   },
 
   "_pull_override_comment": "When resolve() is called with pull_finish=<key>, the legacy default pull SKUs (pull_default_skus, knob_default_skus) get stripped from the result and replaced with the finish-specific SKU from by_pull_finish[finish] / by_knob_finish[finish]. Finish keys match the snake_case form of attr_pull_finish values from southbrook_estimating/data/attributes.xml. Pull-size lookup falls through to 'default' when a specific size isn't seeded.",

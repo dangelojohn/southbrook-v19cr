@@ -114,7 +114,14 @@ class TestHardwareResolution(TransactionCase):
     def test_resolution_picks_only_present_skus(self):
         """All SKUs referenced by the resolution map must actually exist
         in the catalog — no orphan references that would lead to silent
-        skips at runtime."""
+        skips at runtime.
+
+        BOM-generation task (2026-07-31): resolve() now matches a SKU
+        against EITHER x_marathon_sku OR default_code (the 5 southbrook_
+        mrp_pm fastener products carry only default_code) — this
+        integrity check follows the same widened match so it doesn't
+        false-positive on those.
+        """
         Product = self.env["product.product"]
         hardware_map = self.Catalog._hardware_map()
         referenced_skus = set()
@@ -123,15 +130,85 @@ class TestHardwareResolution(TransactionCase):
             referenced_skus.update((hardware_map.get(key) or {}).keys())
         for fam_rules in (hardware_map.get("per_family") or {}).values():
             referenced_skus.update(fam_rules.keys())
+        for fam_rules in (hardware_map.get("per_family_subtype") or {}).values():
+            referenced_skus.update(fam_rules.keys())
+        referenced_skus.update((hardware_map.get("per_family_subtype_hinge") or {}).values())
 
         missing = []
         for sku in referenced_skus:
-            if not Product.search_count([("x_marathon_sku", "=", sku)]):
+            found = Product.search_count([
+                "|", ("x_marathon_sku", "=", sku), ("default_code", "=", sku),
+            ])
+            if not found:
                 missing.append(sku)
         self.assertFalse(
             missing,
             f"hardware_map references SKUs absent from the catalog: {missing}",
         )
+
+    # ------------------------------------------------------------------
+    # BOM-generation task (2026-07-31) — fastener wiring + corner subtype
+    # ------------------------------------------------------------------
+    def test_fasteners_wired_into_per_cabinet_per_door_per_drawer(self):
+        """The 5 southbrook_mrp_pm fastener products (default_code-only,
+        no x_marathon_sku) now resolve through the standard per_cabinet/
+        per_door/per_drawer rules."""
+        picks = self.Catalog.resolve(
+            cabinet_family="base", door_count=1, drawer_count=1,
+            shelf_count=0, soft_close=True,
+        )
+        by_code = {(p.x_marathon_sku or p.default_code): qty for p, qty in picks}
+        self.assertEqual(by_code.get("FAST-CONFIRMAT-50"), 4)
+        self.assertEqual(by_code.get("FAST-DOWEL-8MM"), 8)
+        self.assertEqual(by_code.get("FAST-CAM"), 4)
+        self.assertEqual(by_code.get("FAST-HANDLE-SCR"), 2, "2 handle screws x 1 door")
+        self.assertEqual(by_code.get("FAST-SLIDE-SCR"), 4, "4 slide screws x 1 drawer")
+
+    def test_corner_subtype_blind_gets_bco_and_specialty_hinge(self):
+        """corner_subtype='blind' swaps in the Salice 165deg blind-corner
+        hinge and resolves the BCO mechanism instead of the generic
+        corner default (CPOS)."""
+        picks = self.Catalog.resolve(
+            cabinet_family="corner", door_count=1, drawer_count=0,
+            shelf_count=0, soft_close=True, corner_subtype="blind",
+        )
+        skus = self._sku_set(picks)
+        self.assertEqual(skus.get("SAL-C2R-165"), 2, "165deg blind-corner hinge x2")
+        self.assertNotIn("BLM-110-SC", skus, "standard hinge must be fully replaced")
+        self.assertEqual(skus.get("SB-CM-BCO"), 1)
+        self.assertNotIn("SB-CM-CPOS", skus, "subtype override replaces, not adds")
+
+    def test_corner_subtype_diag_gets_cpos_standard_hinge(self):
+        picks = self.Catalog.resolve(
+            cabinet_family="corner", door_count=1, drawer_count=0,
+            shelf_count=0, soft_close=True, corner_subtype="diag",
+        )
+        skus = self._sku_set(picks)
+        self.assertEqual(skus.get("SB-CM-CPOS"), 1)
+        self.assertEqual(skus.get("BLM-110-SC"), 2, "standard hinge, no override for diag")
+        self.assertNotIn("SAL-C2R-165", skus)
+
+    def test_corner_subtype_wall_gets_no_mechanism(self):
+        """A simple diagonal wall corner is self-contained — the
+        per_family_subtype override is deliberately empty."""
+        picks = self.Catalog.resolve(
+            cabinet_family="corner", door_count=1, drawer_count=0,
+            shelf_count=0, soft_close=True, corner_subtype="wall",
+        )
+        skus = self._sku_set(picks)
+        self.assertNotIn("SB-CM-CPOS", skus)
+        self.assertNotIn("SB-CM-BCO", skus)
+
+    def test_corner_without_subtype_keeps_legacy_generic_mechanism(self):
+        """Omitting corner_subtype (every pre-existing caller) still gets
+        the coarse per_family['corner'] default — fully backward
+        compatible."""
+        picks = self.Catalog.resolve(
+            cabinet_family="corner", door_count=1, drawer_count=0,
+            shelf_count=0, soft_close=True,
+        )
+        skus = self._sku_set(picks)
+        self.assertEqual(skus.get("SB-CM-CPOS"), 1)
 
     # ------------------------------------------------------------------
     # Audit 2026-06-10 — pull_finish wiring tests.

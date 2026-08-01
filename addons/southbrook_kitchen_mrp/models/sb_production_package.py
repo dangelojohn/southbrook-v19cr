@@ -308,14 +308,7 @@ class SbProductionPackage(models.Model):
         drawer_count, soft_close.
         """
         product = order_line.product_id
-        picks = product.product_template_attribute_value_ids if product else False
-        attr_map = {}  # attr_name_lower -> value name
-        if picks:
-            for ptav in picks:
-                attr = ptav.attribute_id
-                val = ptav.product_attribute_value_id
-                if attr and val:
-                    attr_map[(attr.name or "").strip().lower()] = (val.name or "").strip()
+        attr_map = self._southbrook_attr_map(product)
 
         width_mm = self._parse_dim_to_mm(attr_map.get("width")) or self._DEFAULT_HEIGHT_MM
         # Height is rarely a configurator attribute (cabinets share standard
@@ -327,8 +320,8 @@ class SbProductionPackage(models.Model):
             # geometry isn't accidentally pegged to the cabinet height.
             width_mm = 600.0
 
-        family = self._infer_family(attr_map, order_line) or self._DEFAULT_FAMILY
-        drawer_count = self._infer_drawer_count(attr_map, order_line)
+        family = self._infer_family(attr_map, product) or self._DEFAULT_FAMILY
+        drawer_count = self._infer_drawer_count(attr_map, product)
         door_count = 0 if drawer_count else self._infer_door_count(attr_map, width_mm)
         soft_close = self._infer_soft_close(attr_map)
         slide_sku, slide_is_soft_close = self._resolve_slide_sku_from_attr_map(attr_map)
@@ -350,6 +343,102 @@ class SbProductionPackage(models.Model):
             "slide_sku": slide_sku,
         }
 
+    # ------------------------------------------------------------------
+    # BOM-generation task (2026-07-31) — bare-variant dims resolution.
+    #
+    # Same attribute-walking inference as _resolve_dims_from_order_line
+    # above, generalized to accept a product.product DIRECTLY (no
+    # sale.order.line required) so the catalog-wide BoM generator
+    # (southbrook_kitchen_mrp.mrp_bom_catalog) can give a config_ok=True
+    # cabinet's real, materialized variants their own correctly-
+    # dimensioned mrp.bom instead of a template-level midpoint fallback.
+    #
+    # READ-ONLY on `product` — never writes to it. Wizard-configured
+    # variants are user data; this only inspects the attribute picks
+    # already on the record.
+    # ------------------------------------------------------------------
+    @api.model
+    def _resolve_dims_from_variant(self, product, tmpl=None):
+        """Pull cabinet dimensions + counts off a bare configured variant.
+
+        :param product: product.product — the materialized variant.
+        :param tmpl:    optional product.template (defaults to
+                         ``product.product_tmpl_id``) — its
+                         southbrook_width_in/_height_in/_depth_in and
+                         southbrook_cabinet_type are the fallback for any
+                         dimension/family the variant's own attribute
+                         picks don't cover.
+
+        Returns the same shape as _resolve_dims_from_order_line, plus
+        ``accessory_type`` (lower-cased "Accessory Type" attribute pick,
+        or None) for the accessory-family SKU resolution in
+        mrp_bom_catalog.py.
+        """
+        tmpl = tmpl or product.product_tmpl_id
+        attr_map = self._southbrook_attr_map(product)
+
+        width_mm = self._parse_dim_to_mm(attr_map.get("width"))
+        if not width_mm:
+            width_mm = (tmpl.southbrook_width_in or 24.0) * 25.4
+        height_mm = self._parse_dim_to_mm(attr_map.get("height"))
+        if not height_mm:
+            height_mm = (tmpl.southbrook_height_in or 34.5) * 25.4
+        depth_mm = self._parse_dim_to_mm(attr_map.get("depth"))
+        if not depth_mm:
+            depth_mm = (tmpl.southbrook_depth_in or 24.0) * 25.4
+
+        family = self._infer_family(attr_map, product)
+        if not family:
+            MrpBom = self.env["mrp.bom"]
+            cabinet_type = tmpl.southbrook_cabinet_type or "base"
+            family = MrpBom._SOUTHBROOK_FAMILY_MAP.get(cabinet_type, "base")
+
+        drawer_count = self._infer_drawer_count(attr_map, product)
+        if family == "accessory":
+            door_count = 0
+        else:
+            door_count = 0 if drawer_count else self._infer_door_count(attr_map, width_mm)
+
+        slide_sku, slide_is_soft_close = self._resolve_slide_sku_from_attr_map(attr_map)
+        if slide_sku:
+            soft_close = bool(slide_is_soft_close)
+        else:
+            # Rule 4 (family -> soft-close): bi-fold corner cabinets ship
+            # without soft-close hinges by default; every other family
+            # defaults to the explicit attribute pick (or True).
+            soft_close = self._infer_soft_close(attr_map) if family != "corner" else False
+
+        accessory_type = None
+        if family == "accessory":
+            accessory_type = (attr_map.get("accessory type") or "").strip().lower() or None
+
+        return {
+            "width_mm": width_mm,
+            "height_mm": height_mm,
+            "depth_mm": depth_mm,
+            "family": family,
+            "door_count": door_count,
+            "drawer_count": drawer_count,
+            "soft_close": soft_close,
+            "slide_sku": slide_sku,
+            "accessory_type": accessory_type,
+        }
+
+    def _southbrook_attr_map(self, product):
+        """Build the {attribute_name_lower: value_name} map off a bare
+        product.product's product_template_attribute_value_ids. Shared by
+        both _resolve_dims_from_order_line and _resolve_dims_from_variant
+        so the two never drift."""
+        attr_map = {}
+        picks = product.product_template_attribute_value_ids if product else False
+        if picks:
+            for ptav in picks:
+                attr = ptav.attribute_id
+                val = ptav.product_attribute_value_id
+                if attr and val:
+                    attr_map[(attr.name or "").strip().lower()] = (val.name or "").strip()
+        return attr_map
+
     def _parse_dim_to_mm(self, raw):
         """Best-effort '24 in' / '600mm' / '600' -> millimetres float."""
         if not raw:
@@ -366,21 +455,45 @@ class SbProductionPackage(models.Model):
             return 0.0
         return n * 25.4 if is_inches else n
 
-    def _infer_family(self, attr_map, order_line):
-        """Heuristic family inference (base / wall / tall / sink / vanity)."""
-        fam = (attr_map.get("family") or "").lower()
+    # BOM-generation task (2026-07-31) — needle order matters: "corner"
+    # is checked before "wall" so e.g. "SB-WALL-CORNER" resolves to
+    # family="corner" (its real southbrook_cabinet_type) rather than the
+    # more-generic "wall" substring matching first. "drawer"/"corner"
+    # were also flagged (bom-research.md §2.3) as missing from the
+    # needle list entirely -- _infer_drawer_count already derives drawer
+    # count independently, but a template/product name or a "Cabinet
+    # Style" pick that says "Corner"/"Drawer" was previously silently
+    # falling through to the base-cabinet default.
+    _FAMILY_NEEDLES = ("corner", "drawer", "tall", "sink", "vanity", "wall", "base")
+
+    def _infer_family(self, attr_map, product):
+        """Heuristic family inference (base / wall / tall / sink / vanity /
+        drawer / corner).
+
+        :param product: the product.product being resolved -- the
+            configured variant on a sale.order.line (legacy call site) or
+            a bare catalog variant (catalog-wide BoM generator call site).
+        """
+        # NOTE (bom-research.md §2.3): the real Southbrook attribute is
+        # named "Cabinet Style" (attr_family in southbrook_estimating/
+        # data/attributes.xml), not "Family" -- checking attr_map["family"]
+        # alone meant this branch never actually matched a real configured
+        # pick and always fell through to product-name matching. Both
+        # keys are checked now so genuine "Family" attributes (if any
+        # database seeds one under that literal name) keep working too.
+        fam = (attr_map.get("family") or attr_map.get("cabinet style") or "").lower()
         if fam:
-            for needle in ("base", "wall", "tall", "sink", "vanity"):
+            for needle in self._FAMILY_NEEDLES:
                 if needle in fam:
                     return needle
-        if order_line.product_id:
-            name = (order_line.product_id.display_name or "").lower()
-            for needle in ("base", "wall", "tall", "sink", "vanity"):
+        if product:
+            name = (product.display_name or "").lower()
+            for needle in self._FAMILY_NEEDLES:
                 if needle in name:
                     return needle
         return None
 
-    def _infer_drawer_count(self, attr_map, order_line):
+    def _infer_drawer_count(self, attr_map, product):
         """Drawer count from Drawer Construction / explicit Drawer Count /
         product display name. 3-drawer base cabinet is the audit's sample."""
         explicit = attr_map.get("drawer count") or attr_map.get("drawers")
@@ -395,8 +508,8 @@ class SbProductionPackage(models.Model):
             if f"{n}-drawer" in construction or f"{n} drawer" in construction:
                 return n
         # Fall back to the product display name.
-        if order_line.product_id:
-            name = (order_line.product_id.display_name or "").lower()
+        if product:
+            name = (product.display_name or "").lower()
             for n in range(9, 0, -1):
                 if f"{n}-drawer" in name or f"{n} drawer" in name:
                     return n

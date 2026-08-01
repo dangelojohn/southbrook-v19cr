@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-"""M4 — catalog-wide cabinet BoM generator.
+"""M4 — catalog-wide cabinet BoM generator, extended 2026-07-31 for the
+full-BoM-for-every-cabinet task.
 
 Verifies mrp.bom._southbrook_generate_catalog_boms():
   * creates a BoM with real, non-empty bom_line_ids for a cabinet
@@ -7,10 +8,18 @@ Verifies mrp.bom._southbrook_generate_catalog_boms():
     real Marathon hardware SKUs) and a pure filler/accessory (minimal
     sensible single-panel BoM, per the task's ambiguity guard),
   * is idempotent (re-running creates nothing new),
-  * never mutates a template that already has a BoM (empty stub or not),
-  * NEVER creates a BoM (empty or otherwise) for a config_ok=True
-    (per-variant-configured) template — see the confirmed prod defect
-    documented in mrp_bom_catalog.py's module docstring.
+  * never mutates a non-empty, or an empty-but-unrecognized-origin,
+    existing BoM,
+  * (2026-07-31) config_ok=True templates are NO LONGER hard-skipped:
+    an empty "Canonical"/KitchenAutoSeed-*/CatalogAutoBOM-* shell gets
+    real lines written onto it (never unlinked/replaced — its routing
+    must survive), a config_ok template with no BoM at all gets one
+    created, and every real materialized variant of a config_ok
+    template gets its own correctly-dimensioned, product_id-scoped BoM,
+  * per-family line counts (panel substrates + hardware) match the
+    formulas in bom-research.md §5,
+  * a corner cabinet's BoM includes its corner-mechanism SKU,
+  * the per-variant path never writes to the variant record itself.
 
 Also verifies mrp.bom._southbrook_cleanup_empty_catalog_boms():
   * deletes an empty, auto-seeded (KitchenAutoSeed-*/CatalogAutoBOM-*)
@@ -168,52 +177,96 @@ class TestCatalogBomGenerator(TransactionCase):
         )
 
     # ------------------------------------------------------------------
-    # config_ok=True — never create a BoM at all, empty or otherwise
+    # config_ok=True — 2026-07-31: no longer hard-skipped. A cabinet
+    # template's real per-cabinet dimensions are still chosen per-VARIANT
+    # at config time, but the client now requires every cabinet template
+    # (config_ok or not) to end up with a real, non-empty BoM. The
+    # template-level scalar-dims BoM is a NOMINAL/planning BoM (native
+    # Odoo falls back to it for any variant without its own); real
+    # variants additionally get their own correctly-dimensioned,
+    # product_id-scoped BoM — see the per-variant test block below.
     # ------------------------------------------------------------------
-    def test_configurable_template_gets_no_bom_not_even_empty(self):
-        """The confirmed prod defect: SB-BASE-1DR et al are config_ok=True
-        catalog templates whose real per-cabinet dimensions are chosen
-        per-VARIANT at config time. The template-level scalar dims are
-        only ever a midpoint fallback, so the generator must hard-skip
-        these — never build a BoM from that fallback, and CERTAINLY
-        never leave an empty stub sitting on them (an empty template-
-        level BoM is worse than none: any MO against any variant would
-        find it and silently produce zero components)."""
+    def test_configurable_template_shell_gets_real_lines_keeps_routing(self):
+        """The confirmed prod defect's OLD fix (hard-skip config_ok) is
+        superseded 2026-07-31: a config_ok=True cabinet's empty
+        "Canonical" routing-carrier BoM shell now gets real, non-empty
+        lines written onto it — the routing survives untouched, and the
+        shell record itself is never unlinked/replaced (this is the
+        deliberate, client-directed change to the previous "never touch
+        an existing BoM, even empty" invariant)."""
         tmpl = self._new_cabinet_template(
-            "M4 Test Configurable Base", "base", 24.0, 34.5, 24.0,
-            "M4-CFG-BASE",
+            "M4 Test Configurable Base Shell", "base", 30.0, 34.5, 24.0,
+            "M4-CFG-SHELL-B30",
+        )
+        tmpl.write({"config_ok": True})
+        shell = self.Bom.create({
+            "product_tmpl_id": tmpl.id,
+            "type": "normal",
+            "product_qty": 1.0,
+            "code": "%s Canonical" % tmpl.default_code,
+            "bom_line_ids": [],
+        })
+        workcenter = self.env["mrp.workcenter"].create({"name": "M4 Test WC"})
+        routing_line = self.env["mrp.routing.workcenter"].create({
+            "bom_id": shell.id,
+            "name": "Cut Panels",
+            "workcenter_id": workcenter.id,
+            "time_cycle_manual": 12.0,
+            "sequence": 10,
+        })
+
+        result = self.Bom._southbrook_generate_catalog_boms()
+
+        self.assertTrue(shell.exists(), "the shell BoM record must never be unlinked")
+        self.assertTrue(shell.bom_line_ids, "the shell must be filled with real lines")
+        self.assertEqual(
+            shell.operation_ids.ids, [routing_line.id],
+            "the 8-station routing must survive the fill untouched",
+        )
+        self.assertGreaterEqual(result["shell_filled"], 1)
+        boms = self._normal_boms(tmpl)
+        self.assertEqual(len(boms), 1, "no sibling BoM created next to the shell")
+        self.assertEqual(boms.id, shell.id)
+
+    def test_configurable_template_with_no_bom_at_all_gets_one_created(self):
+        """A config_ok=True template with NO pre-existing BoM (8 of the
+        19 real cabinet templates carry no BoM/shell at all) gets a
+        brand-new one created — the old hard-skip is gone."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Configurable Corner Blind", "corner", 45.0, 34.5,
+            24.0, "M4-CFG-CORNER-BLIND",
         )
         tmpl.write({"config_ok": True})
         self.assertFalse(self._normal_boms(tmpl))
 
         result = self.Bom._southbrook_generate_catalog_boms()
 
-        self.assertFalse(
-            self._normal_boms(tmpl),
-            "config_ok template must end up with NO BoM at all — not "
-            "an empty one",
-        )
-        self.assertGreaterEqual(result["skipped_configurable"], 1)
-        # Not double-counted as an "empty build" skip — it was never
-        # attempted.
-        self.assertEqual(
-            len([d for d in result["details"] if d["template_id"] == tmpl.id]),
-            0,
-        )
+        boms = self._normal_boms(tmpl)
+        self.assertEqual(len(boms), 1)
+        self.assertTrue(boms.bom_line_ids)
+        self.assertGreaterEqual(result["created"], 1)
 
-    def test_configurable_accessory_also_gets_no_bom(self):
-        """Same guard for the config_ok accessory family (SB-ACCESSORY),
-        which would otherwise take the single-panel minimal-BoM branch
-        and materialize a (wrong, midpoint-dimensioned) line."""
+    def test_configurable_accessory_shell_gets_real_lines(self):
+        """Same shell-fill behaviour for the config_ok accessory family
+        (SB-ACCESSORY) — it takes the single-panel minimal-BoM branch,
+        which must still count as "real, non-empty"."""
         tmpl = self._new_cabinet_template(
-            "M4 Test Configurable Accessory", "panel", 3.0, 34.5, 0.75,
-            "M4-CFG-ACCESSORY",
+            "M4 Test Configurable Accessory Shell", "panel", 3.0, 34.5,
+            0.75, "M4-CFG-ACC-SHELL",
         )
         tmpl.write({"config_ok": True})
+        shell = self.Bom.create({
+            "product_tmpl_id": tmpl.id,
+            "type": "normal",
+            "product_qty": 1.0,
+            "code": "%s Canonical" % tmpl.default_code,
+            "bom_line_ids": [],
+        })
 
         self.Bom._southbrook_generate_catalog_boms()
 
-        self.assertFalse(self._normal_boms(tmpl))
+        self.assertTrue(shell.exists())
+        self.assertTrue(shell.bom_line_ids)
 
     # ------------------------------------------------------------------
     # Cleanup — remove empty auto-seeded stubs, refuse in-use ones
@@ -292,3 +345,306 @@ class TestCatalogBomGenerator(TransactionCase):
             second["deleted"], 0,
             "second run must find nothing left to delete",
         )
+
+    # ------------------------------------------------------------------
+    # Per-family line counts (bom-research.md §5 formulas) — template
+    # level (non-config_ok), which exercises the shared panel/hardware
+    # line-builder every other path (shell-fill, per-variant) reuses.
+    # ------------------------------------------------------------------
+    def _line_qty_by_sku_or_code(self, bom):
+        result = {}
+        for line in bom.bom_line_ids:
+            key = line.product_id.x_marathon_sku or line.product_id.default_code
+            result[key] = result.get(key, 0.0) + line.product_qty
+        return result
+
+    def test_base_2door_line_counts(self):
+        """24in base, 2-door, 34.5in (876.3mm -> 2 shelves): 6 melamine
+        panel-equivalents (2 sides + 2 top/bottom + 2 shelves), 1 back,
+        2 doors, + real Marathon hardware incl. the 5 fastener SKUs."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Base 2Door", "base", 24.0, 34.5, 24.0, "M4-BASE-2DR",
+        )
+        self.Bom._southbrook_generate_catalog_boms()
+        bom = self._normal_boms(tmpl)
+        self.assertEqual(len(bom), 1)
+        by_code = self._line_qty_by_sku_or_code(bom)
+
+        self.assertEqual(by_code.get("RM-MELAMINE_WHITE_5_8"), 6.0)
+        self.assertEqual(by_code.get("RM-HARDBOARD_1_4"), 1.0)
+        self.assertEqual(by_code.get("RM-PLY_3_4"), 2.0, "1 door panel x 2 doors")
+        self.assertGreaterEqual(by_code.get("RM-EDGEBAND-PVC-34", 0), 1.0)
+
+        self.assertEqual(by_code.get("BLM-110-SC"), 4, "2 hinges x 2 doors")
+        self.assertEqual(by_code.get("MRH-DOORBUMP-CL"), 4)
+        self.assertEqual(by_code.get("MRH-HDL-PUL128"), 2)
+        self.assertEqual(by_code.get("MRH-SHLFPIN-5MM"), 8, "4 pins x 2 shelves")
+        self.assertEqual(by_code.get("MRH-CAMLOCK-KIT"), 1)
+        self.assertEqual(by_code.get("MRH-LVL-50"), 4)
+        self.assertEqual(by_code.get("MRH-MTGSCR-25PK"), 1)
+        self.assertEqual(by_code.get("FAST-CONFIRMAT-50"), 4)
+        self.assertEqual(by_code.get("FAST-DOWEL-8MM"), 8)
+        self.assertEqual(by_code.get("FAST-CAM"), 4)
+        self.assertEqual(by_code.get("FAST-HANDLE-SCR"), 4, "2 screws x 2 doors")
+
+    def test_tall_pantry_extra_levelers_and_three_shelves(self):
+        """24x84x24in tall pantry: height 2133.6mm -> 3 shelves,
+        per_family['tall'] adds 4 extra levelers (8 total)."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Tall Pantry", "tall", 24.0, 84.0, 24.0, "M4-TALL-PANTRY",
+        )
+        self.Bom._southbrook_generate_catalog_boms()
+        bom = self._normal_boms(tmpl)
+        by_code = self._line_qty_by_sku_or_code(bom)
+
+        self.assertEqual(by_code.get("MRH-SHLFPIN-5MM"), 12, "4 pins x 3 shelves")
+        self.assertEqual(by_code.get("MRH-LVL-50"), 8, "4 base + 4 tall family extra")
+
+    def test_sink_base_water_barrier(self):
+        tmpl = self._new_cabinet_template(
+            "M4 Test Sink Base", "base", 33.0, 34.5, 24.0, "M4-SINK-BASE",
+        )
+        self.Bom._southbrook_generate_catalog_boms()
+        bom = self._normal_boms(tmpl)
+        by_code = self._line_qty_by_sku_or_code(bom)
+        # NOTE: the template-level cabinet_type field cannot distinguish
+        # "sink" from "base" (bom-research.md §2.2 — southbrook_cabinet_
+        # type has no sink value) so this exercises the family map's own
+        # documented limitation; the per-variant path (test below) is
+        # where a real sink/water-barrier distinction would need a
+        # dedicated attribute pick, which this catalog doesn't have
+        # either. Kept here as a structural smoke test on the base path.
+        self.assertIn("BLM-110-SC", by_code)
+
+    # ------------------------------------------------------------------
+    # Corner mechanism — a corner BoM includes its mechanism SKU
+    # ------------------------------------------------------------------
+    def test_corner_bom_includes_blind_mechanism_and_hinge_override(self):
+        tmpl = self._new_cabinet_template(
+            "M4 Test Corner Blind", "corner", 45.0, 34.5, 24.0,
+            "M4-CORNER-BLIND",
+        )
+        self.Bom._southbrook_generate_catalog_boms()
+        bom = self._normal_boms(tmpl)
+        self.assertEqual(len(bom), 1)
+        skus = set(bom.bom_line_ids.mapped("product_id.x_marathon_sku"))
+        self.assertIn("SB-CM-BCO", skus, "blind-corner code resolves to the BCO mechanism")
+        self.assertIn("SAL-C2R-165", skus, "blind-corner hinge override must be present")
+        self.assertNotIn("BLM-110-SC", skus, "standard hinge must be fully replaced")
+        self.assertNotIn("BLM-110-NSC", skus, "standard hinge must be fully replaced")
+
+    def test_corner_bom_diag_gets_generic_mechanism(self):
+        tmpl = self._new_cabinet_template(
+            "M4 Test Corner Diag", "corner", 36.0, 34.5, 36.0,
+            "M4-CORNER-DIAG",
+        )
+        self.Bom._southbrook_generate_catalog_boms()
+        bom = self._normal_boms(tmpl)
+        skus = set(bom.bom_line_ids.mapped("product_id.x_marathon_sku"))
+        self.assertIn("SB-CM-CPOS", skus)
+        # Corner cabinets default to soft_close=False (Rule 4) at the
+        # template-nominal level, and "diag" has no hinge override — so
+        # the standard NON-soft-close hinge is what should resolve here.
+        self.assertIn("BLM-110-NSC", skus, "standard non-soft-close hinge, no override for diag")
+        self.assertNotIn("SAL-C2R-165", skus)
+
+    # ------------------------------------------------------------------
+    # Per-variant BoMs — config_ok templates, real materialized variants
+    # ------------------------------------------------------------------
+    def _make_configured_variant(self, tmpl, attrs):
+        """attrs: list of (attribute_name, value_name). Creates one
+        ad-hoc product.attribute + product.attribute.value + attribute
+        line per pair (test-isolated — doesn't touch the real seeded
+        southbrook_estimating attributes), then creates the
+        product.product variant DIRECTLY with the resulting
+        product.template.attribute.value ids.
+
+        NOTE: product_configurator/models/product.py's own
+        ProductTemplate._create_variant_ids() override deliberately
+        no-ops for ANY config_ok=True template ("Prevent configurable
+        products from creating variants as these serve only as a
+        template for the product configurator") — so the standard
+        attribute-line "always"/create_variant auto-materialization path
+        NEVER runs on these templates, by design. Real configured
+        variants are created explicitly by the configurator wizard via
+        product.config.session.create_get_variant() / get_variant_vals(),
+        which builds {"product_tmpl_id": ..., "product_template_
+        attribute_value_ids": [(6, 0, ptav_ids)]} and calls
+        product.product.create() directly — this helper mirrors that
+        exact pattern rather than relying on the (blocked) automatic
+        path.
+        """
+        ptav_ids = []
+        for name, value in attrs:
+            attribute = self.env["product.attribute"].create({
+                "name": name, "create_variant": "no_variant",
+            })
+            val = self.env["product.attribute.value"].create({
+                "name": value, "attribute_id": attribute.id,
+            })
+            self.env["product.template.attribute.line"].create({
+                "product_tmpl_id": tmpl.id,
+                "attribute_id": attribute.id,
+                "value_ids": [(6, 0, [val.id])],
+            })
+            ptav = self.env["product.template.attribute.value"].search([
+                ("product_tmpl_id", "=", tmpl.id),
+                ("product_attribute_value_id", "=", val.id),
+            ], limit=1)
+            self.assertTrue(
+                ptav,
+                "expected a product.template.attribute.value for %s=%s" % (name, value),
+            )
+            ptav_ids.append(ptav.id)
+
+        variant = self.env["product.product"].create({
+            "product_tmpl_id": tmpl.id,
+            "product_template_attribute_value_ids": [(6, 0, ptav_ids)],
+        })
+        return variant
+
+    def test_variant_gets_own_correctly_dimensioned_bom(self):
+        """A config_ok base template's real, materialized 30in-wide
+        variant gets its OWN product_id-scoped BoM sized from ITS
+        attribute pick (2 doors, per Rule 3), independent of the
+        template's own (different) scalar dims."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Variant Base", "base", 15.0, 34.5, 24.0,
+            "M4-VARIANT-BASE",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(
+            tmpl, [("Cabinet Style", "Base"), ("Width", "30 in")],
+        )
+
+        result = self.Bom._southbrook_generate_catalog_boms()
+
+        variant_bom = self.Bom.search([
+            ("product_id", "=", variant.id), ("type", "=", "normal"),
+        ])
+        self.assertEqual(len(variant_bom), 1)
+        self.assertTrue(variant_bom.bom_line_ids)
+        self.assertGreaterEqual(result["variant_created"], 1)
+        by_code = self._line_qty_by_sku_or_code(variant_bom)
+        self.assertEqual(by_code.get("BLM-110-SC"), 4, "30in -> 2 doors -> 4 hinges")
+
+    def test_variant_generation_idempotent_and_never_writes_variant(self):
+        tmpl = self._new_cabinet_template(
+            "M4 Test Variant Idempotent", "base", 15.0, 34.5, 24.0,
+            "M4-VARIANT-IDEMPOTENT",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(
+            tmpl, [("Cabinet Style", "Base"), ("Width", "24 in")],
+        )
+        write_date_before = variant.write_date
+
+        first = self.Bom._southbrook_generate_catalog_boms()
+        self.assertGreaterEqual(first["variant_created"], 1)
+        bom_after_first = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom_after_first), 1)
+
+        second = self.Bom._southbrook_generate_catalog_boms()
+        self.assertEqual(
+            second["variant_created"], 0,
+            "second run must create no new variant BoM",
+        )
+        bom_after_second = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom_after_second), 1)
+        self.assertEqual(bom_after_first.id, bom_after_second.id)
+
+        variant.invalidate_recordset()
+        self.assertEqual(
+            variant.write_date, write_date_before,
+            "the variant record itself must never be written to — "
+            "wizard-configured variants are user data",
+        )
+
+    def test_drawer_family_variant_suppresses_shelf_adds_slides(self):
+        """A variant whose own attribute picks resolve to family='drawer'
+        (bom-research.md §5.2/§7's flagged gap) must get slides + drawer-
+        front lines, NO hinges, and NO shelf pins — even though the
+        template's own cabinet_type is 'base' (southbrook_cabinet_type
+        has no drawer value at all)."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Drawer Bank", "base", 24.0, 34.5, 24.0,
+            "M4-DRAWER-BANK",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(tmpl, [
+            ("Cabinet Style", "Drawer"),
+            ("Drawer Construction", "3-Drawer Stack"),
+            ("Width", "24 in"),
+        ])
+
+        self.Bom._southbrook_generate_catalog_boms()
+
+        bom = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom), 1)
+        by_code = self._line_qty_by_sku_or_code(bom)
+        self.assertEqual(by_code.get("BLM-MOV-450"), 3, "1 slide per drawer x 3")
+        self.assertEqual(by_code.get("MRH-HDL-PUL128"), 3)
+        self.assertNotIn("BLM-110-SC", by_code)
+        self.assertNotIn("BLM-110-NSC", by_code)
+        self.assertNotIn("MRH-SHLFPIN-5MM", by_code, "no shelves in a drawer bank")
+        self.assertEqual(
+            by_code.get("RM-PLY_3_4"), 3.0,
+            "1 drawer-front panel-equivalent x 3 drawers",
+        )
+
+    def test_accessory_variant_end_panel_resolves_real_sku(self):
+        """bom-research.md §4 item 3 — an accessory variant whose
+        Accessory Type pick is 'End Panel' resolves to the real seeded
+        SB-EP-BASE-STD SKU instead of the generic melamine placeholder."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Accessory End Panel", "panel", 3.0, 34.5, 0.75,
+            "M4-ACCESSORY-EP",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(
+            tmpl, [("Accessory Type", "End Panel")],
+        )
+
+        self.Bom._southbrook_generate_catalog_boms()
+
+        bom = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom), 1)
+        codes = bom.bom_line_ids.mapped("product_id.default_code")
+        self.assertIn("SB-EP-BASE-STD", codes)
+
+    def test_accessory_variant_filler_resolves_real_sku(self):
+        tmpl = self._new_cabinet_template(
+            "M4 Test Accessory Filler", "filler", 2.0, 34.5, 0.75,
+            "M4-ACCESSORY-FILLER",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(
+            tmpl, [("Accessory Type", "Filler")],
+        )
+
+        self.Bom._southbrook_generate_catalog_boms()
+
+        bom = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom), 1)
+        codes = bom.bom_line_ids.mapped("product_id.default_code")
+        self.assertIn("SB-FILLER-BASE", codes)
+
+    def test_accessory_variant_cornice_falls_back_to_placeholder(self):
+        """Cornice has no seeded real SKU anywhere in this catalog — the
+        generic melamine placeholder is an honest fallback, not a
+        fabricated SKU."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Accessory Cornice", "panel", 3.0, 6.0, 0.75,
+            "M4-ACCESSORY-CORNICE",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(
+            tmpl, [("Accessory Type", "Cornice")],
+        )
+
+        self.Bom._southbrook_generate_catalog_boms()
+
+        bom = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom), 1)
+        codes = bom.bom_line_ids.mapped("product_id.default_code")
+        self.assertIn("RM-MELAMINE_WHITE_5_8", codes)

@@ -55,6 +55,13 @@ class SouthbrookHardwareCatalog(models.AbstractModel):
         "PR-602728",       # Salice Progressa+ Undermount
     })
 
+    # BOM-generation task (2026-07-31) — the two default hinge SKUs that a
+    # per_family_subtype_hinge entry (hardware_map.json) is allowed to
+    # replace, mirroring the _DRAWER_SLIDE_SKUS swap pattern above. Any
+    # hinge outside this set (e.g. an already-specialty SAL-* pick coming
+    # from a different rule) is left alone.
+    _HINGE_DEFAULT_SKUS = frozenset({"BLM-110-SC", "BLM-110-NSC"})
+
     @api.model
     def resolve(
         self,
@@ -68,6 +75,7 @@ class SouthbrookHardwareCatalog(models.AbstractModel):
         handle_style: str = "pull",
         mount_appliance: bool = False,
         slide_sku: str = None,
+        corner_subtype: str = None,
     ) -> List[Tuple]:
         """Return a list of (product.product, qty) tuples for the configured carcass.
 
@@ -77,7 +85,8 @@ class SouthbrookHardwareCatalog(models.AbstractModel):
         * ``per_drawer`` × drawer_count for slides + drawer-front handles.
         * ``per_shelf`` × shelf_count for adjustable-shelf pins.
         * ``per_cabinet`` for cabinet-mounting screws, levelers,
-          and the cam-lock kit if applicable.
+          the cam-lock kit, and a flat fastener estimate (confirmat/
+          dowel/cam — see ``_fastener_comment`` in the JSON map).
 
         ``soft_close=False`` swaps the hinge SKU to the non-soft-close
         variant. Bi-fold corner cabinets pass soft_close=False per the
@@ -97,6 +106,22 @@ class SouthbrookHardwareCatalog(models.AbstractModel):
         * ``mount_appliance`` — when True, an appliance pull is added on
           top of the regular per-door handle (for tall_oven/fridge).
 
+        BOM-generation task (2026-07-31) — corner-mechanism resolution:
+
+        * ``corner_subtype`` — optional sub-classification within
+          ``cabinet_family=="corner"`` (``"blind"`` | ``"diag"`` |
+          ``"wall"``). When the ``"<cabinet_family>:<corner_subtype>"``
+          key exists in ``hardware_map.json``'s ``per_family_subtype``,
+          its dict REPLACES the coarser ``per_family[cabinet_family]``
+          entry for this call (e.g. a blind corner gets the BCO
+          mechanism only, not BCO+the generic corner default). A
+          matching ``per_family_subtype_hinge`` entry also swaps the
+          resolved ``BLM-110-SC``/``BLM-110-NSC`` hinge SKU for a
+          specialty one (e.g. the Salice 165° blind-corner hinge).
+          Omitted or unmatched subtypes fall back to the pre-existing
+          ``per_family[cabinet_family]`` behaviour unchanged — fully
+          backward compatible with every existing caller.
+
         Any rule whose SKU is missing from the installed seed is skipped
         with a logger warning — the resolution survives partial catalogs
         so the addon installs cleanly with the 20-row seed and grows
@@ -105,12 +130,29 @@ class SouthbrookHardwareCatalog(models.AbstractModel):
         m = self._hardware_map()
         Product = self.env["product.product"]
 
+        # BOM-generation task (2026-07-31) — resolve the family+subtype
+        # override key once. Only ever set when corner_subtype is given
+        # AND hardware_map.json actually has a matching per_family_subtype
+        # entry — otherwise every existing caller (which never passes
+        # corner_subtype) is byte-for-byte unaffected.
+        subtype_key = (
+            f"{cabinet_family}:{corner_subtype}" if corner_subtype else None
+        )
+        hinge_override_sku = None
+        if subtype_key:
+            hinge_override_sku = (
+                (m.get("per_family_subtype_hinge") or {}).get(subtype_key)
+            )
+
         # Pick the per-door hinge depending on soft-close preference.
         per_door_section = "per_door_soft_close" if soft_close else "per_door"
         rules: List[Tuple[str, str, int]] = []  # (source, sku, qty)
 
         for sku, qty_per in (m.get(per_door_section) or {}).items():
-            rules.append(("per_door", sku, qty_per * door_count))
+            effective_sku = sku
+            if hinge_override_sku and sku in self._HINGE_DEFAULT_SKUS:
+                effective_sku = hinge_override_sku
+            rules.append(("per_door", effective_sku, qty_per * door_count))
         # P2 — honour an explicit slide brand override. When the caller
         # passes slide_sku and the per_drawer rule entry is a slide
         # (member of _DRAWER_SLIDE_SKUS), swap to the requested SKU so
@@ -128,7 +170,14 @@ class SouthbrookHardwareCatalog(models.AbstractModel):
             rules.append(("per_cabinet", sku, qty))
 
         # Family-specific overrides — e.g. tall pantry gets extra levelers.
-        family_extra = (m.get("per_family") or {}).get(cabinet_family) or {}
+        # A matching per_family_subtype entry REPLACES the coarser
+        # per_family[cabinet_family] entirely (see resolve()'s docstring)
+        # rather than adding to it — a blind corner should get exactly
+        # the BCO mechanism, not BCO plus the generic corner default.
+        if subtype_key is not None and subtype_key in (m.get("per_family_subtype") or {}):
+            family_extra = (m.get("per_family_subtype") or {}).get(subtype_key) or {}
+        else:
+            family_extra = (m.get("per_family") or {}).get(cabinet_family) or {}
         for sku, qty in family_extra.items():
             rules.append((f"per_family[{cabinet_family}]", sku, qty))
 
@@ -174,11 +223,25 @@ class SouthbrookHardwareCatalog(models.AbstractModel):
         # BoM generation across whole orders), so the round-trip count matters.
         # setdefault keeps the first product per SKU — same as the prior
         # limit=1 (default order) semantics.
+        #
+        # BOM-generation task (2026-07-31) — also match on default_code, not
+        # just x_marathon_sku. The 5 southbrook_mrp_pm fastener products
+        # (FAST-CONFIRMAT-50 etc.) carry a default_code but no
+        # x_marathon_sku — mirroring the Marathon-SKU field would have
+        # required southbrook_mrp_pm to take a new hard dependency on this
+        # module just to set one field. Every pre-existing seeded SKU still
+        # carries x_marathon_sku == default_code, so this is additive, not
+        # a behaviour change for any SKU already in the catalog.
         by_sku: Dict[str, Any] = {}
         if totals:
-            for product in Product.search(
-                    [("x_marathon_sku", "in", list(totals))]):
-                by_sku.setdefault(product.x_marathon_sku, product)
+            skus = list(totals)
+            for product in Product.search([
+                    "|",
+                    ("x_marathon_sku", "in", skus),
+                    ("default_code", "in", skus),
+            ]):
+                key = product.x_marathon_sku or product.default_code
+                by_sku.setdefault(key, product)
 
         result: List[Tuple] = []
         for sku, qty in totals.items():
