@@ -460,3 +460,117 @@ class TestResolverIgnoresWizardVariants(TransactionCase):
         self.assertFalse(self.wizard.default_code or "")
         self.assertIn(self.w33_ptav,
                       self.wizard.product_template_attribute_value_ids)
+
+
+@tagged("post_install", "-at_install", "southbrook",
+        "southbrook_kitchen_3d_configurator", "kitchen_templates")
+class TestNonCornerReconcileConfirmedOrderFreeze(TransactionCase):
+    """Task 33 (2026-07-31, T5 follow-up) — the confirmed-order price
+    freeze T5 built (see `test_reconcile_does_not_reprice_a_confirmed_order`
+    above) was CORNER-scoped: `_reconcile_one`'s per-line
+    `sol.sudo().write(line_vals)` (models/reconcile.py) always carries
+    "price_unit" in line_vals, and sale.order.line.price_unit is
+    `compute='_compute_price_unit', store=True, readonly=False` in stock
+    Odoo — writing product_id/product_uom_qty/etc (which line_vals
+    legitimately still carries for every non-corner mirror write too)
+    re-triggers that compute and silently overwrites price_unit,
+    regardless of cabinet_type. These tests mirror
+    TestCornerPricingConvergence's confirmed-order pair exactly, but for
+    an ordinary "base" cabinet line and a throwaway in-test product —
+    decoupled from the SB-CORNER catalog fixture entirely (never touches
+    record 102 or any real sale order)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.Line = cls.env["southbrook.kitchen.design.line"]
+        cls.partner = cls.env["res.partner"].create(
+            {"name": "T33 Non-Corner Convergence Test"})
+        cls.base_product = cls.env["product.product"].create({
+            "name": "T33 Test Base Cabinet",
+            "type": "consu",
+            "list_price": 400.0,
+        })
+
+    def test_reconcile_does_not_reprice_a_confirmed_orders_noncorner_line(self):
+        """The exposure this task closes: a non-corner reconcile write
+        must never touch a line on a quote the customer already saw.
+        Reproduce-first: this must FAIL on pre-fix code (the old guard
+        only pinned price_unit when cabinet_type == "corner")."""
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T33 Reconcile Confirmed-Order Test Design",
+            "partner_id": self.partner.id,
+        })
+        original_price = 777.0
+        line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": self.base_product.id,
+            "quantity": 1,
+            "price_unit": original_price,
+            "cabinet_type": "base",
+            "zone": "base_run",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t33-reconcile-confirmed-base",
+            "layout_role": "canonical",
+        })
+        Reconcile = self.env["southbrook.design.reconcile"]
+        stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
+                  "created_lines": 0, "divergence": 0, "errors": 0}
+        # First tick (still draft) mirrors the design line's authored
+        # price_unit (777.0) onto the new SO line verbatim.
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(design.sale_order_id)
+        self.assertTrue(line.sale_order_line_id)
+        self.assertEqual(line.sale_order_line_id.price_unit, original_price)
+        design.sale_order_id.state = "sale"  # confirm the quote
+        frozen_price = line.sale_order_line_id.price_unit
+
+        # Change the design-side price input AFTER confirmation — the
+        # exact scenario the guard exists for (e.g. a designer edits the
+        # line, or an upstream price recompute changes it).
+        line.price_unit = 1500.0
+
+        Reconcile._reconcile_one(design, stats)
+
+        self.assertNotEqual(
+            line.price_unit, frozen_price,
+            "fixture must actually diverge for this test to prove the "
+            "guard did something")
+        self.assertEqual(
+            line.sale_order_line_id.price_unit, frozen_price,
+            "a confirmed order's non-corner line must NOT be repriced "
+            "by a later design-side price change")
+
+    def test_reconcile_still_heals_a_draft_orders_noncorner_line(self):
+        """Companion to the confirmed-order guard above: the draft case
+        must still heal (the guard must be state-scoped, not a blanket
+        regression of the Task 33 fix)."""
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "T33 Reconcile Draft-Order Heal Test Design",
+            "partner_id": self.partner.id,
+        })
+        line = self.env["southbrook.kitchen.design.line"].create({
+            "design_id": design.id,
+            "product_id": self.base_product.id,
+            "quantity": 1,
+            "price_unit": 111.0,
+            "cabinet_type": "base",
+            "zone": "base_run",
+            "width_in": 24.0, "height_in": 34.5, "depth_in": 24.0,
+            "origin": "configurator",
+            "layout_key": "t33-reconcile-draft-heal-base",
+            "layout_role": "canonical",
+        })
+        Reconcile = self.env["southbrook.design.reconcile"]
+        stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
+                  "created_lines": 0, "divergence": 0, "errors": 0}
+        Reconcile._reconcile_one(design, stats)
+        self.assertTrue(design.sale_order_id)
+        self.assertEqual(design.sale_order_id.state, "draft")
+        self.assertEqual(line.sale_order_line_id.price_unit, 111.0)
+
+        # Edit the design-side price input while still draft — must heal.
+        line.price_unit = 222.0
+        Reconcile._reconcile_one(design, stats)
+        self.assertEqual(line.sale_order_line_id.price_unit, 222.0)

@@ -153,3 +153,115 @@ class TestCornerSkuRepair(TransactionCase):
             and l.cabinet_type == "corner" and l.zone == "base_run")
         self.assertEqual(len(corner), 1, "flip must keep the corner valid")
         self.assertEqual(corner.product_id.default_code, "SB-CORNER-R")
+
+    def test_flip_preserves_wall_layer_corner(self):
+        """Task 32 (corner-remediation follow-up, ticket from T6) — pins
+        the defect T6's implementer recorded but did not fix: flipping
+        L-10X8 drops the WALL-layer corner line (SB-WALL-CORNER)
+        entirely — 0 lines, not a wrong-hand line — while the base-layer
+        corner correctly survives and swaps hand. Root cause (verified
+        via odoo-shell instrumentation against kitchen_layout_engine's
+        pure functions directly, not guessed): the engine's layout()
+        accumulates each (wall, layer) run's cursor independently,
+        compacting only that layer's own members from 0 — so a wall-
+        layer run several members shorter than its sibling base run
+        (e.g. no upper above an appliance space) falls short of the
+        room's true far edge once a flip makes that junction need the
+        "last" end of the run instead of the trivially-reached "first"
+        end. detect_corners then correctly reports (by its own,
+        unchanged, off-limits geometric test) that the wall layer never
+        reaches the junction, so no wall corner node is ever inserted.
+
+        Assertions deliberately avoid hardcoding a "-R"/"-L" default_code
+        (test_flip_swaps_corner_hand's own hardcoded "SB-CORNER-R" is
+        ITSELF one of this DB's 3 documented baseline reds — the repair
+        does not produce a working coded twin here) — instead checking
+        existence + the mirrored junction/position via layout_key/wall/
+        rotation_deg, and hand correctness via the SAME
+        CORNER_HAND_MISMATCH validator block every other corner-hand
+        test in this suite relies on (skips cleanly when a product
+        carries no Hinge Side split, exactly like the validator itself).
+
+        Skip guard deliberately checks THIS pin's own precondition (a
+        wall-layer corner must exist pre-flip at all) rather than
+        borrowing test_l10x8_no_geometry_hand_blocks's SB-CORNER (base
+        family) twin-count check — SB-WALL-CORNER is a separate template
+        from SB-CORNER and this harness's catalog drift affects them
+        independently (confirmed via odoo-shell probe: on this CI DB
+        SB-CORNER has only 1 materialized variant — the documented
+        baseline red — while SB-WALL-CORNER already carries a working
+        LH+RH pair); gating on the wrong template would skip a pin this
+        harness can actually run.
+        """
+        design = self._instantiate_l()
+
+        def _wall_corner(d):
+            return d.cabinet_line_ids.filtered(
+                lambda l: l.layout_role == "derived"
+                and l.cabinet_type == "corner" and l.zone == "wall")
+
+        pre = _wall_corner(design)
+        if len(pre) != 1:
+            # Catalog-completeness gap outside this pin's scope (mirrors
+            # test_l10x8_no_geometry_hand_blocks's own skip pattern) —
+            # SB-WALL-CORNER couldn't resolve at all on this harness, so
+            # there is nothing meaningful to flip-and-check.
+            self.skipTest(
+                "L-10X8 did not instantiate with a wall-layer corner on "
+                "this DB (catalog-completeness gap, not this pin's "
+                "concern)")
+        self.assertEqual(pre.layout_key, "corner-%s-back-left-wall" % design.id)
+        # Review round 1, MINOR 6 — baseline captured BEFORE the flip so
+        # the post-flip assertion below can tell "pre-existing, catalog-
+        # driven UNRESOLVED_SLOT noise" (this DB's SB-CORNER twin drift
+        # leaves M1/B2/M2 as unresolved GHOST placeholders — confirmed
+        # via odoo-shell probe to be IDENTICAL before and after a flip,
+        # nothing this fix could touch) apart from a genuinely NEW issue
+        # the fix might introduce.
+        pre_unresolved_slots = set(
+            design.cabinet_line_ids.filtered("is_unresolved")
+            .mapped("template_slot_code"))
+
+        design.action_flip_layout(axis="x")
+
+        post = _wall_corner(design)
+        self.assertEqual(
+            len(post), 1,
+            "flip must keep the wall-layer corner — it must be re-derived "
+            "or mirrored onto the new (back-right) junction, not dropped")
+        self.assertEqual(
+            post.layout_key, "corner-%s-back-right-wall" % design.id,
+            "the wall corner must move to the MIRRORED junction, not stay "
+            "at the pre-flip one")
+        # back-right's presentation is the right wall's own convention
+        # (kitchen_layout_engine._CORNER_RESOLVE_PRESENTATION) — same
+        # table the base-layer corner's own placement already honours.
+        self.assertEqual(post.wall, "right")
+        self.assertEqual(post.rotation_deg, 270)
+
+        # Review round 1, MINOR 6 — assert the FULL blocking list (minus
+        # MISSING_CUSTOMER/MISSING_BOM, the two exceptions
+        # test_l10x8_no_geometry_hand_blocks already establishes are out
+        # of scope on a bare test DB with no partner_id/BOM data, and
+        # UNRESOLVED_SLOT — but ONLY for the SAME slots already unresolved
+        # pre-flip, verified via the strict subset check below, never a
+        # blanket exclusion), not just CORNER_HAND_MISMATCH, so a stray
+        # FOOTPRINT_COLLISION from the backfill's geometry — or anything
+        # else new — fails this test instead of going unnoticed.
+        post_unresolved_slots = set(
+            design.cabinet_line_ids.filtered("is_unresolved")
+            .mapped("template_slot_code"))
+        self.assertLessEqual(
+            post_unresolved_slots, pre_unresolved_slots,
+            "flip must not create NEW unresolved template slots: %s"
+            % (post_unresolved_slots - pre_unresolved_slots))
+        blocking = [i for i in design._check_production_ready()
+                    if i["severity"] == "blocking"]
+        geometry_blocks = [i for i in blocking
+                           if i["code"] not in ("MISSING_CUSTOMER",
+                                                 "MISSING_BOM",
+                                                 "UNRESOLVED_SLOT")]
+        self.assertFalse(
+            geometry_blocks,
+            "the flipped design must carry no geometry/hand/collision "
+            "blocking issues: %s" % geometry_blocks)
