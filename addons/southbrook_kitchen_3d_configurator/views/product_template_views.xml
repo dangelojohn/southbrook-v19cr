@@ -40,6 +40,36 @@
         </field>
     </record>
 
+    <!-- Product form — Cabinet Products iconography — one source (P2
+         product-icons, 2026-07-31 form-page follow-up). Cabinet records
+         (southbrook_is_cabinet=True) render the SAME axonometric icon
+         via sb_cabinet_thumb in place of the standard image widget,
+         larger here (160px, the detail-page hero position) than the
+         46/80/24px kanban/list sizes below. Non-cabinet products keep
+         the standard, fully-editable image widget (upload/zoom/crop)
+         completely untouched — both fields carry mirror-image
+         `invisible` conditions on the same flag so exactly one renders.
+         See cabinet_thumb_field.esm.js and
+         `.claude/skills/southbrook-design-system/SKILL.md`
+         "Cabinet iconography — one source". -->
+    <record id="view_product_template_form_cabinet_thumb" model="ir.ui.view">
+        <field name="name">product.template.form.southbrook.cabinet.thumb</field>
+        <field name="model">product.template</field>
+        <field name="inherit_id" ref="product.product_template_only_form_view"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='image_1920']" position="attributes">
+                <attribute name="invisible">southbrook_is_cabinet</attribute>
+            </xpath>
+            <xpath expr="//field[@name='image_1920']" position="after">
+                <field name="image_1920"
+                       widget="sb_cabinet_thumb"
+                       class="oe_avatar"
+                       invisible="not southbrook_is_cabinet"
+                       options="{'size_px': 160}"/>
+            </xpath>
+        </field>
+    </record>
+
     <!-- Cabinet Products iconography — one source (P2 product-icons,
          2026-07-31). The Cabinet Products action below has no bespoke
          kanban/list views of its own; it reuses product.template's
