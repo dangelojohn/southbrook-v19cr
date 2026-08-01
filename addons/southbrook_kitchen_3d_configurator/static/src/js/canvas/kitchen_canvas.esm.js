@@ -14,8 +14,25 @@
  *   - the drop-lane visualisation
  *   - the selection highlight (post-hit + on-selected-prop-change)
  *
- * State-mutating side effects flow to the parent via 4 typed callbacks:
+ * State-mutating side effects flow to the parent via 5 typed callbacks:
  *   props.onSelectItem(item)                    — cabinet click
+ *   props.onMoveItemStart(item)                 — Task 35: move-drag
+ *                                                  COMMITS (crosses the
+ *                                                  drag threshold), fired
+ *                                                  once, BEFORE this
+ *                                                  component's own first
+ *                                                  in-place x_position_in
+ *                                                  write to `item` — the
+ *                                                  parent's only chance
+ *                                                  to snapshot the
+ *                                                  pre-drag state, since
+ *                                                  `item` is a live
+ *                                                  reference into the
+ *                                                  parent's state.items
+ *                                                  and gets mutated
+ *                                                  in-place on every
+ *                                                  subsequent
+ *                                                  _onMouseMove tick.
  *   props.onMoveItem({item, x_position_in,
  *                     pinnable})                — move-drag commit
  *   props.onResizeRoom(newWidthIn, inFlight)    — room-width drag
@@ -112,6 +129,10 @@ export class KitchenCanvas extends Component {
         draggedProduct: { type: [Object, { value: null }], optional: true },
         dragHover:      { type: Boolean, optional: true },
         onSelectItem:   { type: Function, optional: true },
+        // Task 35 — see the header comment block above for why this
+        // exists as its own callback rather than being inferred from
+        // onMoveItem's payload.
+        onMoveItemStart: { type: Function, optional: true },
         onMoveItem:     { type: Function, optional: true },
         onResizeRoom:   { type: Function, optional: true },
         onResizeRoomDepth: { type: Function, optional: true },
@@ -849,6 +870,16 @@ export class KitchenCanvas extends Component {
                 this.T.moveCommitted = true;
                 const cvs = this.T.renderer && this.T.renderer.domElement;
                 if (cvs) cvs.style.cursor = "move";
+                // Task 35 — the ONE point in this gesture where
+                // `this.T.movingItem` is still fully pristine: the
+                // very next lines below are what first mutate its
+                // x_position_in in place. Fired exactly once per drag
+                // gesture (guarded by the moveCommitted flip above,
+                // same as the cursor change next to it), never on a
+                // plain click that never crosses the drag threshold.
+                if (this.props.onMoveItemStart) {
+                    this.props.onMoveItemStart(this.T.movingItem);
+                }
             }
             const targetX = this._computeDropX(e);
             if (targetX == null) return;

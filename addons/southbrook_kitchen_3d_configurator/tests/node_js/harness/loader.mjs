@@ -39,6 +39,10 @@ const EXACT = {
     "@web/core/utils/hooks": path.join(SHIMS, "web_core_hooks.mjs"),
     "@web/core/network/rpc": path.join(SHIMS, "web_core_rpc.mjs"),
     "@web/core/user": path.join(SHIMS, "web_core_user.mjs"),
+    // Task 35 — confirm-on-regenerate. See shims/web_core_confirmation_
+    // dialog.mjs's own header for why a placeholder class is enough.
+    "@web/core/confirmation_dialog/confirmation_dialog":
+        path.join(SHIMS, "web_core_confirmation_dialog.mjs"),
     // Contracts #1/#2/#4/#5 mount the REAL parent configurator but must
     // not drag in the real <KitchenCanvas> (Three.js/WebGL/DOM canvas
     // boundary) — that's the one substitution point the PR3a brief
