@@ -1349,6 +1349,11 @@ class SouthbrookKitchenDesign(models.Model):
                 Rule.sudo().search([
                     ("anchor_class", "=", "junction"),
                 ]).engine_dicts() if Rule is not None else None)
+            # Task 32 (corner-remediation follow-up) — captured once so the
+            # post-loop wall-layer backfill below (which needs the SAME
+            # y_floor the engine used) never risks drifting from what this
+            # call actually passed.
+            zl = design._wall_cab_zone_layout()
             r = kitchen_layout_engine.resolve_and_layout(
                 cabs, room,
                 auto_assign=not manual,
@@ -1360,7 +1365,7 @@ class SouthbrookKitchenDesign(models.Model):
                 # soffit_height_in / counter_thickness_in; every other
                 # zone (base_run/tall/island/accessory/other) is
                 # untouched, straight from the same class constant.
-                zone_layout=design._wall_cab_zone_layout(),
+                zone_layout=zl,
                 worktop_cursor=SaleOrder._WORKTOP_CURSOR,
                 worktop_y=SaleOrder._WORKTOP_Y_FLOOR,
             )
@@ -1524,6 +1529,64 @@ class SouthbrookKitchenDesign(models.Model):
                     "layout_role":   "derived",
                 })
 
+            # 3a) Task 32 (corner-remediation follow-up, "flip loses the
+            #     wall-layer corner") — backfill a layer the ENGINE's own
+            #     detect_corners missed at a junction its SIBLING layer
+            #     just resolved successfully. Root cause (verified via
+            #     odoo-shell instrumentation, not guessed): kitchen_
+            #     layout_engine.layout() accumulates each (wall, layer)
+            #     run's cursor independently, compacting ONLY that
+            #     layer's own members from 0 — it does not know about
+            #     gaps left by the OTHER layer's members (e.g. an
+            #     appliance/no-upper base cabinet with no wall-cabinet
+            #     counterpart). That is invisible while the run's
+            #     RELEVANT end is "first" (always trivially at cursor 0),
+            #     but a flip can swap which end a junction needs to
+            #     "last" — and a wall-layer run several members shorter
+            #     than its sibling base run then simply falls short of
+            #     the room's true far edge, so detect_corners' footprint-
+            #     overlap test (correctly, for what it's told) reports
+            #     that layer as not reaching the corner at all. Fixing
+            #     the cursor math is an engine change — off-limits here
+            #     (kitchen_layout_engine.py is pure/parity-pinned). This
+            #     backfill instead trusts the SIBLING layer's own
+            #     engine-confirmed junction as proof a real inside corner
+            #     exists there, and mirrors it for the missing layer —
+            #     via the same tables/functions _sb_corner_expected_hand
+            #     and the loop just above already read (_CORNER_RESOLVE,
+            #     _CORNER_STANDALONE, _CORNER_RESOLVE_PRESENTATION,
+            #     _CORNER_XZ_KEYS, _corner_cell_rect,
+            #     _corner_node_pose_rect, _select_corner_rule,
+            #     anchor_pose_mm) — never a parallel re-derivation of
+            #     corner geometry.
+            inserted_by_corner = {}
+            for node in r["inserted"]:
+                inserted_by_corner.setdefault(
+                    node["corner"], set()).add(node["layer"])
+            walls_with_layer = {"base": set(), "wall": set()}
+            for c in r.get("assigned", []):
+                walls_with_layer[kitchen_layout_engine._layer_of(c)].add(
+                    c.get("wall") or "back")
+            for cname, walls, _xz in kitchen_layout_engine._CORNER_SPECS:
+                have = inserted_by_corner.get(cname, set())
+                for layer in ("base", "wall"):
+                    if layer in have:
+                        continue
+                    sibling = "wall" if layer == "base" else "base"
+                    if sibling not in have:
+                        # Neither layer resolved at this junction — the
+                        # engine found no real corner here at all (not a
+                        # missed-layer case); nothing to mirror from.
+                        continue
+                    if not all(w in walls_with_layer[layer] for w in walls):
+                        # This layer has no cabinets on one (or both) of
+                        # the junction's walls at all — genuinely no
+                        # corner belongs here for this layer.
+                        continue
+                    self._sb_backfill_corner_layer(
+                        design, Line, cname, layer, room, corner_rules, zl,
+                        IN, r)
+
             # 3b) M3 — rule-demanded corner FILLER strips become real
             #     derived design lines so they reach the manufacturing
             #     mirror/BOM/cutlist (docs 08
@@ -1605,6 +1668,123 @@ class SouthbrookKitchenDesign(models.Model):
                      int((time.time() - _t0) * 1000))
         return {"corners": len(r["corners"]), "removed": len(r["removed_ids"]),
                 "inserted": len(r["inserted"])}
+
+    # Task 32 (corner-remediation follow-up) — see the "3a" call site's
+    # comment in action_auto_arrange above for why this exists. Archives
+    # the same two run-end cabinets the engine's own corner-insert would
+    # have absorbed (mirroring its private `_run_end` selection: the
+    # host wall's own first member, the other wall's `other_end` member —
+    # both restricted to `layer` and the two walls this junction owns),
+    # then creates the missing derived corner line via the SAME product
+    # resolver (`_sb_resolve_corner_variant`) and pose-conversion
+    # (`anchor_pose_mm`) the main writer loop uses.
+    def _sb_backfill_corner_layer(self, design, Line, cname, layer, room,
+                                   corner_rules, zl, IN, r):
+        CLE = kitchen_layout_engine
+        rule = (CLE._select_corner_rule(cname, layer, corner_rules, room)
+                if corner_rules else None)
+        ext_x = (rule.get("leg_x_mm") if rule else None) or CLE._CORNER_FOOTPRINT_MM
+        ext_z = (rule.get("leg_z_mm") if rule else None) or CLE._CORNER_FOOTPRINT_MM
+        height_mm = (rule.get("height_mm") if rule else None) or CLE._CORNER_HEIGHT_MM[layer]
+        y_floor = zl.get("wall" if layer == "wall" else "base_run",
+                         ("ground", 0, 0))[1]
+
+        if cname in CLE._CORNER_STANDALONE:
+            handed = "L"
+            host_wall = other_wall = other_end = None
+            xk, zk = CLE._CORNER_STANDALONE[cname]
+            cell = CLE._corner_cell_rect(xk, zk, room, ext_x, ext_z)
+            pose = CLE._corner_node_pose_rect(cell, 0, y_floor)
+            node_w, node_d = ext_x, ext_z
+            wall_tag = "right"
+        else:
+            spec = CLE._CORNER_RESOLVE.get(cname)
+            if spec is None:
+                return
+            host_wall, other_wall, other_end, handed = spec
+            wall_tag, rotation_deg = CLE._CORNER_RESOLVE_PRESENTATION[cname]
+            if rule is not None and rule.get("host_leg") in ("x", "z"):
+                pair = next(ws for n, ws, _xz in CLE._CORNER_SPECS
+                            if n == cname)
+                wall_tag = pair[0] if rule["host_leg"] == "x" else pair[1]
+                rotation_deg = CLE._WALL_SPEC[wall_tag]["rot"]
+            xk, zk = CLE._CORNER_XZ_KEYS[cname]
+            cell = CLE._corner_cell_rect(xk, zk, room, ext_x, ext_z)
+            pose = CLE._corner_node_pose_rect(cell, rotation_deg, y_floor)
+            rot_n = int(round(rotation_deg)) % 360
+            node_w = ext_x if rot_n in (0, 180) else ext_z
+            node_d = ext_z if rot_n in (0, 180) else ext_x
+
+        rule_sku = rule.get("sku") if rule else None
+        code = rule_sku or self._CORNER_SKU.get(layer, "SB-CORNER")
+        if not rule_sku:
+            _logger.warning(
+                "[auto-arrange] backfill: corner sku missing for design=%s "
+                "corner=%s layer=%s — substituting legacy default family "
+                "%r", design.id, cname, layer, code)
+        variant, tmpl = Line._sb_resolve_corner_variant(code, hand=handed)
+        if not variant:
+            _logger.warning(
+                "[auto-arrange] backfill corner SKU %s missing/no-variant "
+                "— skipping %s/%s backfill (design %s)",
+                code, cname, layer, design.id)
+            return
+
+        # Absorb the same two run-end cabinets the engine's own
+        # corner-insert would have (mirrors `_run_end` inside
+        # resolve_and_layout — not exposed, so replicated verbatim here;
+        # it is a 2-line min/max selection, not a corner table).
+        assigned = r.get("assigned", [])
+
+        def _run_end(wall, end):
+            if wall is None:
+                return None
+            run = [c for c in assigned
+                   if (c.get("wall") or "back") == wall
+                   and CLE._layer_of(c) == layer
+                   and not c.get("corner_cabinet")]
+            pick = min if end == "first" else max
+            return pick(run, key=lambda c: c.get("run_seq", 0), default=None)
+
+        for absorbed in (_run_end(host_wall, "first"),
+                         _run_end(other_wall, other_end)):
+            if absorbed is None:
+                continue
+            Line.browse(absorbed["id"]).write({
+                "active": False,
+                "wall": absorbed.get("wall") or "back",
+                "run_seq": absorbed.get("run_seq", 0),
+            })
+
+        node = {"width_mm": node_w, "height_mm": height_mm,
+                "depth_mm": node_d}
+        anchor = CLE.anchor_pose_mm(node, pose)
+        Line.create({
+            "design_id":     design.id,
+            "product_id":    variant.id,
+            "quantity":      1,
+            "price_unit":    Line._sb_variant_price(variant, tmpl),
+            "cabinet_type":  "corner",
+            "zone":          "wall" if layer == "wall" else "base_run",
+            "width_in":      node_w * IN,
+            "height_in":     height_mm * IN,
+            "depth_in":      node_d * IN,
+            "x_position_in": anchor["x"] * IN,
+            "y_position_in": anchor["y"] * IN,
+            "z_position_in": anchor["z"] * IN,
+            "rotation_deg":  anchor["rotation_deg"],
+            "wall":          wall_tag,
+            "run_seq":       -1,
+            "pinned":        False,
+            "layout_key":    "corner-%s-%s-%s" % (design.id, cname, layer),
+            "origin":        "configurator",
+            "layout_role":   "derived",
+        })
+        _logger.info(
+            "[auto-arrange] backfilled missing %s-layer corner at %s "
+            "(design=%s) — sibling layer resolved but detect_corners' "
+            "compacted per-layer cursor missed this one",
+            layer, cname, design.id)
 
     # ── PR4 (2026-07-12) — shared add-a-cabinet engine-placement helper ────
     # Extracted from the website's `_sb_place_line_on_wall`
