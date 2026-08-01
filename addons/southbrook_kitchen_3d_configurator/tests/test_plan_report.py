@@ -128,7 +128,20 @@ class TestKitchenPlanReport(TransactionCase):
             write_calls.append((self_._name, tuple(self_.ids), dict(vals)))
             return original_write(self_, vals)
 
-        with patch.object(BaseModel, "write", _tracking_write):
+        # Review fast-follow (T36 Important 1): also trap create() on
+        # EVERY model — the row-count/write_date belt below is scoped
+        # to the two design models, so a stray create on an unrelated
+        # model (attachment, log record, ...) would otherwise slip
+        # through the "zero side effects" claim.
+        create_calls = []
+        original_create = BaseModel.create
+
+        def _tracking_create(self_, vals_list):
+            create_calls.append((self_._name,))
+            return original_create(self_, vals_list)
+
+        with patch.object(BaseModel, "write", _tracking_write), \
+                patch.object(BaseModel, "create", _tracking_create):
             html = self._render()
 
         self.assertTrue(html, "report must still render something")
@@ -136,6 +149,10 @@ class TestKitchenPlanReport(TransactionCase):
             write_calls, [],
             "report render must not call write() on any record: %r"
             % (write_calls,))
+        self.assertEqual(
+            create_calls, [],
+            "report render must not create records on ANY model: %r"
+            % (create_calls,))
 
         # Belt-and-braces: even a write that bypassed the public
         # write() method (e.g. a stored-compute flush) would still
