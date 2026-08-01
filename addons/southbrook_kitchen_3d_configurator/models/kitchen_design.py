@@ -4946,10 +4946,11 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
     )
     cabinet_count = fields.Integer(
         string="Number of Cabinets", default=0,
-        help="How many repeating cabinets to place. Defaults to the "
-             "maximum that fits the room at the chosen cabinet size "
-             "whenever you pick a shape — lower it to build a smaller "
-             "run. Never goes above what fits the room.")
+        help="How many repeating cabinets to place. Picking a shape "
+             "sets this to that shape's own maximum — lower it for a "
+             "smaller run. Changing Cabinet Size or an appliance only "
+             "shrinks it if your number no longer fits; picking a "
+             "different shape resets it again.")
     module_width_in = fields.Selection(
         [("18", '18"'), ("21", '21"'), ("24", '24"'), ("30", '30"')],
         string="Cabinet Size", default="24", required=True)
@@ -4980,6 +4981,30 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
              "channel pricelist immediately. Leave empty for a walk-in or "
              "showroom demo.",
     )
+    # Task 24 (SBK-038) review round 1 — internal shadow of template_id,
+    # NOT user-facing (invisible in the view, but present in it so the
+    # webclient round-trips it through every onchange's saved values).
+    # `_onchange_parametrics` needs to know "did the SHAPE itself just
+    # change" across onchange rounds. `_origin` looked like the right tool
+    # (it's the standard "pre-edit value" trick) but is WRONG here: this
+    # wizard opens `target="new"` with no `res_id` — a never-saved record —
+    # and Odoo 19's web/models/models.py `onchange()` only sets
+    # `origin=self` when `self` is non-empty. For a never-saved record,
+    # `_origin` is an EMPTY recordset on every single onchange call for the
+    # wizard's ENTIRE editing session, not just the first. That made
+    # `template_id != _origin.template_id` evaluate True on every onchange
+    # once ANY shape was picked — including onchanges fired by touching
+    # Cabinet Size or an appliance dropdown — silently re-seeding
+    # cabinet_count to count_max and discarding a user's deliberately
+    # smaller count. This field is written at the end of every
+    # `_onchange_parametrics` call with the CURRENT template_id, so on the
+    # NEXT round it holds "what template_id was as of the last onchange" —
+    # a comparison that only differs across a genuine shape switch.
+    last_seen_template_id = fields.Many2one(
+        "southbrook.kitchen.template",
+        help="Internal — tracks the shape shown last time the form "
+             "recomputed, so a real shape switch can be told apart from "
+             "an edit to any other field. Never shown to the user.")
 
     def _appliance_widths(self):
         self.ensure_one()
@@ -5030,12 +5055,24 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
             # e.g. shape A's max is 3, user keeps 3, switches to shape B
             # whose max is 6: 3 still fits under 6, so the clamp branch
             # never fires and the field would silently under-report B's
-            # own default). `_origin` is the pre-edit value for a real
-            # onchange (Form/webclient); a plain already-saved record has
-            # `_origin is self`, so this branch never fires for direct
-            # method calls that re-invoke this onchange on an unchanged
-            # template_id just to exercise the clamp/seed paths below.
-            shape_changed = rec.template_id != rec._origin.template_id
+            # own default).
+            #
+            # Compare against `last_seen_template_id`, NOT `_origin`
+            # (review round 1, 2026-07-31): this wizard opens
+            # `target="new"` with no `res_id`, so it's a never-saved
+            # record for its whole editing session, and `_origin` is an
+            # empty recordset on EVERY onchange call for such a record
+            # (Odoo 19 only sets `origin=self` when `self` is non-empty).
+            # `template_id != _origin.template_id` was therefore True on
+            # every onchange once any shape was picked — including ones
+            # fired by Cabinet Size / Range / Fridge / Dishwasher edits —
+            # which silently re-seeded cabinet_count and discarded a
+            # deliberately-typed smaller count. `last_seen_template_id` is
+            # a real stored field the webclient round-trips through each
+            # onchange's returned values, so it correctly holds "what
+            # template_id was as of the last onchange round" and only
+            # disagrees with `template_id` on a genuine switch.
+            shape_changed = rec.template_id != rec.last_seen_template_id
             if shape_changed and rec.template_id:
                 rec.cabinet_count = rec.count_max
             elif rec.template_id and rec.cabinet_count and \
@@ -5051,6 +5088,7 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
             # the number used.
             elif rec.template_id and not rec.cabinet_count and rec.count_max:
                 rec.cabinet_count = rec.count_max
+            rec.last_seen_template_id = rec.template_id
 
     def action_create(self):
         """Instantiate the chosen template (or a plain empty design) and

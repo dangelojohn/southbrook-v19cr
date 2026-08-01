@@ -542,6 +542,12 @@
                             <field name="template_id"
                                    options="{'no_create': true, 'no_open': true}"/>
                             <field name="preset" invisible="1"/>
+                            <!-- Task 24 (SBK-038) — internal only; must
+                                 stay IN the view (even invisible) so the
+                                 webclient round-trips it through every
+                                 onchange call. See the field's own
+                                 docstring in kitchen_design.py. -->
+                            <field name="last_seen_template_id" invisible="1"/>
                         </group>
                         <group string="Cabinet Selections">
                             <field name="cabinet_count"/>

@@ -78,16 +78,22 @@ class TestTemplatePicker(TransactionCase):
         picker._onchange_parametrics()
         self.assertEqual(picker.cabinet_count, chosen)
 
-    def test_shape_switch_resets_count_to_new_shape_max(self):
-        """Task 24 (SBK-038) — Number of Cabinets is authoritative:
-        picking a NEW shape must show THAT shape's own Max, never a
-        stale count that merely still fits under whatever shape was
-        selected before. Uses Form() (not a bare .create()/manual
-        onchange call) because the defect only shows up through the
-        real onchange machinery's `_origin` semantics — the other tests
-        in this file call `_onchange_parametrics()` directly on an
-        already-saved record, which never exercises a genuine
-        "value changed from A to B" transition.
+    def test_custom_count_survives_sibling_edits_but_resets_on_shape_switch(self):
+        """Task 24 (SBK-038) review round 1 — the wizard opens
+        `target="new"` with no `res_id`: a never-saved record for its
+        whole editing session. On such a record, EVERY onchange call
+        carries an EMPTY `_origin` (Odoo 19's web/models/models.py
+        `onchange()` only sets `origin=self` when `self` is non-empty),
+        so `template_id != _origin.template_id` is True on every single
+        onchange once a shape is picked — not just on a genuine switch.
+        A first-pass fix built on that comparison silently re-seeded
+        cabinet_count to count_max on ANY sibling-field edit (Cabinet
+        Size, an appliance dropdown), discarding a user's deliberately
+        typed smaller count. Must use Form() — a direct .create() +
+        manual onchange call is a PERSISTED record, where `_origin`
+        trivially equals self and never reproduces this at all (that's
+        exactly why test_count_seeding_never_overrides_a_real_choice,
+        which uses that pattern, didn't catch the regression).
         """
         Tpl = self.env["southbrook.kitchen.template"]
         Slot = self.env["southbrook.kitchen.template.line"]
@@ -113,10 +119,33 @@ class TestTemplatePicker(TransactionCase):
             small_max, big_max,
             "fixture templates must differ in capacity for this test "
             "to mean anything")
+        self.assertGreater(
+            small_max, 1,
+            "fixture needs room below its own max for a smaller, "
+            "deliberately-typed custom count")
 
         with Form(self.env["kitchen.design.template.picker"]) as f:
             f.template_id = self.tpl
             self.assertEqual(f.cabinet_count, small_max)
+            custom = small_max - 1
+            f.cabinet_count = custom
+            # Sibling-field edits this fixture's template can't even
+            # feel (self.tpl has no fridge/dishwasher slot at all) — its
+            # count_max is unaffected, so ANY change to cabinet_count
+            # here would be the shape-switch logic misfiring on a
+            # non-shape trigger, not a legitimate clamp.
+            f.fridge_width_in = "30"
+            self.assertEqual(
+                f.cabinet_count, custom,
+                "a sibling-field onchange (Refrigerator) silently "
+                "discarded the user's deliberately-typed count")
+            f.dishwasher_width_in = "0"
+            self.assertEqual(
+                f.cabinet_count, custom,
+                "a sibling-field onchange (Dishwasher) silently "
+                "discarded the user's deliberately-typed count")
+            # A genuine shape SWITCH still resets to the new shape's own
+            # max.
             f.template_id = big
             self.assertEqual(
                 f.cabinet_count, big_max,
