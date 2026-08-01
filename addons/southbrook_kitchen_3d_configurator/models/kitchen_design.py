@@ -1831,7 +1831,14 @@ class SouthbrookKitchenDesign(models.Model):
         y_floor = zl.get("wall" if layer == "wall" else "base_run",
                          ("ground", 0, 0))[1]
 
-        wall_tag, rotation_deg = CLE._CORNER_RESOLVE_PRESENTATION[cname]
+        # Rebase adaptation (2026-08-01): the concurrent session's
+        # corner-orientation fix replaced _CORNER_RESOLVE_PRESENTATION
+        # with the ONE presentation table ROOM_CORNER_PLACEMENT
+        # (x_key, z_key, rotation_deg) + _wall_tag_for_rotation — the
+        # backfill now reads the same corrected orientations the
+        # engine's own inserts use, by construction.
+        _xk_p, _zk_p, rotation_deg = CLE.ROOM_CORNER_PLACEMENT[cname]
+        wall_tag = CLE._wall_tag_for_rotation(rotation_deg)
         if rule is not None and rule.get("host_leg") in ("x", "z"):
             pair = next(ws for n, ws, _xz in CLE._CORNER_SPECS
                         if n == cname)
