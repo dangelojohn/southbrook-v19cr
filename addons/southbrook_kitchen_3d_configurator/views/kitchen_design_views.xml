@@ -58,6 +58,22 @@
                 <filter name="filter_archived"
                         string="Archived"
                         domain="[('active','=',False)]"/>
+                <!-- Task 21 (corner-remediation 2026-07-30, SBK-035) —
+                     designs with zero ACTIVE cabinet lines. 'not any'
+                     is the correct x2many domain operator here: a plain
+                     [('cabinet_line_ids','=',False)] leaf forces
+                     active_test=False internally (Odoo's relational
+                     condition_to_sql short-circuits the False-value
+                     case that way), so it would call a design with
+                     lines that are all ARCHIVED "non-empty" — wrong for
+                     this filter's literal "zero active lines" contract.
+                     'not any' with an explicit active=True sub-domain
+                     means exactly what it says: no matching (active)
+                     child row exists, catching both a design with no
+                     lines at all and one whose lines are all archived. -->
+                <filter name="filter_empty_designs"
+                        string="Empty designs"
+                        domain="[('cabinet_line_ids', 'not any', [('active', '=', True)])]"/>
                 <separator/>
                 <filter name="filter_state_draft"
                         string="Draft"
@@ -86,16 +102,23 @@
         </field>
     </record>
 
-    <!-- Bulk-archive server action ──────────────────────────────────────────── -->
+    <!-- Archive server action ───────────────────────────────────────────────── -->
     <!-- v19.0.4.20.0 task #49 — appears in the Kitchen Designs list's
          Actions menu when 1+ rows are selected. Calls the model
          helper action_archive_bulk (added by Agent A) which handles
-         the guard (unlink rules apply — active=False, not delete). -->
+         the guard (unlink rules apply — active=False, not delete).
+         Task 21 (corner-remediation 2026-07-30, SBK-035) — binding
+         widened from "list" to "list,form" so the SAME action also
+         shows in a single design's own Actions (⚙) menu, giving the
+         form an explicit archive entry without duplicating the model
+         method or adding a second header button. action_archive_bulk
+         already works unmodified on a single-record recordset (form
+         context passes exactly one active_id). -->
     <record id="action_archive_designs_server" model="ir.actions.server">
-        <field name="name">Archive selected</field>
+        <field name="name">Archive</field>
         <field name="model_id" ref="model_southbrook_kitchen_design"/>
         <field name="binding_model_id" ref="model_southbrook_kitchen_design"/>
-        <field name="binding_view_types">list</field>
+        <field name="binding_view_types">list,form</field>
         <field name="state">code</field>
         <field name="code">records.action_archive_bulk()</field>
     </record>
@@ -519,6 +542,12 @@
                             <field name="template_id"
                                    options="{'no_create': true, 'no_open': true}"/>
                             <field name="preset" invisible="1"/>
+                            <!-- Task 24 (SBK-038) — internal only; must
+                                 stay IN the view (even invisible) so the
+                                 webclient round-trips it through every
+                                 onchange call. See the field's own
+                                 docstring in kitchen_design.py. -->
+                            <field name="last_seen_template_id" invisible="1"/>
                         </group>
                         <group string="Cabinet Selections">
                             <field name="cabinet_count"/>

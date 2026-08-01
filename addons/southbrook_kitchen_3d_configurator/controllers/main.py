@@ -705,7 +705,20 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         vals = {
             "name":           name or "Kitchen Design",
             "partner_id":     partner.id if partner else False,
-            "state":          "configured",
+            # Task 21 (corner-remediation 2026-07-30, SBK-035) — state is
+            # deliberately NOT set here. This dict feeds BOTH
+            # Design.create() (new design) and design.write() (existing
+            # design) BEFORE the item-processing loop further down even
+            # runs, so forcing "configured" here — the old behaviour —
+            # could persist state='configured' with zero cabinet lines
+            # (empty save, or a payload where every product_id fails the
+            # catalog ACL gate below). See the end of this method, which
+            # sets state="configured" only once the line set for this
+            # save is actually known, gated on cabinet_line_ids being
+            # non-empty — same convention kitchen_design.py's own
+            # state="configured" writers already use. The model's
+            # `_check_configured_state_has_lines` constraint is the
+            # backstop that would otherwise reject this dict outright.
         }
         if design_id and _existing_room is not None:
             # Fix-round — only include a room-dimension key when it is
@@ -1150,6 +1163,23 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
 
         if relaid:
             design.invalidate_recordset()
+
+        # Task 21 (corner-remediation 2026-07-30, SBK-035) — flip to
+        # 'configured' only now that the line set this save actually
+        # produced is known (creates/updates/stale-unlinks above, plus
+        # any corner-engine relay just above), gated on the design
+        # actually having at least one active cabinet line. Mirrors
+        # kitchen_design.py's own convention (_apply_kitchen_template's
+        # "if seeded: self.state = 'configured'"). Left unspecified (NOT
+        # reverted to draft) when the save ends up with zero lines, so an
+        # existing quoted/ordered design's state is never silently
+        # downgraded by this endpoint — same posture it already takes
+        # toward quoted/ordered designs elsewhere in this method. The
+        # model's own _check_configured_state_has_lines constraint is
+        # the backstop that rejects any OTHER attempt to force
+        # state='configured' onto a lineless design.
+        if design.cabinet_line_ids:
+            design.state = "configured"
 
         return {
             "id":     design.id,

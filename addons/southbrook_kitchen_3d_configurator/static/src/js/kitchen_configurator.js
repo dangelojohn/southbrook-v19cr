@@ -17,6 +17,13 @@ import {
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { rpc } from "@web/core/network/rpc";
+// Task 35 — confirm-on-regenerate. House rule: NEVER window.confirm
+// (browser modals wedge automation) — the Odoo Dialog service's own
+// ConfirmationDialog is the sanctioned pattern (see e.g.
+// web/static/src/views/kanban/kanban_renderer.js's archiveRecord for
+// the house usage this mirrors: useService("dialog") +
+// dialog.add(ConfirmationDialog, {...})).
+import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
 // Task #48 — portal-user detection for the customer picker + reassurance
 // pill. v19 exposes `isInternalUser` on the `@web/core/user` singleton
 // (mapped from res.users.share server-side; internal users have
@@ -40,6 +47,13 @@ import { WALLS } from "@southbrook_kitchen_3d_configurator/js/canvas/constants.e
 // header for why this replaces `useService("notification")` for every
 // message this component produces.
 import { ToastStore } from "@southbrook_kitchen_3d_configurator/js/toast/toast_store.esm";
+// Task 35 — undo/redo stack (minimal default scope) + the pure
+// confirm-on-regenerate heuristic. See undo_store.esm.js's own header
+// for the full contract; this file owns every "when do we snapshot"
+// decision, the store only owns the stack mechanics.
+import {
+    UndoStore, shouldConfirmArrange,
+} from "@southbrook_kitchen_3d_configurator/js/undo/undo_store.esm";
 // Panel P2 (catalog redesign) — the inventory panel's pure data layer
 // (name parsing, L/R handing, width recovery, search haystack, and the
 // grouped/L-R-merged/sorted catalog shape) and its thumbnail renderer.
@@ -139,12 +153,34 @@ const METRIC_ICON_SVG = {
 class SouthbrookKitchenConfigurator extends Component {
     setup() {
         this.action = useService("action");
+        // Task 35 — confirm-on-regenerate dialog service. See the
+        // import comment above for the house pattern this mirrors.
+        this.dialogService = useService("dialog");
         // SBK-030 — local toast store (reducer) + its reactive render
         // mirror. `_toast()` is the single funnel every notification-
         // worthy event in this file goes through now; nothing in this
         // component calls `useService("notification")` anymore — see
         // the import comment above and toast_store.esm.js's header.
         this._toastStore = new ToastStore();
+        // Task 35 — undo/redo stack (minimal default scope). Pure
+        // reducer, same pattern as `_toastStore` above; see
+        // undo_store.esm.js's own header for the full contract.
+        // `state.undoCount`/`state.redoCount` (below, in the useState
+        // block) are the reactive mirror the template's two toolbar
+        // buttons key their `disabled` state off — the store itself is
+        // NOT reactive (deep snapshot arrays proxied through OWL's
+        // reactivity would be pure overhead; nothing renders the
+        // snapshots themselves, only the counts).
+        this._undoStore = new UndoStore();
+        // Task 35 — confirm-on-regenerate heuristic input (see
+        // shouldConfirmArrange, undo_store.esm.js). true = "unknown,
+        // assume dirty" — the safe default on boot and on every design
+        // switch (_resetForNewSession resets this too); flips true on
+        // every manual placement op (add/remove/move/width-resize/
+        // swap) and false again after a successful explicit
+        // auto-arrange (_confirmedAutoArrange). Plain instance field,
+        // not reactive state — nothing renders it directly.
+        this._placementsDirty = true;
 
         // PR2.5 — Odoo 19 client-action components receive `props.action`
         // (the full ir.actions.client record); `_getActionInfo` in the
@@ -430,6 +466,12 @@ class SouthbrookKitchenConfigurator extends Component {
             // width can always reach regardless of this default.
             controlsCollapsed:  narrowAtBoot,
             inventoryCollapsed: narrowAtBoot,
+            // Task 35 — reactive mirror of this._undoStore's counts;
+            // the toolbar's two history buttons key `disabled` off
+            // these (0 = disabled). `_syncHistoryCounts()` is the only
+            // writer.
+            undoCount: 0,
+            redoCount: 0,
         });
         // Auto-save debounce timer (not reactive; managed imperatively).
         this._autoSaveTimer = null;
@@ -631,6 +673,145 @@ class SouthbrookKitchenConfigurator extends Component {
     // room change, wall select) and nowhere else.
     _markUserAction() {
         this._userActed = true;
+    }
+
+    // ─── Task 35 — undo/redo stack (minimal default scope) ─────────────────────
+    // Snapshot = the EXACT shape _autoSave() already sends for `room`
+    // + `items` (brief: "reuse the EXACT state serialization the
+    // autosave path already sends ... do not invent a second
+    // serializer") — NOT the full autosave payload (name/design_id/
+    // partner_id/filler_strategy/etc are session/global settings, not
+    // per-cabinet design-mutating ops, and are out of this task's
+    // scope). Every `state.items` entry is a flat record of primitives
+    // (see _lineToItem / _addCabinetFromProduct — no nested
+    // objects/arrays), and several call sites mutate an item IN PLACE
+    // rather than replacing it in the array (e.g.
+    // _updateSelectedWidth's `this.state.items[idx].width_in = v`), so
+    // each item needs its OWN shallow copy here — copying just the
+    // array would leave the snapshot pointing at the same mutable
+    // objects the live state keeps editing.
+    _snapshotState() {
+        return {
+            room: { ...this.state.room },
+            items: (this.state.items || []).map(it => ({ ...it })),
+        };
+    }
+
+    _pushUndoSnapshot() {
+        this._undoStore.pushSnapshot(this._snapshotState());
+        this._syncHistoryCounts();
+    }
+
+    _syncHistoryCounts() {
+        this.state.undoCount = this._undoStore.undoCount;
+        this.state.redoCount = this._undoStore.redoCount;
+    }
+
+    // Shared by _undo/_redo — replaces state.room/state.items wholesale
+    // with a stored snapshot and re-derives everything downstream of
+    // them exactly like every other full-replace path in this file
+    // (_rearrangeOnServer, _hydrateFromDesign) does.
+    _applyHistorySnapshot(snapshot) {
+        this.state.room  = { ...snapshot.room };
+        this.state.items = snapshot.items.map(it => ({ ...it }));
+        // Best-effort selection preservation: keep the same cabinet
+        // selected across the undo/redo if it still exists in the
+        // restored snapshot, otherwise clear rather than point at a
+        // stale/foreign object.
+        const selKey = this.state.selected && this.state.selected.layout_key;
+        this.state.selected = selKey
+            ? (this.state.items.find(i => i.layout_key === selKey) || null)
+            : null;
+        this.state.selectedWidthError = "";
+        this._recomputeLayoutFromItems();
+    }
+
+    // Ctrl/Cmd+Z and the toolbar's undo button. No-op (not even a
+    // toast — an empty stack is communicated by the button's own
+    // disabled state / nothing happening) when there's nothing to undo.
+    _undo() {
+        if (!this._undoStore.canUndo) return;
+        this._markUserAction();
+        const current = this._snapshotState();
+        const snapshot = this._undoStore.undo(current);
+        if (!snapshot) return;
+        this._applyHistorySnapshot(snapshot);
+        this._syncHistoryCounts();
+        // A restored-to state is, by definition, a placement change
+        // relative to whatever the design last had auto-arranged —
+        // the next explicit Auto-arrange should confirm again.
+        this._placementsDirty = true;
+        // Brief: "Undo restores client state AND triggers the normal
+        // autosave so the server converges" — the NORMAL (debounced)
+        // path, not the synchronous flush-then-save variant
+        // _swapCornerProductOnServer uses for its own different race
+        // (see that method's comment) — no such race exists here,
+        // this is a plain full-replace like any other edit.
+        this._queueAutoSave();
+    }
+
+    // Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y, and the toolbar's redo button.
+    _redo() {
+        if (!this._undoStore.canRedo) return;
+        this._markUserAction();
+        const current = this._snapshotState();
+        const snapshot = this._undoStore.redo(current);
+        if (!snapshot) return;
+        this._applyHistorySnapshot(snapshot);
+        this._syncHistoryCounts();
+        this._placementsDirty = true;
+        this._queueAutoSave();
+    }
+
+    // Task 35 — explicit "Auto-arrange" toolbar command. Re-invokes
+    // the SAME engine call a room resize already triggers implicitly
+    // on a hydrated design (_rearrangeOnServer -> /rearrange ->
+    // action_auto_arrange — no new server route) as its own
+    // deliberate, on-demand action, gated by a confirmation dialog
+    // (Odoo's ConfirmationDialog service — never window.confirm, see
+    // the import comment) whenever shouldConfirmArrange() says the
+    // design has manual placement changes since the last arrange that
+    // this would discard. Either way — confirmed or skipped because
+    // nothing's at risk — an undo snapshot is pushed BEFORE arranging
+    // (brief: "arranging pushes an undo snapshot first, so even a
+    // confirmed arrange is undoable").
+    //
+    // Scoping note (see task-35-report.md "Concerns" for the full
+    // writeup): this button is the ONLY auto-arrange call site gated
+    // behind the confirm dialog. The pre-existing IMPLICIT triggers
+    // (_changeRoom, _stretchWidth, the canvas width/depth drag
+    // handles) are left unguarded on purpose — those are routine,
+    // continuous room-dimension edits where re-deriving the layout
+    // through the engine is already the established, expected
+    // behavior (T7/PR4b), and popping a confirmation dialog on every
+    // drag-resize tick would make ordinary resizing unusable. "Auto-
+    // arrange" in the brief's sense — the thing worth a confirm gate —
+    // is this discrete, deliberate regenerate command (its dialog
+    // literally offers "Arrange"/"Cancel", not "keep resizing").
+    async _confirmedAutoArrange() {
+        if (!this.state.designId || !this.state.items
+                || !this.state.items.length) return;
+        const doArrange = () => {
+            this._pushUndoSnapshot();
+            this._markUserAction();
+            this._rearrangeOnServer().then((ok) => {
+                if (ok) this._placementsDirty = false;
+            });
+        };
+        if (!shouldConfirmArrange(this.state.items.length, this._placementsDirty)) {
+            doArrange();
+            return;
+        }
+        this.dialogService.add(ConfirmationDialog, {
+            title: "Auto-arrange this design?",
+            body: "This re-arranges every cabinet using the layout "
+                + "engine. Manual positions or edits made since the "
+                + "last arrange may be discarded.",
+            confirmLabel: "Arrange",
+            cancelLabel: "Cancel",
+            confirm: () => doArrange(),
+            cancel: () => {},
+        });
     }
 
     // ─── Task 34 (SBK-020) — panel/drawer focus management ─────────────────────
@@ -1230,6 +1411,15 @@ class SouthbrookKitchenConfigurator extends Component {
         // trying to refocus something from a design that's gone.
         this._panelOpener.detail = null;
         this._panelOpener.catalogPreview = null;
+        // Task 35 — brief: "stack cleared on design switch/reload".
+        // Both _startNewDesign and _continueDesign route through here.
+        // A page reload doesn't need this — it constructs a brand new
+        // component instance, so setup()'s own fresh `new UndoStore()`
+        // / `_placementsDirty = true` already start clean.
+        this._undoStore.clear();
+        this._placementsDirty = true;
+        this.state.undoCount = 0;
+        this.state.redoCount = 0;
     }
 
     // The landing screen's "New Design" button. This — a genuine,
@@ -2034,6 +2224,11 @@ class SouthbrookKitchenConfigurator extends Component {
             return;   // refused — nothing added, nothing saved
         }
 
+        // Task 35 — pre-op snapshot; see _snapshotState's doc comment.
+        // Pushed only once we KNOW the add will proceed (past the
+        // refusal-gate return above), never for a refused add.
+        this._pushUndoSnapshot();
+        this._placementsDirty = true;
         this.state.items = [...(this.state.items || []), newItem];
         this.state.selected = newItem;
         this._recomputeLayoutFromItems();
@@ -2202,6 +2397,8 @@ class SouthbrookKitchenConfigurator extends Component {
         const idx = this.state.items.findIndex(it => it.layout_key === sel.layout_key);
         if (idx < 0) return;
         this._markUserAction();   // T7 gate
+        this._pushUndoSnapshot();   // Task 35 — pre-op, before the in-place mutation below
+        this._placementsDirty = true;
         this.state.items[idx].width_in = v;
         sel.width_in = v;
         this._recomputeLayoutFromItems();
@@ -2272,6 +2469,8 @@ class SouthbrookKitchenConfigurator extends Component {
             z_position_in: oldItem.z_position_in,
             width_in:      oldItem.width_in,
         };
+        this._pushUndoSnapshot();   // Task 35 — pre-op, before the replace below
+        this._placementsDirty = true;
         this.state.items[idx] = merged;
         this.state.selected = merged;
         this._recomputeLayoutFromItems();
@@ -2413,6 +2612,12 @@ class SouthbrookKitchenConfigurator extends Component {
             const freshIdx = this.state.items.findIndex(
                 it => it.layout_key === layoutKey);
             if (freshIdx < 0) return;
+            // Task 35 — pre-op snapshot for the server-governed corner
+            // swap. Only reached on a genuine success (the RPC already
+            // succeeded in the caller; a refusal/network failure never
+            // gets here), so no snapshot is wasted on a no-op refusal.
+            this._pushUndoSnapshot();
+            this._placementsDirty = true;
             this.state.items[freshIdx] = merged;
             if (this.state.selected
                     && this.state.selected.layout_key === layoutKey) {
@@ -2438,6 +2643,8 @@ class SouthbrookKitchenConfigurator extends Component {
         if (!sel || !sel.layout_key) return;
         const idx = this.state.items.findIndex(it => it.layout_key === sel.layout_key);
         if (idx < 0) return;
+        this._pushUndoSnapshot();   // Task 35 — pre-op, before the splice below
+        this._placementsDirty = true;
         this.state.items.splice(idx, 1);
         // Pick a neighbour as the new selection (or null if empty).
         this.state.selected = this.state.items[idx] || this.state.items[idx - 1] || null;
@@ -2738,6 +2945,23 @@ class SouthbrookKitchenConfigurator extends Component {
             return;
         }
 
+        // Task 35 — Ctrl/Cmd+Z undo; Ctrl/Cmd+Shift+Z OR Ctrl/Cmd+Y
+        // redo (both bindings, per the brief — Windows/Linux muscle
+        // memory differs between the two). Extends this SAME
+        // window-level listener rather than adding a second one (T34
+        // precedent — see this method's own single-listener setup in
+        // setup()).
+        if (ctrl && (k === "z" || k === "Z")) {
+            e.preventDefault();
+            if (e.shiftKey) this._redo(); else this._undo();
+            return;
+        }
+        if (ctrl && (k === "y" || k === "Y")) {
+            e.preventDefault();
+            this._redo();
+            return;
+        }
+
         const map = { "1": "iso", "2": "top", "3": "front",
                        "4": "left", "5": "right", "6": "persp" };
         if (!ctrl && map[k]) { e.preventDefault(); this._setView(map[k]); return; }
@@ -2951,6 +3175,18 @@ class SouthbrookKitchenConfigurator extends Component {
         if (item.cabinet_type === "filler" || item.cabinet_type === "panel") {
             return;
         }
+        // Task 35 review fast-follow (Important 1) — this is a design-
+        // mutating op (item.rotation_deg, in place) exactly like
+        // _updateSelectedWidth, and was missing undo coverage entirely:
+        // a rep who rotated a cabinet and hit Ctrl+Z would silently
+        // undo an unrelated EARLIER op instead. Pushed before the
+        // in-place mutation below, same pattern as every other op.
+        // One snapshot per Q/E keypress (not coalesced across repeated
+        // taps) — simple and correct; the 25-entry cap already absorbs
+        // a burst of quick rotations the same way it absorbs a burst
+        // of any other op.
+        this._pushUndoSnapshot();
+        this._placementsDirty = true;
         const cur = ((item.rotation_deg || 0) + deltaDeg) % 360;
         item.rotation_deg = (cur + 360) % 360;
         item.pinned = true;
@@ -3651,6 +3887,41 @@ SouthbrookKitchenConfigurator.template = xml`
           <span aria-hidden="true">&#x25EA;</span>
         </button>
       </div>
+      <!-- Task 35 — undo/redo (minimal default scope). Icon-only,
+           same aria-label/title/disabled pattern as the panel toggles
+           above (Task 34 precedent). Icon glyphs U+21B6/U+21B7 (curved
+           undo/redo arrows) — distinct from every other glyph already
+           in this toolbar (view-switcher U+25E7/U+25E8, panel-toggle
+           U+25E9/U+25EA just above). Keyboard: Ctrl/Cmd+Z undo,
+           Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y redo (_onKeyDown). -->
+      <div class="o_sbk_history_controls" role="group" aria-label="Undo and redo">
+        <button type="button" class="o_sbk_btn o_sbk_btn_ghost o_sbk_history_btn"
+                t-att-disabled="!state.undoCount"
+                aria-label="Undo last change"
+                title="Undo (Ctrl+Z)"
+                t-on-click="_undo">
+          <span aria-hidden="true">&#x21B6;</span>
+        </button>
+        <button type="button" class="o_sbk_btn o_sbk_btn_ghost o_sbk_history_btn"
+                t-att-disabled="!state.redoCount"
+                aria-label="Redo last undone change"
+                title="Redo (Ctrl+Shift+Z)"
+                t-on-click="_redo">
+          <span aria-hidden="true">&#x21B7;</span>
+        </button>
+      </div>
+      <!-- Task 35 — explicit Auto-arrange command (minimal default
+           scope). See _confirmedAutoArrange's own comment for the
+           confirm-gate + undo-snapshot ordering and the scoping note
+           on why this is the ONLY auto-arrange call site that
+           confirms. Disabled with nothing to arrange (no saved design
+           yet, or an empty layout). -->
+      <button type="button" class="o_sbk_btn o_sbk_btn_ghost"
+              t-att-disabled="!state.designId || !state.items.length"
+              title="Re-arrange every cabinet with the layout engine"
+              t-on-click="_confirmedAutoArrange">
+        Auto-arrange
+      </button>
       <!-- Task 12 (corner-remediation, SBK-021/022 claim 5) — these
            buttons now target state.room[_stretchAxisField()] (width for
            back/front/no wall, depth for left/right — see _stretchWidth's
@@ -3947,6 +4218,7 @@ SouthbrookKitchenConfigurator.template = xml`
                      designName="state.designName"
                      onWallSelect="(w) => this._onWallSelect(w)"
                      onSelectItem="(item) => this._onCanvasSelect(item)"
+                     onMoveItemStart="(item) => this._onCanvasMoveStart(item)"
                      onMoveItem="(p) => this._onCanvasMove(p)"
                      onResizeRoom="(nw, f) => this._onCanvasResize(nw, f)"
                      onResizeRoomDepth="(nd, f) => this._onCanvasResizeDepth(nd, f)"
@@ -4464,8 +4736,20 @@ SouthbrookKitchenConfigurator.prototype._onCanvasReady = function (api) {
 SouthbrookKitchenConfigurator.prototype._onCanvasSelect = function (item) {
     this.state.selected = item;
 };
+// Task 35 — fires exactly once per drag gesture, BEFORE <KitchenCanvas>
+// applies its first in-place x_position_in mutation to `item` (a live
+// reference into state.items) — see kitchen_canvas.esm.js's own
+// comment on `onMoveItemStart` for why this has to be a separate
+// callback rather than derived from onMoveItem's (post-drag) payload.
+// state.items is still fully pristine at this instant, so a plain
+// snapshot of the CURRENT state is the correct pre-op capture — no
+// special-casing of the moved item's old position is needed.
+SouthbrookKitchenConfigurator.prototype._onCanvasMoveStart = function (_item) {
+    this._pushUndoSnapshot();
+};
 SouthbrookKitchenConfigurator.prototype._onCanvasMove = function ({ item, x_position_in, pinnable }) {
     this._markUserAction();   // T7 gate
+    this._placementsDirty = true;   // Task 35
     if (pinnable) {
         item.pinned = true;
         this._savePinnedPosition(item);

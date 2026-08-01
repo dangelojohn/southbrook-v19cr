@@ -2103,6 +2103,26 @@ $sbk-amber:      #B45309;
     span[aria-hidden] { font-size: 15px; line-height: 1; }
 }
 
+// Task 35 — undo/redo toolbar buttons. Same 32px-square touch target
+// + hairline-divider grouping as .o_sbk_panel_toggles just above;
+// disabled/focus-visible styling is inherited from .o_sbk_btn (no new
+// rule needed — matches Task 34's own note on the panel toggles).
+.o_sbk_history_controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 8px;
+    margin-right: 4px;
+    border-right: 1px solid $sbk-border;
+}
+.o_sbk_history_btn {
+    width: 32px;
+    padding: 8px;
+    justify-content: center;
+
+    span[aria-hidden] { font-size: 15px; line-height: 1; }
+}
+
 // Task 34 (SBK-019) — collapsible side panels. `_toggleControlsPanel`/
 // `_toggleInventoryPanel` (kitchen_configurator.js) flip these two
 // classes independently; `narrowAtBoot` (same file) decides the

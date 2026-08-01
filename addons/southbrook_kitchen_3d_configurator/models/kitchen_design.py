@@ -679,6 +679,44 @@ class SouthbrookKitchenDesign(models.Model):
         tracking=True,
     )
 
+    # ── State guard — 'configured' requires real content ───────────────────────
+    # Task 21 (corner-remediation 2026-07-30, SBK-035, reduced scope) — a
+    # design must never persist in state='configured' with zero ACTIVE
+    # cabinet lines. Live gap (pre-fix): controllers/main.py's save_design
+    # endpoint forced `"state": "configured"` into the very FIRST vals dict
+    # handed to Design.create()/design.write() — BEFORE the item-processing
+    # loop further down in that same function ever runs — so an empty save
+    # (items=[], e.g. a rep deletes every cabinet and the client autosaves)
+    # or an all-rejected payload (every product_id fails the /products
+    # catalog ACL gate) could reach state='configured' having created not
+    # one single line. Fixed alongside this guard: save_design now writes
+    # state="configured" only once, at the end, gated on
+    # `design.cabinet_line_ids` being non-empty — the exact pattern
+    # kitchen_design.py's OWN state="configured" writes already use
+    # (_apply_kitchen_template's "if seeded: self.state = 'configured'",
+    # _generate_standard_layout's trailing `self.state = "configured"`
+    # after every line is created, kitchen_template.py's
+    # action_instantiate likewise) — this constraint is a no-op backstop
+    # for those, and the real check for save_design.
+    #
+    # `@api.constrains` trap: this only fires on a write()/create() call
+    # whose vals dict contains the literal key "state" — a write that only
+    # touches cabinet_line_ids (e.g. archiving/unlinking the last line on
+    # an already-configured design without ever re-touching state) will
+    # NOT re-trigger this check. Closing that residual gap would need a
+    # guard on the line model's own write/unlink path, which is out of
+    # this reduced scope (record pruning/deletion stays the owner's call
+    # per the task brief) — flagged here rather than silently assumed.
+    @api.constrains("state")
+    def _check_configured_state_has_lines(self):
+        for design in self:
+            if design.state == "configured" and not design.cabinet_line_ids:
+                raise ValidationError(
+                    'Cannot mark "%s" as Configured with no cabinet lines. '
+                    "Add at least one cabinet first, or leave the design "
+                    "in Draft." % (design.name or "this design")
+                )
+
     # ── default_get — portal-user partner autofill ─────────────────────────────
     # 2026-07-01 task #48 — pre-select partner_id for two entry paths:
     #   (a) partner-form "Create Kitchen Design" → context carries
@@ -4908,9 +4946,11 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
     )
     cabinet_count = fields.Integer(
         string="Number of Cabinets", default=0,
-        help="How many repeating cabinets to place. Starts at the "
-             "template's own default and never goes above what fits the "
-             "room at the chosen cabinet size.")
+        help="How many repeating cabinets to place. Picking a shape "
+             "sets this to that shape's own maximum — lower it for a "
+             "smaller run. Changing Cabinet Size or an appliance only "
+             "shrinks it if your number no longer fits; picking a "
+             "different shape resets it again.")
     module_width_in = fields.Selection(
         [("18", '18"'), ("21", '21"'), ("24", '24"'), ("30", '30"')],
         string="Cabinet Size", default="24", required=True)
@@ -4941,6 +4981,30 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
              "channel pricelist immediately. Leave empty for a walk-in or "
              "showroom demo.",
     )
+    # Task 24 (SBK-038) review round 1 — internal shadow of template_id,
+    # NOT user-facing (invisible in the view, but present in it so the
+    # webclient round-trips it through every onchange's saved values).
+    # `_onchange_parametrics` needs to know "did the SHAPE itself just
+    # change" across onchange rounds. `_origin` looked like the right tool
+    # (it's the standard "pre-edit value" trick) but is WRONG here: this
+    # wizard opens `target="new"` with no `res_id` — a never-saved record —
+    # and Odoo 19's web/models/models.py `onchange()` only sets
+    # `origin=self` when `self` is non-empty. For a never-saved record,
+    # `_origin` is an EMPTY recordset on every single onchange call for the
+    # wizard's ENTIRE editing session, not just the first. That made
+    # `template_id != _origin.template_id` evaluate True on every onchange
+    # once ANY shape was picked — including onchanges fired by touching
+    # Cabinet Size or an appliance dropdown — silently re-seeding
+    # cabinet_count to count_max and discarding a user's deliberately
+    # smaller count. This field is written at the end of every
+    # `_onchange_parametrics` call with the CURRENT template_id, so on the
+    # NEXT round it holds "what template_id was as of the last onchange" —
+    # a comparison that only differs across a genuine shape switch.
+    last_seen_template_id = fields.Many2one(
+        "southbrook.kitchen.template",
+        help="Internal — tracks the shape shown last time the form "
+             "recomputed, so a real shape switch can be told apart from "
+             "an edit to any other field. Never shown to the user.")
 
     def _appliance_widths(self):
         self.ensure_one()
@@ -4983,7 +5047,35 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
         # Selection widgets can't grey options in a transient — clamping +
         # fit_summary IS the spec's "constrain or flag" (never grow room).
         for rec in self:
-            if rec.template_id and rec.cabinet_count and \
+            # Task 24 (SBK-038) — Number of Cabinets is AUTHORITATIVE: the
+            # created design's line count must match whatever this field
+            # shows. Selecting a NEW shape has to reset it to that shape's
+            # own Max rather than leaving in place a count that merely
+            # still FITS (which the downward-only clamp below would do —
+            # e.g. shape A's max is 3, user keeps 3, switches to shape B
+            # whose max is 6: 3 still fits under 6, so the clamp branch
+            # never fires and the field would silently under-report B's
+            # own default).
+            #
+            # Compare against `last_seen_template_id`, NOT `_origin`
+            # (review round 1, 2026-07-31): this wizard opens
+            # `target="new"` with no `res_id`, so it's a never-saved
+            # record for its whole editing session, and `_origin` is an
+            # empty recordset on EVERY onchange call for such a record
+            # (Odoo 19 only sets `origin=self` when `self` is non-empty).
+            # `template_id != _origin.template_id` was therefore True on
+            # every onchange once any shape was picked — including ones
+            # fired by Cabinet Size / Range / Fridge / Dishwasher edits —
+            # which silently re-seeded cabinet_count and discarded a
+            # deliberately-typed smaller count. `last_seen_template_id` is
+            # a real stored field the webclient round-trips through each
+            # onchange's returned values, so it correctly holds "what
+            # template_id was as of the last onchange round" and only
+            # disagrees with `template_id` on a genuine switch.
+            shape_changed = rec.template_id != rec.last_seen_template_id
+            if shape_changed and rec.template_id:
+                rec.cabinet_count = rec.count_max
+            elif rec.template_id and rec.cabinet_count and \
                     rec.count_max and rec.cabinet_count > rec.count_max:
                 rec.cabinet_count = rec.count_max
             # 2026-07-31 — the field only ever clamped DOWNWARD, so it
@@ -4996,6 +5088,7 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
             # the number used.
             elif rec.template_id and not rec.cabinet_count and rec.count_max:
                 rec.cabinet_count = rec.count_max
+            rec.last_seen_template_id = rec.template_id
 
     def action_create(self):
         """Instantiate the chosen template (or a plain empty design) and

@@ -116,12 +116,23 @@ export async function mountConfigurator({
 
     const notificationCalls = [];
     const actionCalls = [];
+    // Task 35 — confirm-on-regenerate. Records every dialog.add() call
+    // (component + props) without rendering anything real (no modal/
+    // backdrop exists under jsdom for this suite — see shims/web_core_
+    // confirmation_dialog.mjs). A test that needs to simulate the
+    // rep's choice calls `dialogCalls.at(-1).props.confirm()` (or
+    // `.cancel()`) directly — exactly how the real ConfirmationDialog
+    // invokes them on a button click.
+    const dialogCalls = [];
     const defaultServices = {
         notification: {
             add(message, opts) { notificationCalls.push({ message, opts }); },
         },
         action: {
             doAction(action) { actionCalls.push(action); return Promise.resolve(); },
+        },
+        dialog: {
+            add(component, props) { dialogCalls.push({ component, props }); return () => {}; },
         },
     };
     const env = { services: { ...defaultServices, ...services } };
@@ -141,7 +152,7 @@ export async function mountConfigurator({
 
     return {
         dom, root, component, owl,
-        notificationCalls, actionCalls,
+        notificationCalls, actionCalls, dialogCalls,
         rpcCalls: (route) => __calls(route),
         canvasProps: () => canvasMockCalls.lastProps,
         canvasMountCount: () => canvasMockCalls.mountCount,

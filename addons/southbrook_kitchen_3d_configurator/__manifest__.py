@@ -159,6 +159,11 @@
             # other ES module above — they must load before it.
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/catalog_list.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/cabinet_thumb.esm.js",
+            # Task 35 (corner-remediation, 2026-07-31) — undo/redo stack
+            # pure reducer + the confirm-on-regenerate heuristic. Same
+            # rationale as toast_store.esm.js above: imported by
+            # kitchen_configurator.js, so it must load before it.
+            "southbrook_kitchen_3d_configurator/static/src/js/undo/undo_store.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/kitchen_configurator.js",
             # P2 product-icons — Cabinet Products kanban/list icon widget.
             # Imports cabinetThumbSVG from cabinet_thumb.esm.js above, so
