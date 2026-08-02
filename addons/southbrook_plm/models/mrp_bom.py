@@ -155,11 +155,21 @@ class MrpBom(models.Model):
                 )
 
     @api.model
-    def _get_cut_constants(self):
+    def _get_cut_constants(self, cut_spec=None):
         """Override the estimating seam to read the active cut spec.
 
         Falls back to the estimating code defaults (super) when no spec is
         active, so behaviour is identical to a spec-less install.
+
+        :param cut_spec: optional, explicit southbrook.cut.spec recordset.
+            When truthy, it is used directly and ``_get_active()`` is NOT
+            consulted at all — a caller that already resolved a specific
+            spec (e.g. southbrook_kitchen_mrp's as-sold pin resolution)
+            wants exactly that spec's constants, not whatever happens to
+            be active today. When falsy/omitted, behaviour is completely
+            unchanged from before this parameter existed: the active
+            spec, or the estimating code defaults via super() when none
+            is active.
 
         Sudo on the cut.spec read because this seam is called during
         BoM panel-dimension computation for ANY user that touches a
@@ -172,6 +182,8 @@ class MrpBom(models.Model):
         preview tab. (Bug found 2026-06-01 by smoke_customer_flow.sh:
         portal AccessError on order payload fetch after submit.)
         """
+        if cut_spec:
+            return cut_spec.sudo().constants_dict()
         spec = self.env["southbrook.cut.spec"].sudo()._get_active()
         if spec:
             return spec.constants_dict()

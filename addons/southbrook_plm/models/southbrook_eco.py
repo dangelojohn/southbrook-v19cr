@@ -16,6 +16,7 @@ Approval gating: leaving a stage flagged ``approval_required`` demands the actor
 be in ``southbrook_plm.group_southbrook_plm_approver``.
 """
 import logging
+from datetime import timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError, ValidationError
@@ -241,6 +242,50 @@ class SouthbrookEco(models.Model):
                 )
 
     # ------------------------------------------------------------------
+    # Rejection reason (ECO workflow hygiene pass, 2026-08-02). Prod had
+    # no way to record WHY an ECO was rejected — the audit trail already
+    # showed WHO rejected it and WHEN (the state/stage tracking above,
+    # plus the chatter line action_reject has always posted), but never
+    # the reasoning, so a raiser whose ECO came back rejected had to
+    # track down the approver and ask.
+    #
+    # Deliberately free-text, NOT a coded rejection-reason taxonomy
+    # (a Selection like Design / Cost / Schedule / Duplicate / Other).
+    # Researched against how mature change-control systems actually do
+    # this — Arena PLM, PTC Windchill, and the CM2/EIA-649 configuration-
+    # management discipline all treat "why was this rejected" as a
+    # free-text comment on the CCB (Change Control Board) disposition,
+    # not an enum. That generalises across any real rejection ("the
+    # vendor cut sheet doesn't match the boring pattern", "this
+    # duplicates ECO-0042 — close and reference that one instead", "cost
+    # impact was never quantified") in a way a fixed code list never
+    # captures without an ever-growing "Other" bucket that swallows the
+    # actual information. A free-text reason PLUS the existing
+    # stage/approver audit trail (who, when, what stage) is the correct
+    # shape here — this field adds the "why" without inventing a
+    # taxonomy nobody asked for.
+    #
+    # readonly=True: set ONLY through action_reject, below, never
+    # hand-edited afterwards — a recorded rejection reason is itself
+    # change-control history once written, same spirit as the terminal-
+    # write immutability guard covering the rest of a rejected ECO.
+    # tracking=True so an edit attempt (which write()'s terminal-write
+    # guard already refuses to anyone but the lifecycle sentinel) would
+    # still show up in chatter if one somehow landed.
+    rejection_reason = fields.Text(
+        readonly=True,
+        copy=False,
+        tracking=True,
+        help="Why this ECO was rejected. Free text, not a coded reason "
+        "list — see the rationale comment on this field in "
+        "southbrook_eco.py. Set only through the Reject action; "
+        "optional at the model/RPC level (an approver rejecting "
+        "programmatically with no reason still works), but the chatter "
+        "always says so explicitly when one is omitted, so the "
+        "omission is visible rather than silent.",
+    )
+
+    # ------------------------------------------------------------------
     # Typed effectivity (2026-08-02). Industry practice for change-control
     # systems that actually run a factory floor (researched against Odoo
     # Enterprise mrp_plm, Arena, Oracle Agile/PLM, and PTC Windchill) treats
@@ -411,6 +456,131 @@ class SouthbrookEco(models.Model):
                     )
                     % eco.name
                 )
+
+    # ------------------------------------------------------------------
+    # Cycle-time metrics (ECO workflow hygiene pass, 2026-08-02). Prod
+    # evidence: before this pass there was no way to see HOW LONG an ECO
+    # had been sitting anywhere — the 61-day-in-Draft / 61-day-in-Under-
+    # Review ECOs that motivated this whole pass were invisible until
+    # someone happened to eyeball create_date by hand. Industry practice
+    # for change-control cycle-time reporting is time-IN-STAGE, not a
+    # single blended "days since created" total, so this tracks three
+    # distinct intervals rather than one:
+    #   days_to_approve — draft/review time: create_date -> approval_date.
+    #   days_to_apply   — post-approval lag: approval_date -> applied_date
+    #                     (this is where a Scheduled/effectivity_type=
+    #                     'date' ECO's deliberate wait shows up, and
+    #                     equally where an Approved-but-never-Applied ECO
+    #                     forgotten on someone's desk would show up too).
+    #   days_open       — how long an OPEN (unresolved) ECO has been open,
+    #                      period. See that field's own comment, below,
+    #                      for why this one specifically can't be a live
+    #                      value.
+    # All three are 0.0 (not False/empty) when their underlying interval
+    # hasn't happened yet — Float, not left blank — so they sort/aggregate
+    # cleanly in a pivot or graph view without null-handling gymnastics.
+    # ------------------------------------------------------------------
+    date_submitted = fields.Datetime(
+        readonly=True,
+        copy=False,
+        help="Stamped automatically the first time this ECO leaves the "
+        "first (lowest-sequence, non-final) stage — i.e. the moment it "
+        "stops being a bare draft and enters real review. See write()'s "
+        "handling of this field for the exact transition and why it's "
+        "detected there instead of in a single button. Used as the "
+        "anchor for the SLA escalation cron below (falls back to "
+        "create_date for ECOs that predate this field, or that have "
+        "simply never left the first stage).",
+    )
+    days_to_approve = fields.Float(
+        compute="_compute_days_to_approve",
+        store=True,
+        digits=(16, 2),
+        help="(approval_date - create_date) in days. 0.0 while the ECO "
+        "is not yet approved.",
+    )
+    days_to_apply = fields.Float(
+        compute="_compute_days_to_apply",
+        store=True,
+        digits=(16, 2),
+        help="(applied_date - approval_date) in days. 0.0 while the ECO "
+        "is approved but not yet applied — including a Scheduled ECO "
+        "still waiting on its effective_date.",
+    )
+    # days_open runs into the SAME fundamental limitation effectivity_
+    # state's field comment (above) already documents for this module: a
+    # STORED compute field only recomputes when one of its @api.depends
+    # fields changes ON THE RECORD — it has no way to notice that wall-
+    # clock time alone has passed while nothing else about the record
+    # changed. This is therefore NOT a live "ticking up every second"
+    # value; it is a SNAPSHOT of (now - create_date) taken at the moment
+    # of the last recompute. That happens: on creation; on any state
+    # transition (open <-> applied/rejected, via the lifecycle actions
+    # above); and, for the specific subset of open ECOs that have aged
+    # past their type's review SLA, once a day — because
+    # _cron_escalate_stale_ecos (below, a daily cron per
+    # data/ir_cron_data.xml) explicitly re-invokes this compute for
+    # every stale ECO it examines, as a deliberate outside nudge. An ECO
+    # comfortably inside its SLA window can therefore show a days_open
+    # value that lags real wall-clock time until its state next changes
+    # or it, too, ages into the escalation cron's domain. Do not read
+    # this field as a live clock; it is "roughly current", not exact —
+    # and that limitation is the honest, documented trade-off, not an
+    # oversight.
+    days_open = fields.Float(
+        compute="_compute_days_open",
+        store=True,
+        help="Snapshot of (now - create_date) in days, refreshed on "
+        "creation, on any state transition, and daily for whichever "
+        "open ECOs the stale-ECO escalation cron examines. NOT a live "
+        "wall-clock value — see the comment above this field for why a "
+        "stored compute can't be one.",
+    )
+
+    @api.depends("approval_date", "create_date")
+    def _compute_days_to_approve(self):
+        for eco in self:
+            if eco.approval_date and eco.create_date:
+                eco.days_to_approve = (
+                    eco.approval_date - eco.create_date
+                ).total_seconds() / 86400.0
+            else:
+                eco.days_to_approve = 0.0
+
+    @api.depends("applied_date", "approval_date")
+    def _compute_days_to_apply(self):
+        for eco in self:
+            if eco.applied_date and eco.approval_date:
+                eco.days_to_apply = (
+                    eco.applied_date - eco.approval_date
+                ).total_seconds() / 86400.0
+            else:
+                eco.days_to_apply = 0.0
+
+    @api.depends("create_date", "state")
+    def _compute_days_open(self):
+        now = fields.Datetime.now()
+        for eco in self:
+            eco.days_open = (
+                (now - eco.create_date).total_seconds() / 86400.0
+                if eco.create_date
+                else 0.0
+            )
+
+    # ------------------------------------------------------------------
+    # SLA heartbeat idempotency guard (ECO workflow hygiene pass,
+    # 2026-08-02) — see _cron_escalate_stale_ecos, below, for the cron
+    # that stamps this.
+    # ------------------------------------------------------------------
+    escalation_posted_on = fields.Date(
+        readonly=True,
+        copy=False,
+        help="Date the stale-ECO escalation cron last posted an SLA "
+        "escalation notice on this ECO. Purely an idempotency guard — "
+        "see _cron_escalate_stale_ecos, below — so the (daily) cron "
+        "posts at most one escalation notice per calendar day per "
+        "stale ECO, not once per run for as long as it stays stale.",
+    )
 
     # ------------------------------------------------------------------
     # Target-required validation (mirrors the form view's per-target_kind
@@ -705,7 +875,71 @@ class SouthbrookEco(models.Model):
                         )
                         % {"eco": eco.name, "stage": eco.stage_id.name}
                     )
+        # ------------------------------------------------------------------
+        # Cycle-time / SLA heartbeat: detect "leaving the first stage"
+        # (ECO workflow hygiene pass, 2026-08-02). Prod evidence: ECOs sat
+        # in Draft AND in Under Review for 61 days apiece with ZERO
+        # scheduled activities and nobody notified — the pipeline had no
+        # heartbeat at all. This transition — an ECO's FIRST move off the
+        # lowest-sequence, non-final stage — is where that heartbeat
+        # starts: it stamps date_submitted (the cycle-time anchor) and
+        # schedules the initial review activity for the ECO type's
+        # configured reviewers.
+        #
+        # Detected here in write(), not only in action_advance, because
+        # stage_id can move via more than one already-authorised path:
+        # action_advance (the common case), action_approve (which can
+        # land an ECO directly in the Approved stage, skipping
+        # intermediate stages in a short pipeline), action_reject (Draft
+        # -> Rejected in one hop, no intervening Under Review), or a bare
+        # kanban-drag / RPC write from a PLM User whose rights write()'s
+        # own guards above already cleared. This block grants NO new
+        # authority of its own — every path that reaches it already
+        # passed every guard above; it only stamps a timestamp and fires
+        # a best-effort notification off an already-authorised
+        # transition.
+        #
+        # "Before" state MUST be read before super().write() below runs —
+        # there is no "before" left to compare once the write lands. The
+        # actual date_submitted stamp is issued as a SEPARATE
+        # super().write() call (not self.write()) on just the
+        # transitioning subset, once the caller's own vals have landed:
+        # vals applies uniformly to every record in `self`, but
+        # date_submitted must NOT be back-filled onto ECOs that were
+        # already past the first stage before this call, and calling
+        # super() directly (rather than self.write()) avoids recursing
+        # back through every guard above for a plain timestamp field
+        # that carries no authorisation implications of its own. The
+        # "not eco.date_submitted" filter is the idempotency guard —
+        # only the FIRST such transition stamps it and schedules the
+        # activity; a later re-entry into the first stage and back out
+        # again (e.g. reset-to-draft, then re-advanced) must not re-stamp
+        # or re-notify.
+        first_stage = self.env["southbrook.eco.stage"].search(
+            [("is_final", "=", False)], order="sequence, id", limit=1
+        )
+        leaving_first_stage = self.browse()
+        if new_stage is not None and first_stage and new_stage != first_stage:
+            leaving_first_stage = self.filtered(
+                lambda e: e.stage_id == first_stage and not e.date_submitted
+            )
         result = super().write(vals)
+        if leaving_first_stage:
+            super(SouthbrookEco, leaving_first_stage).write(
+                {"date_submitted": fields.Datetime.now()}
+            )
+            # Only schedule a review activity when the ECO is actually
+            # entering ongoing review — NOT when this same write both
+            # leaves the first stage AND lands directly in a terminal
+            # one (action_reject can go Draft -> Rejected in one hop,
+            # no intervening Under Review). Scheduling "please review
+            # this" on an ECO that is simultaneously being rejected
+            # would just leave a permanently-open, meaningless activity
+            # sitting on dead history. date_submitted is still stamped
+            # unconditionally above — "it left the first stage on this
+            # date" is a cycle-time fact independent of where it landed.
+            if new_stage is None or not new_stage.is_final:
+                leaving_first_stage._schedule_review_activity()
         # FIX 5 continued: post the "armed" chatter line AFTER the write
         # commits (so bypass_reason — possibly set in this same vals dict
         # — is already on the record when we read it back).
@@ -720,6 +954,63 @@ class SouthbrookEco(models.Model):
                 }
             )
         return result
+
+    def _schedule_review_activity(self):
+        """Schedule a "Review ECO" activity for each of the ECO type's
+        configured reviewers, called once per ECO the moment it leaves
+        the first stage (see write(), above, for the exact transition).
+
+        Best-effort by design: an activity-scheduling failure (a
+        reviewer with a broken user record, a mail-activity-type config
+        quirk, etc.) must NEVER block the stage transition that
+        triggered it — this is a heartbeat notification, not a workflow
+        gate. Every failure is logged via _logger.exception and
+        otherwise swallowed, mirroring the non-fatal contract
+        _scan_and_flag_affected_mos and _apply_cut_spec's geometry-delta
+        notice already use elsewhere in this file.
+
+        No-reviewers case: if the ECO's eco_type_id has no reviewer_ids
+        configured, this method does NOT invent a substitute (e.g. the
+        Responsible's manager) — southbrook.eco.type.reviewer_ids' own
+        constraint already requires every configured reviewer to hold
+        PLM Approver rights, and guessing a fallback nobody actually
+        agreed to would defeat that discipline. Instead it posts a
+        plain chatter line saying no reviewers are configured, so the
+        gap is visible to whoever administers ECO types rather than
+        silently doing nothing.
+        """
+        for eco in self:
+            reviewers = eco.eco_type_id.reviewer_ids
+            if not reviewers:
+                eco.message_post(
+                    body=_(
+                        "No reviewers are configured on ECO Type "
+                        "'%(type)s' — no review activity was scheduled. "
+                        "Add Default Reviewers to that ECO Type so "
+                        "future ECOs of this kind get a heartbeat."
+                    )
+                    % {"type": eco.eco_type_id.display_name}
+                )
+                continue
+            sla_days = eco.eco_type_id.review_sla_days or 7
+            deadline = fields.Date.context_today(eco) + timedelta(days=sla_days)
+            for reviewer in reviewers:
+                try:
+                    eco.activity_schedule(
+                        "mail.mail_activity_data_todo",
+                        date_deadline=deadline,
+                        summary=_("Review ECO %s") % eco.name,
+                        user_id=reviewer.id,
+                    )
+                except Exception:  # noqa: BLE001
+                    _logger.exception(
+                        "southbrook_plm: failed to schedule review "
+                        "activity for ECO %s / reviewer %s — the stage "
+                        "transition itself is unaffected (best-effort "
+                        "notification only).",
+                        eco.name,
+                        reviewer.display_name,
+                    )
 
     # ------------------------------------------------------------------
     # Delete guard
@@ -902,7 +1193,22 @@ class SouthbrookEco(models.Model):
             )
         return True
 
-    def action_reject(self):
+    def action_reject(self, reason=None):
+        """Reject an ECO, gated to PLM Approvers, optionally recording why.
+
+        ``reason`` (ECO workflow hygiene pass, 2026-08-02): stored on
+        rejection_reason when given — see that field's definition above
+        for why this is deliberately free text, not a coded taxonomy.
+        Deliberately NOT required at this level: the model method stays
+        callable exactly as it always was (an approver rejecting via RPC,
+        or a bare ``action_reject()`` call — see the existing tests —
+        still works with no reason). The UI path that makes a reason
+        effectively mandatory is action_open_reject_wizard, below, which
+        opens a tiny transient wizard whose reason field IS required and
+        which calls straight back into this exact method. When no reason
+        is given, the chatter line says so explicitly ("(no reason
+        given)") rather than staying silent about the omission.
+        """
         # Rejecting an ECO is an approver decision (the PLM Approver group's
         # remit is "approve, apply, and reject"). Gate it so a plain PLM User
         # can't reject other people's ECOs. (Security audit 2026-07-11.)
@@ -949,27 +1255,64 @@ class SouthbrookEco(models.Model):
             if eco.state == "rejected":
                 # Idempotent no-op — re-rejecting a rejected ECO is
                 # harmless but worth a chatter line so the action
-                # is at least recorded.
+                # is at least recorded. rejection_reason from the FIRST
+                # rejection is left untouched — re-rejecting never
+                # overwrites the originally recorded reason.
                 eco.message_post(
                     body=_("Re-reject no-op by %s (already rejected).")
                     % self.env.user.display_name
                 )
                 continue
-            # Co-write state + stage_id in a SINGLE write call so the
-            # terminal-stage-arrival guard (in write() above) sees
-            # the matching state in vals and lets the write through.
-            # Splitting these into two writes would trigger the
-            # bypass-block — regression caught by 2026-06-01 part 9
-            # follow-up.
+            # Co-write state + stage_id (+ rejection_reason, when given)
+            # in a SINGLE write call so the terminal-stage-arrival guard
+            # (in write() above) sees the matching state in vals and lets
+            # the write through. Splitting these into two writes would
+            # trigger the bypass-block — regression caught by 2026-06-01
+            # part 9 follow-up; rejection_reason rides along in the same
+            # write for the same reason (a second write against a now-
+            # terminal ECO would need the lifecycle sentinel all over
+            # again — simpler to never split it out).
             write_vals = {"state": "rejected"}
             if rejected_stage:
                 write_vals["stage_id"] = rejected_stage.id
+            if reason:
+                write_vals["rejection_reason"] = reason
             # FIX 1 (2026-08-02 blindspot pass): pass the identity-checked
             # sentinel, not a bare True — see plm_lifecycle.py.
             eco = eco.with_context(plm_lifecycle=PLM_LIFECYCLE)
             eco.write(write_vals)
-            eco.message_post(body=_("Rejected by %s.") % self.env.user.display_name)
+            eco.message_post(
+                body=_("Rejected by %(user)s. Reason: %(reason)s")
+                % {
+                    "user": self.env.user.display_name,
+                    "reason": reason or _("(no reason given)"),
+                }
+            )
         return True
+
+    def action_open_reject_wizard(self):
+        """Open the reason-required Reject wizard (see
+        southbrook.eco.reject.wizard, declared at the end of this file).
+
+        action_reject itself keeps ``reason`` optional so a script/RPC
+        caller isn't blocked — but the UI path should make giving a
+        reason the path of least resistance, not an afterthought. This
+        button opens a tiny transient wizard whose reason field IS
+        required, and which calls straight back into
+        action_reject(reason=...). No new view is added for the wizard
+        (views/ is out of scope for this pass, owned separately) — Odoo's
+        auto-generated default form for a two-field transient model is
+        legible enough to use as-is until a proper view lands.
+        """
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Reject ECO"),
+            "res_model": "southbrook.eco.reject.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_eco_id": self.id},
+        }
 
     def action_reset_draft(self):
         """Reset a REJECTED ECO back to the first stage as open.
@@ -1497,6 +1840,147 @@ class SouthbrookEco(models.Model):
         return applied
 
     # ------------------------------------------------------------------
+    # Stale-ECO SLA escalation cron (ECO workflow hygiene pass,
+    # 2026-08-02)
+    # ------------------------------------------------------------------
+    @api.model
+    def _cron_escalate_stale_ecos(self, limit=200):
+        """Daily cron (see data/ir_cron_data.xml): give an open,
+        unapproved ECO a heartbeat once it's sat past its ECO type's
+        review SLA.
+
+        Prod evidence that motivated this whole pass: ECOs sitting in
+        Draft for 61 days and in Under Review for 61 days, with ZERO
+        scheduled activities and nobody notified — the pipeline had no
+        heartbeat at all. Two of them were owned by OdooBot rather than
+        a person. This cron is the heartbeat for the "sat too long" half
+        of that problem (the "just left Draft" half is handled by the
+        activity scheduled in write() / _schedule_review_activity,
+        above — this cron is the escalation path for when even THAT
+        initial activity goes unanswered).
+
+        Domain is deliberately broad (state == open, approver_id unset)
+        rather than trying to express "past THIS ECO's own type's SLA"
+        in SQL — review_sla_days varies per eco_type_id, so the per-ECO
+        staleness test runs in Python via _escalate_if_stale, which also
+        owns the idempotency check (escalation_posted_on) and the actual
+        chatter post. Each ECO is wrapped in its own savepoint +
+        try/except, mirroring _cron_apply_due_ecos' pattern immediately
+        above: one broken ECO must never abort the whole batch, and a
+        failed one is simply retried on the next run untouched (nothing
+        about it changes on failure, so it stays in next run's domain).
+        """
+        candidates = self.search(
+            [("state", "=", "open"), ("approver_id", "=", False)],
+            order="create_date asc",
+            limit=limit,
+        )
+        today = fields.Date.context_today(self)
+        escalated = 0
+        for eco in candidates:
+            try:
+                with self.env.cr.savepoint():
+                    if eco._escalate_if_stale(today):
+                        escalated += 1
+            except Exception:  # noqa: BLE001
+                _logger.exception(
+                    "southbrook_plm: stale-ECO escalation failed for ECO "
+                    "%s — will be retried on the next cron run.",
+                    eco.name,
+                )
+                continue
+        return escalated
+
+    def _escalate_if_stale(self, today):
+        """ensure_one(). Post an SLA escalation notice if this ECO is
+        past its type's review_sla_days and hasn't already been
+        escalated today. Returns True iff a notice was posted.
+
+        Anchor: date_submitted, falling back to create_date for ECOs
+        raised before that field existed — or, just as importantly, for
+        an ECO that has simply never left the first stage at all (see
+        write()'s handling of date_submitted, above: it only stamps on
+        LEAVING the first stage). Falling back to create_date rather
+        than skipping such an ECO matters here: an ECO stuck in Draft
+        forever is EXACTLY the failure mode the 61-day prod evidence
+        describes, and it is the one case where date_submitted will
+        never get stamped by anything else.
+
+        Idempotency: escalation_posted_on stamps TODAY the first time an
+        ECO is escalated on a given calendar day; a second call the same
+        day is a no-op. Given the cron itself only runs once a day this
+        is belt-and-braces rather than the primary defence — but it's
+        also what keeps a MANUAL re-run of the cron (e.g. from the
+        Scheduled Actions UI, for testing) from double-posting, and it
+        costs nothing to keep the guard explicit rather than relying on
+        the cron's own interval alone.
+
+        Ownerless-ECO evidence (2026-08-02): two of the ECOs found
+        rotting in prod had user_id pointing at OdooBot (base.user_root)
+        rather than a person — their Responsible was silently nobody.
+        This also flags an INACTIVE Responsible, the same failure mode
+        wearing a different hat (a real person who left / was
+        deactivated). Both are called out by name in the notice rather
+        than being treated the same as a normal, watching owner.
+        """
+        self.ensure_one()
+        sla_days = self.eco_type_id.review_sla_days or 7
+        anchor = self.date_submitted or self.create_date
+        if not anchor:
+            return False
+        age_days = (fields.Datetime.now() - anchor).total_seconds() / 86400.0
+        if age_days < sla_days:
+            return False
+        if self.escalation_posted_on == today:
+            return False
+        # Refresh the days_open snapshot for exactly the ECOs this cron
+        # touches — see that field's comment, above, for why a stored
+        # compute needs an explicit outside nudge to stay "roughly
+        # current" at all.
+        self._compute_days_open()
+        odoobot = self.env.ref("base.user_root", raise_if_not_found=False)
+        ownerless_note = ""
+        if not self.user_id:
+            ownerless_note = _(" This ECO has no Responsible set at all.")
+        elif not self.user_id.active:
+            ownerless_note = _(
+                " Its Responsible (%s) is INACTIVE — nobody is actually "
+                "watching this ECO."
+            ) % self.user_id.display_name
+        elif odoobot and self.user_id.id == odoobot.id:
+            ownerless_note = _(
+                " Its Responsible is OdooBot, not a person — this ECO "
+                "has no real owner."
+            )
+        reviewers = self.eco_type_id.reviewer_ids
+        recipients = reviewers.partner_id | self.user_id.partner_id
+        self.message_post(
+            body=_(
+                "SLA ESCALATION: open %(age).1f days, past the "
+                "%(sla)d-day review SLA for ECO Type '%(type)s'."
+                "%(ownerless)s"
+            )
+            % {
+                "age": age_days,
+                "sla": sla_days,
+                "type": self.eco_type_id.display_name,
+                "ownerless": ownerless_note,
+            },
+            partner_ids=recipients.ids,
+        )
+        # Defensive use of the lifecycle sentinel: state == 'open' here
+        # (the cron's own search domain guarantees it), so none of
+        # write()'s terminal-state guards would actually fire even
+        # without it — but every other cron-driven write in this file
+        # goes through the sentinel, and matching that pattern costs
+        # nothing and means a future guard change can't silently start
+        # blocking this one.
+        self.with_context(plm_lifecycle=PLM_LIFECYCLE).write(
+            {"escalation_posted_on": today}
+        )
+        return True
+
+    # ------------------------------------------------------------------
     # Per-kind apply handlers
     # ------------------------------------------------------------------
     def _apply_bom(self):
@@ -1798,4 +2282,57 @@ class SouthbrookEco(models.Model):
             "res_model": "ir.attachment",
             "view_mode": "kanban,list,form",
             "domain": [("id", "in", self.document_ids.ids)],
+        }
+
+
+class SouthbrookEcoRejectWizard(models.TransientModel):
+    """Tiny transient wizard that makes a rejection reason effectively
+    mandatory through the UI, while keeping southbrook.eco.action_reject
+    itself callable with reason=None from RPC/scripts (ECO workflow
+    hygiene pass, 2026-08-02).
+
+    Deliberately minimal: two fields, one button. eco_id is required so
+    the wizard can never be confirmed detached from the ECO it's meant
+    to reject; reason is required (unlike action_reject's own optional
+    parameter) so a human rejecting through this wizard cannot silently
+    skip explaining why — the exact gap the free-text rejection_reason
+    field on southbrook.eco was added to close (see that field's
+    comment there for the full rationale against a coded taxonomy).
+
+    ACCESS CONTROL NOTE: this model needs its own ir.model.access.csv
+    row. security/ is a different owner and out of scope for this file
+    — access_southbrook_eco_reject_wizard must be added separately,
+    granting perm_read/write/create=1 (unlink=0) to
+    southbrook_plm.group_southbrook_plm_approver. Until that row exists,
+    opening this wizard (action_open_reject_wizard, on southbrook.eco)
+    will raise AccessError.
+    """
+
+    _name = "southbrook.eco.reject.wizard"
+    _description = "Reject ECO (with reason)"
+
+    eco_id = fields.Many2one(
+        "southbrook.eco",
+        string="Change Order",
+        required=True,
+        readonly=True,
+    )
+    reason = fields.Text(
+        string="Reason for rejection",
+        required=True,
+        help="Written for whoever raised this change — say what would have "
+        "to be different for it to be approved. This is kept with the "
+        "change order permanently and is the only record of why it was "
+        "turned down.",
+    )
+
+    def action_confirm_reject(self):
+        self.ensure_one()
+        self.eco_id.action_reject(reason=self.reason)
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "southbrook.eco",
+            "res_id": self.eco_id.id,
+            "view_mode": "form",
+            "target": "current",
         }

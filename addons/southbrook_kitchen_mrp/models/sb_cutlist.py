@@ -128,6 +128,43 @@ class SbCutlist(models.Model):
              "from the actual Accucutt offcut data.",
     )
 
+    # 2026-08 cut-spec wiring — traceability: which ECO-governed
+    # southbrook.cut.spec (if any) drove this cutlist's geometry.
+    #
+    # Deliberately a plain Integer + Char snapshot, NOT a Many2one to
+    # southbrook.cut.spec, even though that model lives in a file this
+    # task owns (sb_cutlist.py). southbrook_kitchen_mrp does NOT depend
+    # on southbrook_plm — they are sibling addons (see this addon's own
+    # __manifest__.py: 'depends' has no southbrook_plm entry), by design,
+    # so sb.production.package._resolve_cut_spec() can run on a database
+    # that never installed PLM at all. A Many2one field's comodel is
+    # validated at field-setup time with a hard assertion
+    # (`assert self.comodel_name in model.pool`, odoo/orm/
+    # fields_relational.py) — if southbrook.cut.spec isn't registered,
+    # that assertion fails and THIS MODULE FAILS TO LOAD, for every
+    # database that has kitchen_mrp without PLM. A plain id/name capture
+    # gives real traceability (join to southbrook.cut.spec by id when
+    # PLM is present) without that hard-dependency risk, and without
+    # editing this addon's manifest (out of scope for this pass).
+    cut_spec_used_id = fields.Integer(
+        string="Cut Spec Used (ID)",
+        readonly=True,
+        copy=False,
+        help="Database id of the southbrook.cut.spec record whose "
+             "constants drove this cutlist's geometry, or 0/empty when "
+             "no ECO-governed spec was resolved (the module-default "
+             "NF14 constants were used instead — today's behaviour). "
+             "When southbrook_plm is installed, resolve the actual "
+             "record with env['southbrook.cut.spec'].browse(id).",
+    )
+    cut_spec_used_name = fields.Char(
+        string="Cut Spec Used",
+        readonly=True,
+        copy=False,
+        help="Display name of the cut spec captured at generation time "
+             "— a human-readable snapshot alongside cut_spec_used_id.",
+    )
+
     @api.depends("line_ids")
     def _compute_line_count(self):
         for r in self:
@@ -151,6 +188,7 @@ class SbCutlist(models.Model):
         cutlist,
         panel_dict: Dict[str, Any],
         drawer_count: int = 0,
+        constants: Optional[Dict[str, Any]] = None,
     ):
         """Create sb.cutlist.line records from a shared.southbrook_dims
         panel_cut_list() output dict.
@@ -169,6 +207,16 @@ class SbCutlist(models.Model):
         gap (cutlist used to stop at 6 records for drawer banks because
         shared.southbrook_dims.door() returns None for door_count==0)
         without disturbing shared.southbrook_dims (G2-locked).
+
+        constants (2026-08 cut-spec wiring): optional dict, same shape as
+        southbrook.cut.spec.constants_dict() / shared.southbrook_dims'
+        `constants` override — used ONLY for the drawer_front geometry
+        below (the other panel keys are already-computed tuples handed
+        in via panel_dict, which panel_cut_list() computed with whatever
+        constants its own caller passed it — nothing further to do for
+        those here). Falls back to the same literal reveal/thickness
+        this method has always used when a key is absent or `constants`
+        is None, so default output is unchanged.
         """
         Line = self.env["sb.cutlist.line"]
         keys_to_emit = ("side_L", "side_R", "top", "bottom", "back",
@@ -223,11 +271,19 @@ class SbCutlist(models.Model):
                 cabinet_height_mm = side[0]
                 # top tuple is (inside_width_mm, depth_mm, thickness_mm).
                 cabinet_inside_width_mm = top_panel[0]
-                # Uniform 3mm reveal between drawer faces and at top/bottom
+                # Uniform reveal between drawer faces and at top/bottom
                 # mirrors shared.southbrook_dims.DOOR_REVEAL without
                 # importing it. Each face: (cabinet_h - (N+1)*reveal) / N.
-                reveal_mm = 3.0
-                door_th_mm = 18.0
+                # 2026-08 cut-spec wiring: read from the caller's
+                # `constants` dict when supplied (same door_reveal/
+                # door_th keys southbrook.cut.spec.constants_dict() /
+                # shared.southbrook_dims use), falling back to these
+                # same literals — the historical hardcode — so default
+                # output is byte-identical when constants is None or
+                # omits a key.
+                c = constants or {}
+                reveal_mm = c.get("door_reveal", 3.0)
+                door_th_mm = c.get("door_th", 18.0)
                 face_height_mm = (
                     cabinet_height_mm - (drawer_count + 1) * reveal_mm
                 ) / drawer_count

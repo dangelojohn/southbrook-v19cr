@@ -23,4 +23,32 @@
         <field name="active" eval="True"/>
     </record>
 
+    <!-- ECO workflow hygiene (2026-08-02). Before this pass, prod had
+         ECOs sitting in Draft for 61 days and in Under Review for 61
+         days with ZERO scheduled activities and nobody notified — the
+         pipeline had no heartbeat at all. This cron is that heartbeat's
+         escalation half: it finds OPEN, unapproved ECOs that have aged
+         past their ECO type's review_sla_days (anchored on
+         southbrook.eco.date_submitted, falling back to create_date) and
+         posts an idempotent (once-per-calendar-day, via
+         escalation_posted_on) chatter escalation naming how overdue
+         they are — and, per the prod evidence, calling out an inactive
+         or OdooBot (base.user_root) Responsible by name, since those
+         are the ECOs that silently rot with nobody watching. See
+         southbrook.eco._cron_escalate_stale_ecos' docstring in
+         models/southbrook_eco.py for the full mechanics.
+
+         Odoo 19 ir.cron schema note (same as above): numbercall / doall
+         are GONE from this model in v19 — do not add them back (see
+         odoo19_ir_cron_schema_change.md). -->
+    <record id="ir_cron_escalate_stale_ecos" model="ir.cron">
+        <field name="name">PLM: Escalate stale ECOs</field>
+        <field name="model_id" ref="model_southbrook_eco"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_escalate_stale_ecos()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="True"/>
+    </record>
+
 </odoo>
