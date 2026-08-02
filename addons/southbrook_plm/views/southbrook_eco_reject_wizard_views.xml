@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Reject wizard. Rejecting is terminal — action_reject refuses to
+         un-reject and refuses to touch an already-applied ECO — so the
+         person raising the change gets exactly one explanation, and it
+         has to carry. Hence a required reason rather than a bare
+         confirm dialog: before this wizard existed, prod had ECOs
+         rejected twice with no recorded reason at all.
+
+         Deliberately no coded reason list: mature change-control
+         practice (Arena / Windchill / CM2) records rejection as a
+         written decision, not an enum. See rejection_reason's field
+         comment on southbrook.eco. -->
+    <record id="view_eco_reject_wizard_form" model="ir.ui.view">
+        <field name="name">southbrook.eco.reject.wizard.form</field>
+        <field name="model">southbrook.eco.reject.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Reject Change Order">
+                <field name="eco_id" invisible="1"/>
+                <div class="alert alert-warning" role="alert">
+                    <p class="mb-0">Rejecting closes this change order for good. It can't be un-rejected — reviving it means resetting it to draft, which is recorded too. If the change is right but the timing is wrong, schedule it instead of rejecting it.</p>
+                </div>
+                <group>
+                    <field name="reason" nolabel="1"
+                           placeholder="What would have to be different for this to be approved?"/>
+                </group>
+                <footer>
+                    <button name="action_confirm_reject" type="object"
+                            string="Reject Change Order" class="btn-danger"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

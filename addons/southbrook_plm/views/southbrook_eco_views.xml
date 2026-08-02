@@ -100,7 +100,10 @@
                             confirm="Apply this ECO? This commits the change (BoM version bump or cut-spec activation) and cannot be auto-reverted."/>
                     <button name="action_advance" type="object" string="Next Stage"
                             invisible="state != 'open'"/>
-                    <button name="action_reject" type="object" string="Reject"
+                    <!-- Routes through the wizard so a reason is always
+                         recorded; action_reject itself keeps reason optional
+                         for RPC/script callers. -->
+                    <button name="action_open_reject_wizard" type="object" string="Reject"
                             invisible="state != 'open'"
                             groups="southbrook_plm.group_southbrook_plm_approver"/>
                     <button name="action_reset_draft" type="object" string="Reset to Draft"

@@ -7,3 +7,4 @@ access_eco_stage_user,southbrook.eco.stage user,model_southbrook_eco_stage,group
 access_eco_stage_approver,southbrook.eco.stage approver,model_southbrook_eco_stage,group_southbrook_plm_approver,1,1,1,1
 access_cut_spec_user,southbrook.cut.spec user,model_southbrook_cut_spec,group_southbrook_plm_user,1,0,0,0
 access_cut_spec_approver,southbrook.cut.spec approver,model_southbrook_cut_spec,group_southbrook_plm_approver,1,1,1,1
+access_eco_reject_wizard_approver,southbrook.eco.reject.wizard approver,model_southbrook_eco_reject_wizard,group_southbrook_plm_approver,1,1,1,0

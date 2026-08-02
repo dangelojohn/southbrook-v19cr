@@ -106,6 +106,70 @@ class SbProductionPackage(models.Model):
         return super().create(vals_list)
 
     # ------------------------------------------------------------------
+    # ECO-governed cut-spec resolution (2026-08 wiring)
+    # ------------------------------------------------------------------
+    @api.model
+    def _resolve_cut_spec(self, order_line=None, mo=None):
+        """Resolve the ECO-governed southbrook.cut.spec that should drive
+        this production package's geometry, or a falsy value when none
+        applies (callers then fall back to shared.southbrook_dims' own
+        module constants — today's exact behaviour).
+
+        Resolution order (most authoritative first):
+          1. ``order_line.southbrook_cut_spec_version_id`` — the as-sold
+             pin snapshotted at sale.order.action_confirm (by
+             southbrook_plm). This is the authoritative answer whenever
+             it is set: manufacturing must cut to whatever spec was live
+             when the customer's order was actually confirmed, never to
+             whatever happens to be active today.
+          2. ``order_line`` present but unpinned (a legacy line confirmed
+             before the pinning feature shipped) — reconstruct what WAS
+             active at confirm time via
+             ``southbrook.cut.spec._get_spec_active_at()``, keyed on the
+             order's ``date_order`` (falling back to the line's
+             ``create_date`` if the order has none).
+          3. No ``order_line``, but an ``mo`` that traces back to one via
+             ``mo.sale_line_id`` — ONLY when that field actually exists
+             on mrp.production in this database (it is contributed by
+             the optional ``sale_mrp`` module, not a guaranteed field) —
+             recurse into (1)/(2) against that line.
+          4. Nothing resolvable — falsy.
+
+        Guarded to a no-op when southbrook_plm isn't installed:
+        southbrook_kitchen_mrp deliberately does NOT depend on
+        southbrook_plm (they are sibling addons — see this addon's own
+        __manifest__.py), so the southbrook.cut.spec model may simply
+        not be registered in this database. ``self.env.get(...)``
+        returns None for an unregistered model instead of raising
+        KeyError, which is what lets this method be called
+        unconditionally regardless of which addons happen to be
+        installed.
+
+        Returned recordsets are sudo()'d — cut specs are PLM-engineer
+        data (read restricted to PLM User/Approver), and this method is
+        reached from flows driven by all sorts of users (portal
+        customers via the configurator, cron, sales reps), mirroring the
+        same sudo rationale southbrook_plm's own _get_cut_constants
+        override documents.
+        """
+        CutSpec = self.env.get("southbrook.cut.spec")
+        if CutSpec is None:
+            return False
+
+        if order_line:
+            pinned = getattr(order_line, "southbrook_cut_spec_version_id", False)
+            if pinned:
+                return pinned.sudo()
+            order = order_line.order_id
+            when = (order.date_order if order else False) or order_line.create_date
+            return CutSpec.sudo()._get_spec_active_at(when)
+
+        if mo and "sale_line_id" in mo._fields and mo.sale_line_id:
+            return self._resolve_cut_spec(order_line=mo.sale_line_id)
+
+        return False
+
+    # ------------------------------------------------------------------
     # Orchestration: an MO -> a complete cutlist + hardware package
     # ------------------------------------------------------------------
     @api.model
@@ -120,6 +184,7 @@ class SbProductionPackage(models.Model):
         drawer_count: int = 0,
         soft_close: bool = True,
         slide_sku: Optional[str] = None,
+        cut_spec=None,
     ):
         """Build (or rebuild) the complete production package for an MO.
 
@@ -135,10 +200,23 @@ class SbProductionPackage(models.Model):
         Hardware comes from southbrook.hardware.catalog.resolve — same
         path the bridge will use post-render.
 
+        :param cut_spec: optional, explicit southbrook.cut.spec
+            recordset. When omitted (None — the default, and every
+            pre-existing call site), it is resolved from ``mo`` via
+            ``_resolve_cut_spec(mo=mo)``. Pass an empty/falsy recordset
+            explicitly to force module-default constants even if ``mo``
+            could otherwise resolve one. When resolution (explicit or
+            automatic) yields nothing, geometry is generated exactly as
+            before this parameter existed.
+
         Returns the production-package record.
         """
         if not mo:
             raise UserError(_("generate_from_mo requires an mrp.production record."))
+
+        if cut_spec is None:
+            cut_spec = self._resolve_cut_spec(mo=mo)
+        constants = cut_spec.constants_dict() if cut_spec else None
 
         # Idempotency — replace any existing package on this MO.
         # Deletion order matters: production package holds m2o references
@@ -159,16 +237,29 @@ class SbProductionPackage(models.Model):
         Catalog = self.env["southbrook.hardware.catalog"]
 
         # 1. Geometry — call shared.southbrook_dims and emit cutlist lines.
+        # `constants` (resolved above from cut_spec, or None) threads the
+        # ECO-governed cut spec into the SAME formulas the FreeCAD bridge
+        # renders from. None reproduces today's module-default output
+        # exactly — see shared/southbrook_dims.py's module docstring.
         panel_dict = panel_cut_list(
             width_mm, height_mm, depth_mm,
             family=cabinet_family, door_count=door_count,
+            constants=constants,
         )
         cutlist = Cutlist.create({"mo_id": mo.id})
+        if cut_spec:
+            # Traceability snapshot — see the field help on sb.cutlist
+            # for why this is a plain id/name pair, not a Many2one.
+            cutlist.write({
+                "cut_spec_used_id": cut_spec.id,
+                "cut_spec_used_name": cut_spec.display_name,
+            })
         # R3 PR #31 — pass drawer_count so the generator emits a drawer_front
         # cutlist line for drawer banks (closes the 6-vs-7-row gap that
         # test_p1_auto_emit_cutlist + test_build_from_order_line surfaced).
         Cutlist.generate_lines_from_panel_dict(
             cutlist, panel_dict, drawer_count=drawer_count or 0,
+            constants=constants,
         )
 
         # 2. Hardware — resolve picks and build the package. P2 threads
@@ -254,6 +345,12 @@ class SbProductionPackage(models.Model):
             return same_mo
 
         dims = self._resolve_dims_from_order_line(order_line)
+        # Resolve the cut spec from the order line itself (the as-sold
+        # pin, or a reconstruction of what was active at confirm time —
+        # see _resolve_cut_spec) rather than letting generate_from_mo
+        # re-derive it from the MO. The line is the authoritative source
+        # of truth for what the customer actually bought.
+        cut_spec = self._resolve_cut_spec(order_line=order_line)
         package = self.generate_from_mo(
             mo,
             width_mm=dims["width_mm"],
@@ -264,6 +361,7 @@ class SbProductionPackage(models.Model):
             drawer_count=dims["drawer_count"],
             soft_close=dims["soft_close"],
             slide_sku=dims.get("slide_sku"),
+            cut_spec=cut_spec,
         )
         package.sale_order_line_id = order_line.id
         _logger.info(

@@ -75,13 +75,27 @@ class MrpBom(models.Model):
     # silently dropped the method.
     # ------------------------------------------------------------------
     @api.model
-    def _get_cut_constants(self):
+    def _get_cut_constants(self, cut_spec=None):
         """Return the geometric constants used by panel-dimension math.
 
         Keys match the NF14 baseline + the southbrook.cut.spec model's
         constants_dict() output. Floats throughout (mm units except the
         last shelf gap pair which are already in mm).
+
+        :param cut_spec: optional recordset exposing ``constants_dict()``
+            (a southbrook.cut.spec record, typically). When truthy, its
+            values are used directly and NOTHING else in this method
+            runs — southbrook_estimating does not depend on
+            southbrook_plm and never looks the model up itself; a caller
+            that already resolved a specific (e.g. ECO-pinned) spec just
+            hands it over here via duck typing. When falsy (the
+            default), behaviour is completely unchanged: the NF14
+            module-constant baseline below, or — when southbrook_plm is
+            installed — its override of this same seam substitutes the
+            active spec instead.
         """
+        if cut_spec:
+            return cut_spec.constants_dict()
         return {
             "box_th": BOX_TH,
             "back_th": BACK_TH,
@@ -201,6 +215,7 @@ class MrpBom(models.Model):
         door_count=1,
         drawer_count=0,
         finished_sides="none",
+        cut_spec=None,
     ):
         """Return the panel cut list + hardware counts for a parametric cabinet.
 
@@ -213,6 +228,9 @@ class MrpBom(models.Model):
             drawer_count: 0 or N. Used for drawer_bank family.
             finished_sides: 'none' | 'left' | 'right' | 'both'. Drives
                 edge-banding length.
+            cut_spec: optional — forwarded verbatim to
+                ``_get_cut_constants(cut_spec=cut_spec)`` (see that
+                method). Falsy/omitted reproduces today's exact output.
 
         Returns:
             A dict with panel tuples and counts:
@@ -229,7 +247,7 @@ class MrpBom(models.Model):
         # DOOR_REVEAL 3.0 -> 5.0) leave the panel dimensions stuck at
         # the module-level defaults. The seam is contractual per
         # [[southbrook_plm_deploy]]; this resolves the test gap.
-        c = self._get_cut_constants()
+        c = self._get_cut_constants(cut_spec=cut_spec)
         box_th = c["box_th"]
         back_th = c["back_th"]
         rabbet = c["rabbet"]
@@ -295,7 +313,7 @@ class MrpBom(models.Model):
 
         # ---- Edge banding — Phase-1 scalar (Phase-4 per-edge).
         edge_banding_length_mm = self._compute_edge_banding_length(
-            width_mm, height_mm, depth_mm, finished_sides
+            width_mm, height_mm, depth_mm, finished_sides, cut_spec=cut_spec
         )
 
         return {
@@ -317,7 +335,7 @@ class MrpBom(models.Model):
 
     @api.model
     def _compute_edge_banding_length(
-        self, width_mm, height_mm, depth_mm, finished_sides
+        self, width_mm, height_mm, depth_mm, finished_sides, cut_spec=None
     ):
         """Phase-1 scalar edge-banding length per NF14.
 
@@ -328,7 +346,18 @@ class MrpBom(models.Model):
           - Bottom panel front edge (always visible)
 
         Per-edge mapping is deferred to Phase 4 (Accucutt nest spec).
+
+        Bug fixed here (same pass that added ``cut_spec``): this method
+        used to read the module-level ``BOX_TH`` constant directly
+        instead of going through the ``_get_cut_constants()`` seam like
+        every other panel formula in ``_compute_panel_dimensions`` above
+        — so an ECO-applied cut spec changed every panel dimension
+        EXCEPT the edge-banding scalar, which silently stayed pinned to
+        the code default. Routing through the seam (with the same
+        ``cut_spec`` forwarding semantics: falsy/omitted -> unchanged
+        output) closes that gap.
         """
+        box_th = self._get_cut_constants(cut_spec=cut_spec)["box_th"]
         bands = 0
 
         # Side-panel perimeter banding for finished sides.
@@ -339,7 +368,7 @@ class MrpBom(models.Model):
             bands += side_perim
 
         # Top + bottom front edges — always visible, always banded.
-        inside_width = width_mm - 2 * BOX_TH
+        inside_width = width_mm - 2 * box_th
         bands += 2 * inside_width
 
         return int(bands)

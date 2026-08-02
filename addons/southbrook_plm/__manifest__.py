@@ -45,7 +45,7 @@ runtime-BoM versioning, and commercial/pricing change control.
 This is custom routine #8 in the SAMI register; see PUNCHLIST for the
 boundary-rule justification.
 """,
-    "version": "19.0.5.0.0",
+    "version": "19.0.6.0.0",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "website": "https://southbrookcabinetry.space",
@@ -65,6 +65,7 @@ boundary-rule justification.
         "views/southbrook_cut_spec_views.xml",
         "views/southbrook_eco_type_views.xml",
         "views/southbrook_eco_views.xml",
+        "views/southbrook_eco_reject_wizard_views.xml",
         "views/mrp_bom_views.xml",
         # Step 4 — sale.order.line → ECO bridge button on the order
         # builder's order_line list.
