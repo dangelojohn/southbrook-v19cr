@@ -19,18 +19,22 @@ PLAN #NN") overlapped web.external_layout's company header (logo,
 address, VAT) on every page. The title strip was never mispositioned —
 it's a plain in-flow <table>, same as southbrook_estimating's
 signature_spec_sheet.xml title strip under the same web.external_layout.
-The real cause is wkhtmltopdf's header/body box math: the dedicated
-paperformat's margin_top(20) + header_spacing(16) = 36mm of clearance
-was too little for this company's real (multi-line) header content,
-so the header overflowed its reserved band and printed on top of the
-title table, which starts at exactly that clearance from the page top.
-signature_spec_sheet.xml renders the IDENTICAL company header at
-margin_top(28) + header_spacing(16) = 44mm with no reported collision,
-so the fix matches that proven-safe number rather than guessing a new
-one (see reports/kitchen_plan_report.xml's paperformat comment).
-test_04/05 pin the structural + config side of that fix; test_06 is
-the real end-to-end smoke: an actual wkhtmltopdf PDF render (skipped
-cleanly if the binary isn't available in the harness).
+The real cause is wkhtmltopdf's header/body box math: the company
+header renders into the page's reserved top-margin band and is NOT
+clipped to it, so real (multi-line) header content taller than that
+band overflows downward. Empirically verified on this stack's actual
+wkhtmltopdf 0.12.6.1 (varying header_spacing at fixed margin_top, then
+margin_top alone): margin_top ALONE controls where body content (our
+title table) starts — header_spacing has no effect on that position on
+this binary. At margin_top=20 the header overflowed past that band and
+printed on top of the title. signature_spec_sheet.xml renders the
+IDENTICAL company header at margin_top=28 with no reported collision,
+so the fix matches that proven-safe margin_top rather than guessing a
+new one (see reports/kitchen_plan_report.xml's paperformat comment).
+test_04/05 pin the structural + config side of that fix; test_06/07
+render actual PDFs via wkhtmltopdf to check the render isn't degraded
+and doesn't regress the page count (both skip cleanly if the binary
+isn't available in the harness).
 """
 import re
 from unittest.mock import patch
@@ -200,7 +204,7 @@ class TestKitchenPlanReport(TransactionCase):
         flow into the header band — no `position: absolute`/`fixed` and
         no negative top margin anywhere in the rendered page body. This
         was already true before the Task 37 fix (the real cause was the
-        paperformat's clearance, not the title's own positioning — see
+        paperformat's margin_top, not the title's own positioning — see
         test_05), but pinning it here means a future edit that DOES try
         to "fix" this by absolutely-positioning the title will fail
         loudly instead of silently reintroducing the collision."""
@@ -218,40 +222,52 @@ class TestKitchenPlanReport(TransactionCase):
             "title/page markup must stay in normal flow — no "
             "position:absolute/fixed or negative top margin")
 
-    def test_05_paperformat_gives_the_company_header_clearance(self):
-        """Regression pin for the actual fix: the dedicated paperformat's
-        margin_top + header_spacing (the vertical clearance wkhtmltopdf
-        gives the company header before body content — our title table
-        — starts printing) must be at least as generous as
-        southbrook_estimating's signature_spec_sheet.xml paperformat,
-        which renders the SAME company header (same web.external_layout,
-        no override) with no reported collision. Matching-or-exceeding
-        that proven-safe number is the fix; regressing below it
-        reintroduces the header/title overlap on this company's real
-        (multi-line) header content."""
+    def test_05_paperformat_margin_top_gives_the_company_header_clearance(self):
+        """Regression pin for the actual fix. Review fast-follow (Task 37,
+        fix round 1) — the reviewer empirically tested this stack's real
+        wkhtmltopdf 0.12.6.1 binary (varying header_spacing 0/30/100 at a
+        fixed margin_top, then varying margin_top alone) and confirmed
+        body-content start position is controlled by margin_top ALONE;
+        header_spacing has no effect on it. An earlier version of this
+        test asserted on margin_top + header_spacing's SUM, which a
+        future edit could satisfy by dropping margin_top back to 20 and
+        raising header_spacing to compensate — passing the test while
+        silently reintroducing the real overlap. This asserts on
+        margin_top alone, which is the only field the fix actually
+        depends on.
+
+        The bound: margin_top must be >= southbrook_estimating's
+        signature_spec_sheet.xml paperformat's margin_top (28), which
+        renders the SAME company header (same web.external_layout, no
+        override) with no reported collision — proof margin_top=28 is
+        sufficient clearance for this company's actual header content.
+        Regressing below it reintroduces the header/title overlap."""
         report = self.env.ref(
             "southbrook_kitchen_3d_configurator.action_report_kitchen_plan")
         pf = report.paperformat_id
         self.assertTrue(pf, "action_report_kitchen_plan must carry a "
                              "dedicated paperformat")
-        clearance = (pf.margin_top or 0) + (pf.header_spacing or 0)
 
         sibling_pf = self.env.ref(
             "southbrook_estimating.paperformat_southbrook_invoice_a4")
-        sibling_clearance = (
-            (sibling_pf.margin_top or 0) + (sibling_pf.header_spacing or 0))
 
         self.assertGreaterEqual(
-            clearance, sibling_clearance,
-            "plan report's header clearance (%.0fmm) must be >= the "
-            "proven-safe sibling report's clearance (%.0fmm) — they "
-            "render the identical company header" % (
-                clearance, sibling_clearance))
+            pf.margin_top or 0, sibling_pf.margin_top or 0,
+            "plan report's margin_top (%.0fmm) must be >= the "
+            "proven-safe sibling report's margin_top (%.0fmm) — they "
+            "render the identical company header, and margin_top alone "
+            "(not header_spacing) controls where body content starts "
+            "on this stack's wkhtmltopdf" % (
+                pf.margin_top or 0, sibling_pf.margin_top or 0))
 
     def test_06_pdf_smoke_renders_a_real_pdf(self):
-        """The real, end-to-end verification: bake an actual PDF via
-        wkhtmltopdf (not the HTML-only `_render_qweb_html` path the
-        other tests here use) and assert it's a real, non-trivial PDF.
+        """Bakes an actual PDF via wkhtmltopdf (not the HTML-only
+        `_render_qweb_html` path the other tests here use) and asserts
+        it's a real, non-degraded, reasonably-sized PDF — NOT a visual
+        check that the header/title collision is gone (this harness has
+        no live HTTP listener, so wkhtmltopdf's own header/footer asset
+        fetch fails and the company header sub-render comes out blank —
+        confirmed via a throwaway probe render; see the task report).
         `--test-enable` normally makes `_render_qweb_pdf` silently fall
         back to HTML (see `_pre_render_qweb_pdf`) — `force_report_
         rendering=True` overrides that, matching what a live Print
@@ -288,3 +304,85 @@ class TestKitchenPlanReport(TransactionCase):
             "plan PDF for an L-10X8 design should be over 20KB (inline "
             "SVG floor plan + cabinet schedule); a near-empty PDF "
             "suggests the render silently failed/degraded")
+
+    def test_07_pdf_page_count_stays_within_bound_for_a_fifteen_line_design(
+            self):
+        """Review fast-follow (Task 37, fix round 1) — the paperformat's
+        own pre-existing comment says its tight margins exist so "the
+        schedule table doesn't get crowded off a second page for a
+        typical 8-15 line design"; the Task 37 fix spends 8mm/page of
+        that margin_top budget (20 -> 28) raising the header collision
+        fix. This measures whether that 8mm actually pushes a realistic
+        15-line design onto more pages than before.
+
+        Measured on this exact CI recipe (ci_t37) at margin_top=28: a
+        15-line design (the 11 real L-10X8 lines + 4 synthetic clones of
+        its first line, same product) renders to a SINGLE page. The
+        bound below (<=2) is not the measured value with no headroom at
+        all — it allows exactly one extra page beyond what was measured,
+        so a genuine future regression (e.g. a much taller header, or a
+        much longer schedule) still fails loud instead of the test being
+        a tautology that can never fail.
+
+        Uses `/Type /Page` (not `/Type /Pages`, the one Kids-array
+        node every PDF has) as a raw byte count of page objects — no
+        PDF library needed, same style of check as the %PDF-magic smoke
+        test above."""
+        IrActionsReport = self.env["ir.actions.report"]
+        state = IrActionsReport.get_wkhtmltopdf_state()
+        if state != "ok":
+            self.skipTest(
+                "wkhtmltopdf not usable in this harness (state=%r)" % state)
+
+        Line = self.env["southbrook.kitchen.design.line"]
+        existing_lines = self.design.cabinet_line_ids
+        target_total = 15
+        template_line = existing_lines[0]
+        for i in range(max(0, target_total - len(existing_lines))):
+            Line.create({
+                "design_id": self.design.id,
+                "product_id": template_line.product_id.id,
+                "quantity": 1,
+                "price_unit": template_line.price_unit,
+                "cabinet_type": "base",
+                "zone": "base_run",
+                "wall": "back",
+                "width_in": 12.0, "height_in": 34.5, "depth_in": 24.0,
+                # Parked far outside the room on purpose: the report
+                # only lists/draws cabinet_line_ids, it never validates
+                # placement (that's `_check_production_ready`, a
+                # different, unrelated code path), so realistic
+                # positions aren't needed to test page count.
+                "x_position_in": 2000.0 + i * 20.0, "z_position_in": 0.0,
+                "rotation_deg": 0, "run_seq": 900 + i,
+                "origin": "configurator",
+                "layout_key": "t37-pagecount-%d" % i,
+            })
+        self.design.invalidate_recordset(["cabinet_line_ids"])
+        line_count = len(self.design.cabinet_line_ids)
+        self.assertGreaterEqual(
+            line_count, target_total,
+            "fixture setup must actually reach >= 15 lines")
+
+        report = self.env.ref(
+            "southbrook_kitchen_3d_configurator.action_report_kitchen_plan")
+        pdf_content, content_type = report.with_context(
+            force_report_rendering=True,
+        )._render_qweb_pdf(
+            "southbrook_kitchen_3d_configurator.action_report_kitchen_plan",
+            self.design.ids,
+        )
+        self.assertEqual(content_type, "pdf")
+
+        page_count = len(re.findall(rb"/Type\s*/Page(?!s)", pdf_content))
+        self.assertGreaterEqual(
+            page_count, 1, "must find at least one page object in the PDF")
+        self.assertLessEqual(
+            page_count, 2,
+            "a %d-line design produced %d pages — measured 1 page at "
+            "margin_top=28 on this CI recipe; if this design now spills "
+            "further than that, the margin_top budget spent on the "
+            "header-collision fix is pushing real designs onto more "
+            "pages and the fix needs a rethink (e.g. a smaller header "
+            "font, or clipping/reflowing the company header itself) "
+            "rather than a loosened bound here" % (line_count, page_count))

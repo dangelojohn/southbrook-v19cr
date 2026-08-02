@@ -151,22 +151,26 @@
        top-margin band and is NOT clipped to it — if the company's real
        address block (name, street, phone, email, website, VAT — several
        lines) is taller than margin_top, it overflows downward past its
-       box. header_spacing only buys extra clearance if
-       margin_top + header_spacing exceeds that overflow; body content
-       (our title table) starts exactly at margin_top + header_spacing
-       from the top of the page. At margin_top=20/header_spacing=16 the
-       clearance (36mm) was too tight for this company's real header
-       content, so the title table's first line landed on top of the
-       tail of the company address block on every page (the header
-       repeats per page, hence "both pages").
+       box and prints on top of whatever starts right after.
+
+       Empirically verified on this stack's actual wkhtmltopdf 0.12.6.1
+       (varying header_spacing at fixed margin_top, then margin_top alone,
+       and observing where body content starts): margin_top ALONE
+       controls where body content (our title table) starts on the page.
+       header_spacing has NO effect on that position on this binary — an
+       earlier draft of this comment claimed the two summed to the
+       clearance; that was wrong and has been corrected. At margin_top=20
+       the company's real header content overflowed past that 20mm band
+       and printed on top of the title table's first line on every page
+       (the header repeats per page, hence "both pages").
 
        signature_spec_sheet.xml renders the IDENTICAL company header
-       (same web.external_layout, no override) at margin_top=28/
-       header_spacing=16 (44mm clearance) with no reported collision —
-       proof this clearance is sufficient for this company's actual
-       header content, since it's the same header on the same company
-       record. Matching that number here (rather than guessing a new
-       one) is the fix. -->
+       (same web.external_layout, no override) at margin_top=28 with no
+       reported collision — proof margin_top=28 is sufficient clearance
+       for this company's actual header content, since it's the same
+       header on the same company record. Matching that margin_top here
+       (rather than guessing a new one) is the fix; header_spacing is left
+       at its prior value since it doesn't bear on this at all. -->
   <record id="paperformat_southbrook_kitchen_plan" model="report.paperformat">
     <field name="name">Southbrook Kitchen Plan A4</field>
     <field name="format">A4</field>
