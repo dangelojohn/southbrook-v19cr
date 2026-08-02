@@ -129,6 +129,63 @@ test("thumbFamily: sku is read when default_code is absent (the /products payloa
     assert.equal(thumbFamily({ cabinet_type: "corner", sku: "SB-CORNER-BLIND-42" }), "cornerBlind");
 });
 
+// ─── thumbFamily: explicit southbrook_thumb_family field precedence ───────
+// Debt fix (2026-08-02) — product.template.southbrook_thumb_family, read
+// here as product.thumb_family (the /products payload's field name for
+// it — see controllers/main.py's _product_payload). Explicit wins
+// outright over cabinet_type + SKU + name; unset falls back UNCHANGED.
+
+const ALL_FAMILIES = [
+    "base1", "base2", "drawer", "sink", "vanity", "wall", "tall", "panel",
+    "cornerL", "cornerBlind", "cornerDiag",
+];
+
+test("thumbFamily: explicit thumb_family wins outright over cabinet_type/code/name, for all 11 values", () => {
+    for (const family of ALL_FAMILIES) {
+        // Every other signal deliberately disagrees with `family`.
+        const product = {
+            thumb_family: family,
+            cabinet_type: "wall",
+            default_code: "SB-CORNER-BLIND-99",
+            name: "Diagonal Corner Cabinet 99",
+        };
+        assert.equal(
+            thumbFamily(product), family,
+            `explicit thumb_family=${family} must win regardless of conflicting cabinet_type/code/name`,
+        );
+    }
+});
+
+test("thumbFamily: explicit thumb_family also wins when cabinet_type/code/name are entirely absent", () => {
+    for (const family of ALL_FAMILIES) {
+        assert.equal(thumbFamily({ thumb_family: family }), family);
+    }
+});
+
+test("thumbFamily: unset thumb_family (false/null/undefined/empty string/absent key) falls back to inference, unchanged", () => {
+    const base = { cabinet_type: "corner", default_code: "SB-CORNER-BLIND-42", name: "Diagonal Corner Unit 42" };
+    assert.equal(thumbFamily(base), "cornerBlind", "no thumb_family key at all");
+    assert.equal(thumbFamily({ ...base, thumb_family: false }), "cornerBlind");
+    assert.equal(thumbFamily({ ...base, thumb_family: null }), "cornerBlind");
+    assert.equal(thumbFamily({ ...base, thumb_family: undefined }), "cornerBlind");
+    assert.equal(thumbFamily({ ...base, thumb_family: "" }), "cornerBlind");
+});
+
+test("thumbFamily: an unrecognised thumb_family value is ignored, never thrown, falls back to inference", () => {
+    const base = { cabinet_type: "wall", name: "Wall Cabinet 24" };
+    assert.equal(thumbFamily({ ...base, thumb_family: "bogus-value" }), "wall");
+    assert.equal(thumbFamily({ ...base, thumb_family: "CORNERL" }), "wall",
+        "vocabulary is case-sensitive — a near-miss is still an unrecognised value, not a silent coercion");
+});
+
+test("cabinetThumbSVG: every explicit thumb_family value renders a well-formed SVG carrying that family's own aria-label", () => {
+    for (const family of ALL_FAMILIES) {
+        const svg = cabinetThumbSVG({ thumb_family: family, cabinet_type: "base", width_in: 24 }, 46);
+        assert.ok(isWellFormed(svg), `${family}: not well-formed via explicit override:\n${svg}`);
+        assert.equal(thumbFamily({ thumb_family: family }), family);
+    }
+});
+
 // ─── thumbFamily: name-keyword fallback ────────────────────────────────────
 
 test("thumbFamily: corner name fallback works when no code is present", () => {

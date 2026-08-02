@@ -16,6 +16,13 @@
                             <field name="southbrook_cabinet_type"
                                    invisible="not southbrook_is_cabinet"
                                    required="southbrook_is_cabinet"/>
+                            <!-- Debt fix (2026-08-02) — explicit icon/3D-shape
+                                 override. Optional (blank = infer from code/
+                                 name, unchanged default behaviour); see
+                                 southbrook_thumb_family's help text and
+                                 cabinet_thumb.esm.js's thumbFamily(). -->
+                            <field name="southbrook_thumb_family"
+                                   invisible="not southbrook_is_cabinet"/>
                             <field name="southbrook_material"
                                    invisible="not southbrook_is_cabinet"/>
                             <field name="southbrook_door_style"

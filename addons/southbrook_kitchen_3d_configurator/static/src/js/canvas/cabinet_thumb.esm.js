@@ -19,20 +19,31 @@
  * on purpose: the icon must never be able to disagree with what the mesh
  * builders (`base_cabinet.esm.js` / `wall_cabinet.esm.js` /
  * `corner_cabinet.esm.js` / `other_cabinets.esm.js`) actually place, and
- * the only way to guarantee that is a single seam. It prefers the same
- * explicit fields those builders already trust — `cabinet_type` (the
- * `base/wall/tall/corner/panel/filler` bucket every design line carries,
- * see `kitchen_canvas.esm.js`) and, for the corner subfamily, the SKU/
- * `default_code` prefix (`cornerStyleFromCode` in `corner_cabinet.esm.js`
- * is the prior art for BLIND / WALL-CORNER / plain-SB-CORNER prefixes;
- * this mirrors that reasoning, extended with DIAG/LSUSAN as synonyms for
- * the diagonal/Lazy-Susan style). Name-keyword matching is a FALLBACK
- * ONLY, used when the explicit fields don't resolve it — the reviewer's
- * own caveat stands: keying off free-text product names is fragile, and
- * the honest fix is explicit footprint-type fields on the product record
- * that drive both the 3D mesh and this icon from the same source, so
- * they can never disagree. Until that field exists, this function is the
- * single place to update.
+ * the only way to guarantee that is a single seam.
+ *
+ * Debt fix (2026-08-02) — `product.template` now carries an explicit
+ * `southbrook_thumb_family` Selection field (the honest fix this
+ * comment used to call for: "explicit footprint-type fields on the
+ * product record that drive both the 3D mesh and this icon from the
+ * same source"). PRECEDENCE: `product.thumb_family` — a value from the
+ * SAME fixed 11-value vocabulary as this function's return type — wins
+ * outright, over everything below. Everything below it is unchanged and
+ * is now purely the FALLBACK for when that field is unset (the default
+ * for every product until someone opts in), so existing catalog
+ * behaviour never changes on its own.
+ *
+ * Fallback order once there's no explicit field value: it prefers the
+ * same explicit fields the mesh builders already trust — `cabinet_type`
+ * (the `base/wall/tall/corner/panel/filler` bucket every design line
+ * carries, see `kitchen_canvas.esm.js`) and, for the corner subfamily,
+ * the SKU/`default_code` prefix (`cornerStyleFromCode` in
+ * `corner_cabinet.esm.js` is the prior art for BLIND / WALL-CORNER /
+ * plain-SB-CORNER prefixes; this mirrors that reasoning, extended with
+ * DIAG/LSUSAN as synonyms for the diagonal/Lazy-Susan style).
+ * Name-keyword matching is a FALLBACK OF THE FALLBACK, used only when
+ * neither the explicit field nor cabinet_type/SKU resolve it — keying
+ * off free-text product names is fragile, which is exactly why the
+ * explicit field above exists now.
  */
 
 // ─── Fixed geometry constants (model units, not inches) ────────────────────
@@ -78,16 +89,27 @@ const FAMILY_LABEL = {
 
 /**
  * Infer the thumbnail family for a catalog product record. See the
- * module doc comment — this is the single seam name-keying is meant to
- * be replaced at once explicit geometry/footprint fields exist.
+ * module doc comment — `product.thumb_family` (backed by
+ * `southbrook_thumb_family` on product.template) wins outright when
+ * it's a recognised family value; everything else here is the
+ * unchanged fallback for when it's unset.
  *
- * @param {object} product — a catalog row; only `cabinet_type`,
- *   `default_code`/`sku`, and `name` are read.
+ * @param {object} product — a catalog row; `thumb_family`,
+ *   `cabinet_type`, `default_code`/`sku`, and `name` are read.
  * @returns {"base1"|"base2"|"drawer"|"sink"|"vanity"|"wall"|"tall"|
  *   "panel"|"cornerL"|"cornerBlind"|"cornerDiag"}
  */
 export function thumbFamily(product) {
     const p = product || {};
+    // Explicit field wins outright — see the module doc comment. Only a
+    // value from the fixed FAMILY_LABEL vocabulary is honoured; unset
+    // (false/null/undefined/"") or any unrecognised string is treated as
+    // "no override" and falls straight through to the inference below,
+    // unchanged.
+    if (Object.prototype.hasOwnProperty.call(FAMILY_LABEL, p.thumb_family)) {
+        return p.thumb_family;
+    }
+
     const type = String(p.cabinet_type || "base").toLowerCase();
     // Same fallback order `corner_cabinet.esm.js`'s `cornerStyleFromCode`
     // already uses: default_code first, sku (the /products payload's

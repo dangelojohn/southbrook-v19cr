@@ -61,9 +61,12 @@ export class CabinetThumbField extends Component {
     // ONLY the family-inference keyword matching (thumbFamily) and are
     // never interpolated into the returned SVG string — the markup's
     // aria-label is always drawn from cabinet_thumb.esm.js's own fixed
-    // FAMILY_LABEL table. Same trust boundary
-    // `kitchen_configurator.js`'s `_rowThumbMarkup` already documents
-    // and relies on, so trusting this as markup() here is safe.
+    // FAMILY_LABEL table. `thumb_family` is likewise a fixed Selection
+    // vocabulary (southbrook_thumb_family on product.template) — when
+    // set it short-circuits thumbFamily()'s inference outright, but
+    // never touches the markup string directly either. Same trust
+    // boundary `kitchen_configurator.js`'s `_rowThumbMarkup` already
+    // documents and relies on, so trusting this as markup() here is safe.
     get thumbMarkup() {
         const data = this.props.record.data;
         const rawWidth = Number(data.southbrook_width_in);
@@ -72,6 +75,11 @@ export class CabinetThumbField extends Component {
             width_in: Number.isFinite(rawWidth) ? rawWidth : 0,
             name: String(data.name || ""),
             sku: String(data.default_code || ""),
+            // Debt fix (2026-08-02) — explicit override wins outright in
+            // thumbFamily(); reading it here means editing the field on
+            // this very form updates the preview immediately, before save,
+            // instead of only taking effect after a reload.
+            thumb_family: data.southbrook_thumb_family || false,
         };
         return markup(cabinetThumbSVG(product, this.props.sizePx));
     }
@@ -105,6 +113,7 @@ export const cabinetThumbField = {
     fieldDependencies: [
         {name: "southbrook_is_cabinet", type: "boolean"},
         {name: "southbrook_cabinet_type", type: "selection"},
+        {name: "southbrook_thumb_family", type: "selection"},
         {name: "southbrook_width_in", type: "float"},
         {name: "default_code", type: "char"},
         {name: "name", type: "char"},

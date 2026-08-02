@@ -1665,6 +1665,16 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             "name":          product.display_name,
             "sku":           product.default_code or "",
             "cabinet_type":  tmpl.southbrook_cabinet_type,
+            # Debt fix (2026-08-02) — explicit catalog-icon/3D-shape
+            # override (product.template.southbrook_thumb_family). Read
+            # by cabinet_thumb.esm.js's thumbFamily(), which honours it
+            # outright over cabinet_type/SKU/name inference; False/unset
+            # here (the default) leaves that inference completely
+            # unchanged. This is the ONE catalog payload every consumer
+            # of thumbFamily()/cabinetThumbSVG() in the client (catalog
+            # list, catalog preview, /layout-generated items via the
+            # `sku` fallback) is built from.
+            "thumb_family":  tmpl.southbrook_thumb_family or False,
             # Task 11 (SBK-024) — this is THE payload feeding both
             # /products and /layout (which the client echoes back
             # verbatim into save_design's item.width_in), so it's the

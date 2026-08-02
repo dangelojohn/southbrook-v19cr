@@ -28,6 +28,40 @@ class ProductTemplate(models.Model):
         string="Cabinet Type",
     )
 
+    # ── Icon / 3D shape override ────────────────────────────────────────────────
+    # Debt fix (2026-08-02) — `cabinet_thumb.esm.js`'s `thumbFamily()` has always
+    # inferred which of the 11 catalog-icon shapes a product renders as from
+    # `southbrook_cabinet_type` plus SKU/name keyword matching (documented in
+    # that module as "the ONE place cabinet family is inferred ... pending
+    # explicit footprint fields on the product record"). This field is that
+    # explicit field: when set, it wins outright over the inference in
+    # `thumbFamily()`, so a rep can correct a wrong guess without renaming or
+    # re-coding the product. Left blank (the default), behaviour is completely
+    # unchanged — the SKU/name inference is still what decides the icon.
+    # Values match `thumbFamily()`'s fixed 11-value vocabulary exactly (see
+    # that module's `FAMILY_LABEL` table) so the field can never encode a
+    # shape the icon renderer doesn't know how to draw.
+    southbrook_thumb_family = fields.Selection(
+        selection=[
+            ("base1",       "Base Cabinet"),
+            ("base2",       "2-Door Base Cabinet"),
+            ("drawer",      "Drawer Base Cabinet"),
+            ("sink",        "Sink Base Cabinet"),
+            ("vanity",      "Vanity Base Cabinet"),
+            ("wall",        "Wall Cabinet"),
+            ("tall",        "Tall Cabinet"),
+            ("panel",       "Panel Cabinet"),
+            ("cornerL",     "Corner Base Cabinet"),
+            ("cornerBlind", "Blind Corner Base Cabinet"),
+            ("cornerDiag",  "Diagonal Corner Base Cabinet"),
+        ],
+        string="Icon / 3D Shape",
+        help="Which cabinet shape this product's catalog icon and 3D "
+             "preview use. Leave blank to let Southbrook work it out from "
+             "the product code and name — set this only to correct a "
+             "wrong guess, so the icon and the 3D preview always agree.",
+    )
+
     # ── Physical dimensions ─────────────────────────────────────────────────────
     southbrook_width_in  = fields.Float(string="Width (in)",  default=24.0, digits=(6, 2))
     southbrook_height_in = fields.Float(string="Height (in)", default=34.5, digits=(6, 2))

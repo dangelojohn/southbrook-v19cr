@@ -292,3 +292,10 @@ from . import test_validation_endpoint
 # and the resolver honours the pin (never falls through to a same-width
 # sibling template like SB-BASE-2DR).
 from . import test_sink_slot_pin
+
+# Debt fix (2026-08-02) — thumbFamily explicit footprint fields:
+# product.template.southbrook_thumb_family backfill migration
+# (migrations/19.0.5.39.1/post-migrate.py). Covers known-SKU correctness
+# for all 11 families, never overwriting a human-set value, idempotency,
+# non-cabinet templates untouched, and the falsy-version no-op guard.
+from . import test_thumb_family_backfill_migration
