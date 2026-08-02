@@ -28,7 +28,9 @@
                 <field name="sequence" widget="handle"/>
                 <field name="name"/>
                 <field name="approval_required"/>
+                <field name="is_approved_stage"/>
                 <field name="is_applied_stage"/>
+                <field name="is_rejected_stage"/>
                 <field name="is_final"/>
                 <field name="fold"/>
             </list>

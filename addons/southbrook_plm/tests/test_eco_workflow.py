@@ -5,6 +5,7 @@ Run with:
     odoo-bin --test-enable --stop-after-init \\
         -i southbrook_plm -d <db>
 """
+from odoo.addons.southbrook_plm.models.plm_lifecycle import PLM_LIFECYCLE
 from odoo.exceptions import UserError, ValidationError
 from odoo.tests import TransactionCase, new_test_user, tagged
 
@@ -58,7 +59,13 @@ class TestSouthbrookPlm(TransactionCase):
 
     def test_seam_falls_back_to_code_defaults_when_no_active(self):
         # Supersede the only active spec; seam should defer to super() defaults.
-        self.seed_spec.write({"state": "superseded"})
+        # 2026-08-02: cut-spec `state` can no longer be hand-edited — it moves
+        # only through action_activate, itself reachable only from an applied
+        # cut-spec ECO. This is fixture setup, not the behaviour under test,
+        # so it carries the lifecycle sentinel rather than routing a whole ECO.
+        self.seed_spec.with_context(plm_lifecycle=PLM_LIFECYCLE).write(
+            {"state": "superseded"}
+        )
         self.assertFalse(self.Spec._get_active())
         self.assertEqual(self.Bom._get_cut_constants(), ESTIMATING_DEFAULTS)
 
@@ -276,9 +283,15 @@ class TestSouthbrookPlm(TransactionCase):
         # review stage has approval_required -> plain user blocked leaving it.
         with self.assertRaises(UserError):
             eco.with_user(self.plain_user).write({"stage_id": approved.id})
-        # approver may move it.
-        eco.with_user(self.approver).write({"stage_id": approved.id})
+        # 2026-08-02: an approver can't bare-write into the Approved stage
+        # either — that stage is now reachable ONLY through action_approve,
+        # so the stage bar can never claim an approval that never happened.
+        with self.assertRaises(UserError):
+            eco.with_user(self.approver).write({"stage_id": approved.id})
+        # The sanctioned path does move it there (and stamps the approver).
+        eco.with_user(self.approver).action_approve()
         self.assertEqual(eco.stage_id, approved)
+        self.assertEqual(eco.approver_id, self.approver)
 
     def test_eco_sequence_assigned(self):
         eco = self.Eco.create(
@@ -288,4 +301,8 @@ class TestSouthbrookPlm(TransactionCase):
                 "git_ref": "seqcheck1",
             }
         )
-        self.assertTrue(eco.name.startswith("ECO/"))
+        # Prefix is "SBK-ECO/<year>/" on a fresh install (renamed 2026-08-02 to
+        # end the namespace collision with pg.eco's "ECO/<year>/"); existing
+        # databases keep the old "ECO/" prefix because the sequence record is
+        # noupdate. Assert the shared, stable part so both are accepted.
+        self.assertIn("ECO/", eco.name)

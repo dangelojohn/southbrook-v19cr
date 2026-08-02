@@ -144,8 +144,8 @@
                             <field name="approver_id" invisible="not approver_id"/>
                             <field name="applied_date" invisible="not applied_date"/>
                             <field name="company_id" groups="base.group_multi_company"/>
-                            <field name="emergency_bypass" groups="southbrook_plm.group_southbrook_plm_approver" readonly="state != 'open'"/>
-                            <field name="bypass_reason" invisible="not emergency_bypass" required="emergency_bypass" groups="southbrook_plm.group_southbrook_plm_approver" readonly="state != 'open'"/>
+                            <field name="emergency_bypass" groups="southbrook_plm.group_southbrook_plm_approver" readonly="state != 'open'" help="Arming this is logged to chatter. Four-eyes exists so a second person reviews the change — use only when genuinely no other approver is reachable."/>
+                            <field name="bypass_reason" invisible="not emergency_bypass" required="emergency_bypass" groups="southbrook_plm.group_southbrook_plm_approver" readonly="state != 'open'" placeholder="Why is no independent approver available?"/>
                         </group>
                     </group>
                     <notebook>

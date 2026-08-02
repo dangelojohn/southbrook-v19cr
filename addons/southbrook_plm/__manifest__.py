@@ -45,7 +45,7 @@ runtime-BoM versioning, and commercial/pricing change control.
 This is custom routine #8 in the SAMI register; see PUNCHLIST for the
 boundary-rule justification.
 """,
-    "version": "19.0.3.0.1",
+    "version": "19.0.4.0.0",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "website": "https://southbrookcabinetry.space",

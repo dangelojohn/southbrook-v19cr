@@ -24,6 +24,7 @@ manually from the EBOM form.
 import logging
 
 from odoo import _, api, fields, models
+from odoo.addons.southbrook_plm.models.plm_lifecycle import PLM_LIFECYCLE
 
 _logger = logging.getLogger(__name__)
 
@@ -134,12 +135,17 @@ class SouthbrookEco(models.Model):
                 ebom=self.pg_ebom_id.name,
             ))
             return
-        # plm_lifecycle: super().action_apply() has already moved the ECO to
-        # 'applied', and PLM's terminal-write immutability guard (2026-08-01
-        # hardening) blocks bare writes against applied ECOs. This write IS
-        # part of the sanctioned apply lifecycle — the same flag the apply
-        # action itself uses.
-        self.with_context(plm_lifecycle=True).write({"pg_release_id": release.id})
+        # super().action_apply() has already moved the ECO to 'applied', and
+        # PLM's terminal-write immutability guard (2026-08-01 hardening)
+        # blocks bare writes against applied ECOs. This write IS part of the
+        # sanctioned apply lifecycle — but the guard now demands the
+        # PLM_LIFECYCLE sentinel object rather than a plain context flag,
+        # because `plm_lifecycle=True` is just a dict entry a JSON-RPC caller
+        # can forge (`execute_kw(..., {"context": {"plm_lifecycle": True}})`),
+        # while in-process object identity cannot be forged over RPC.
+        self.with_context(plm_lifecycle=PLM_LIFECYCLE).write(
+            {"pg_release_id": release.id}
+        )
         self.message_post(body=_(
             "ProductGraph release <b>%(rel)s</b> executed — "
             "mrp.bom <b>%(bom)s</b> created. Frozen open MOs: %(n)d.",

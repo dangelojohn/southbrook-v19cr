@@ -26,14 +26,19 @@
         <field name="arch" type="xml">
             <form class="sb-plm-cut-spec-form">
                 <header>
-                    <button name="action_activate" type="object" string="Activate"
-                            class="btn-primary" invisible="state == 'active'"
-                            groups="southbrook_plm.group_southbrook_plm_approver"
-                            confirm="Activate this cut spec? The current active spec will be superseded and all cabinet cut math will use these values."/>
                     <field name="state" widget="statusbar"
                            statusbar_visible="draft,active,superseded"/>
                 </header>
                 <sheet>
+                    <!-- The Activate button was REMOVED 2026-08-02: activation is
+                         now reachable only from southbrook.eco._apply_cut_spec, so
+                         every live geometry change names the ECO that approved it.
+                         This notice lives in the sheet, not the header — Odoo 19's
+                         form RNG expects buttons/fields in <header>, and an alert
+                         div there risks a view-validation failure at install. -->
+                    <div class="alert alert-info" role="status" invisible="state != 'draft'">
+                        <p class="mb-0">Draft specs go live by applying a Cut-Geometry Revision ECO that carries this spec as its candidate — activation is never done by hand, so the audit trail always names the approving ECO.</p>
+                    </div>
                     <div class="oe_button_box" name="button_box">
                         <button class="oe_stat_button"
                                 type="object"

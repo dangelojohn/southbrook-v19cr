@@ -20,6 +20,8 @@ hand-editing ``state``.
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError, ValidationError
 
+from .plm_lifecycle import is_plm_lifecycle_authorised
+
 # Field name -> the _get_cut_constants() dict key it maps to. Single source
 # of truth for both the seam dict and any future migration script. Keeping
 # the names identical to the estimating module constants (lower-cased) makes
@@ -116,7 +118,48 @@ class SouthbrookCutSpec(models.Model):
              "can answer 'what cut spec produced this cabinet'.",
     )
 
+    def _plm_lifecycle_authorised(self):
+        """Identity-checked lifecycle gate — see plm_lifecycle.py (FIX 1,
+        2026-08-02 blindspot pass) for the full JSON-RPC-forgery rationale.
+        Duplicated as a one-liner on southbrook.eco too (the two models
+        don't share a base class); both delegate to the same module-level
+        ``is_plm_lifecycle_authorised()`` so the actual ``is`` comparison
+        is written exactly once.
+        """
+        return is_plm_lifecycle_authorised(self.env)
+
     def write(self, vals):
+        # FIX 6 (2026-08-02 blindspot pass): hand-editing `state` is
+        # exactly what this model's own docstring forbids — "Activation is
+        # performed by southbrook.eco.action_apply ... never by hand-
+        # editing state" — but nothing actually enforced that before this
+        # pass. ir.model.access.csv gives PLM Approver perm_write on this
+        # model (they need to author/edit draft specs), which also meant
+        # perm_write to set state='active' directly on a bare write() /
+        # RPC call: a live geometry change with ZERO ECO trail, the exact
+        # failure mode action_activate's own new gate (below) closes for
+        # the button/RPC path into action_activate. This closes the same
+        # hole for a DIRECT write of `state`, bypassing action_activate
+        # altogether.
+        #
+        # Deliberately NOT gated here:
+        #   - `active` (archiving a draft/superseded spec is ordinary
+        #     housekeeping, not a lifecycle event — ondelete/archive still
+        #     works unauthorised, as it must).
+        #   - CONSTANT_FIELDS / the W079 version-bump path above: a DRAFT
+        #     spec is freely editable while it's being authored (that's
+        #     the whole workflow — propose values, then raise the ECO that
+        #     activates them); gating `state` alone is sufficient because
+        #     a draft can't affect the live cut math until activation.
+        if "state" in vals and not self._plm_lifecycle_authorised():
+            raise UserError(
+                _(
+                    "Cut spec 'state' cannot be hand-edited — activation "
+                    "runs only through action_activate, which is itself "
+                    "reachable only via an approved cut-spec Engineering "
+                    "Change Order. Raise or apply an ECO instead."
+                )
+            )
         # W079 — bump version when a CONSTANT_FIELDS value actually
         # changes. We compare per-record to avoid bumping when the
         # caller writes the same value (idempotent write should be a
@@ -266,8 +309,33 @@ class SouthbrookCutSpec(models.Model):
 
         Called by southbrook.eco.action_apply. Idempotent for an already-active
         spec. Supersedes (does not delete) the prior active spec.
+
+        FIX 6 (2026-08-02 blindspot pass): this is a bare public method, so
+        RPC ignores the form's Activate-button restrictions, and any PLM
+        Approver's perm_write on this model let them call it directly —
+        producing a live, geometry-changing spec activation with ZERO ECO
+        trail, contradicting this whole model's reason for existing (see
+        the module docstring: "a shop lead can revise a reveal or a panel
+        thickness through an approved ECO ... never by hand-editing
+        state"). Gated on the same lifecycle sentinel southbrook.eco uses
+        for its own terminal-write authorisation: only
+        southbrook.eco._apply_cut_spec — which calls this with
+        ``with_context(plm_lifecycle=PLM_LIFECYCLE)`` — may reach this
+        line. A direct call (button, RPC, shell) without that context is
+        refused and pointed at raising a cut-spec ECO instead.
         """
         self.ensure_one()
+        if not self._plm_lifecycle_authorised():
+            raise UserError(
+                _(
+                    "Cut spec %s cannot be activated directly — activation "
+                    "must be reached through an approved cut-spec "
+                    "Engineering Change Order (target kind 'Cut Spec'), "
+                    "not by calling Activate directly. A direct activation "
+                    "would change live cut geometry with no ECO trail."
+                )
+                % self.display_name
+            )
         if self.state == "active":
             return True
         prior = self._get_active()

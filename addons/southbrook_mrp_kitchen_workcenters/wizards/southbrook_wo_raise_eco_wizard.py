@@ -20,6 +20,15 @@ Behaviour
   approved per spec). The photo + a back-link to the WO are posted to
   the ECO's chatter; the ECO's `description` carries the full
   operator-supplied narrative plus the WO/MO context block.
+- The ECO is created with `sudo()` because this wizard is exposed to
+  `mrp.group_mrp_user` (shop floor), and `southbrook.eco` access is
+  scoped to `southbrook_plm.group_southbrook_plm_user` / `_approver`
+  only — an operator has no access rows on the model. For the same
+  reason, submit does NOT redirect into the new ECO's form (that
+  raised an AccessError right after a successful save — 2026-08-02
+  blindspot pass). It instead posts a traceable "Engineering change
+  reported" note to the WO chatter (which the operator CAN read) and
+  returns a `display_notification` toast naming the ECO.
 
 Target ECO model
 ----------------
@@ -229,16 +238,24 @@ class SouthbrookWoRaiseEcoWizard(models.TransientModel):
         model_name, used_southbrook_fallback = self._resolve_eco_model()
         eco_vals = self._prepare_eco_vals(model_name)
 
-        # Create the ECO (draft per spec).
+        # Create the ECO (draft per spec). sudo() is required: this wizard
+        # is exposed to mrp.group_mrp_user (shop floor) and southbrook.eco's
+        # access rows are scoped to southbrook_plm.group_southbrook_plm_user
+        # / _approver only (see southbrook_plm/security/ir.model.access.csv)
+        # — an operator has ZERO access rows on the model itself.
         Eco = self.env[model_name].sudo()
         eco = Eco.create(eco_vals)
 
         # Attach photo (if any) + post the WO back-link to ECO chatter.
+        # This runs on the sudo'd `eco` recordset, so it doesn't need the
+        # operator to have ECO access either.
         self._post_to_eco_chatter(eco)
 
-        # Post a notice on the WO chatter pointing at the new ECO so
-        # the operator + planners see the audit trail without leaving
-        # the WO.
+        # Post a notice on the WO chatter pointing at the new ECO so the
+        # operator + planners see the audit trail without leaving the WO.
+        # This is the traceable record the operator CAN actually read —
+        # see the return value below for why we don't redirect into the
+        # ECO itself.
         self._post_to_wo_chatter(eco, model_name)
 
         _logger.info(
@@ -247,14 +264,32 @@ class SouthbrookWoRaiseEcoWizard(models.TransientModel):
             self.workorder_id.id, self.env.user.login,
         )
 
-        # Open the new ECO so engineering can immediately review.
+        # Do NOT redirect into the ECO form (as this used to). southbrook.eco
+        # grants read/write/create ONLY to southbrook_plm.group_
+        # southbrook_plm_user / _approver — a plain mrp.group_mrp_user shop-
+        # floor operator has no access row on the model at all. Returning an
+        # act_window onto a record the operator's own (non-sudo) session
+        # cannot read raised an AccessError immediately after a successful
+        # save: the operator saw a crash and had no way to tell whether
+        # their report was actually filed (2026-08-02 blindspot pass).
+        #
+        # Fix: close the wizard and hand back a toast confirmation naming
+        # the ECO instead. The WO chatter note posted above is the durable,
+        # operator-readable record carrying the actual link — this
+        # notification is purely "yes, it worked" feedback for the person
+        # who just clicked Submit.
         return {
-            "type": "ir.actions.act_window",
-            "name": _("Draft ECO"),
-            "res_model": model_name,
-            "res_id": eco.id,
-            "view_mode": "form",
-            "target": "current",
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Engineering issue reported"),
+                "message": _("%(eco)s created — %(title)s") % {
+                    "eco": eco.display_name or eco.name,
+                    "title": self.title,
+                },
+                "type": "success",
+                "sticky": False,
+            },
         }
 
     def _prepare_eco_vals(self, model_name):
@@ -324,7 +359,16 @@ class SouthbrookWoRaiseEcoWizard(models.TransientModel):
 
     def _post_to_wo_chatter(self, eco, model_name):
         """Post a back-link on the WO so the operator + planners can
-        click through to the ECO they just raised."""
+        click through to the ECO they just raised.
+
+        This is the ONLY record of the new ECO that the reporting
+        operator can actually read afterwards — mrp.group_mrp_user has
+        no access rows on southbrook.eco, but mrp.workorder chatter is
+        theirs to read (this module restores mail.thread onto
+        mrp.workorder specifically so this call works; see the class
+        docstring above). action_submit no longer redirects into the
+        ECO form for exactly that reason (2026-08-02 blindspot pass) —
+        this note plus the ECO name/title is the traceable link."""
         self.ensure_one()
         link = (
             '<a href="#" data-oe-model="%(m)s" data-oe-id="%(i)s">%(n)s</a>'
@@ -335,7 +379,10 @@ class SouthbrookWoRaiseEcoWizard(models.TransientModel):
         }
         self.workorder_id.message_post(
             body=_(
-                "Engineering issue reported — draft ECO created: %s") % link,
+                "Engineering change reported: %(link)s — %(title)s") % {
+                    "link": link,
+                    "title": self.title,
+            },
             subtype_xmlid="mail.mt_note",
         )
 

@@ -24,7 +24,8 @@
                 type="object"
                 name="action_open_southbrook_ecos"
                 icon="fa-flag"
-                invisible="southbrook_eco_count == 0">
+                invisible="southbrook_eco_count == 0"
+                groups="southbrook_plm.group_southbrook_plm_user">
           <field name="southbrook_eco_count"
                  widget="statinfo"
                  string="ECOs"/>

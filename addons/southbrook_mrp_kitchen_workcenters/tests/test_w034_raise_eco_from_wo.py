@@ -12,7 +12,14 @@ Coverage:
   * The WO chatter receives a back-link note.
   * The ECO description embeds the WO/MO context block.
   * `mi_check_id` linkage is reflected in the ECO description.
+  * (2026-08-02 blindspot fix) Submit returns a `display_notification`
+    toast naming the ECO instead of an `act_window` onto it, and the
+    whole flow works cleanly when driven by a REAL mrp.group_mrp_user
+    session — one with zero access rows on southbrook.eco — so the
+    AccessError-on-redirect regression can't creep back in unnoticed
+    (TransactionCase's default superuser context would mask it).
 """
+from odoo.exceptions import AccessError
 from odoo.tests.common import TransactionCase, tagged
 
 
@@ -56,6 +63,12 @@ class TestW034RaiseEcoFromWo(TransactionCase):
         })
         return wo
 
+    def _eco_by_title(self, title):
+        """Look up the ECO action_submit created. The wizard's return
+        value no longer carries res_id (see test_60 below for why), so
+        tests locate the record via the title they submitted instead."""
+        return self.Eco.search([("title", "=", title)], order="id desc", limit=1)
+
     # ------------------------------------------------------------------
     def test_10_button_returns_wizard_action(self):
         wo = self._make_wo()
@@ -76,9 +89,12 @@ class TestW034RaiseEcoFromWo(TransactionCase):
             "severity": "high",
         })
         result = wiz.action_submit()
-        # The submit action returns an act_window opening the new ECO.
-        self.assertEqual(result["res_model"], "southbrook.eco")
-        eco = self.Eco.browse(result["res_id"])
+        # Submit returns a display_notification toast, not an act_window
+        # onto the ECO (the operator generally can't read southbrook.eco —
+        # see test_60). Locate the created record by title instead.
+        self.assertEqual(result["type"], "ir.actions.client")
+        self.assertEqual(result["tag"], "display_notification")
+        eco = self._eco_by_title("CNC drill hole 4mm off")
         self.assertTrue(eco.exists(), "ECO must exist after submit.")
         # Always draft / open. Spec: never auto-approved.
         self.assertEqual(
@@ -104,8 +120,8 @@ class TestW034RaiseEcoFromWo(TransactionCase):
             "description": "x",
             "severity": "low",
         })
-        result = wiz.action_submit()
-        eco = self.Eco.browse(result["res_id"])
+        wiz.action_submit()
+        eco = self._eco_by_title("test default type")
         self.assertEqual(
             eco.target_kind, "document",
             "W034 must default to a record-only ECO type so apply "
@@ -150,9 +166,76 @@ class TestW034RaiseEcoFromWo(TransactionCase):
             "severity": "medium",
             "mi_check_id": check.id,
         })
-        result = wiz.action_submit()
-        eco = self.Eco.browse(result["res_id"])
+        wiz.action_submit()
+        eco = self._eco_by_title("linked to MI check")
         self.assertIn(
             check.display_name, eco.description or "",
             "The originating MI check display name should be embedded "
             "in the ECO description.")
+
+    def test_60_submit_as_real_mrp_user_no_access_error(self):
+        """The 2026-08-02 blindspot bug: the wizard is usable by plain
+        mrp.group_mrp_user (shop floor), creates the ECO with sudo(),
+        but used to hand back an act_window onto that ECO's form. A
+        Manufacturing user has NO access rows on southbrook.eco (only
+        southbrook_plm.group_southbrook_plm_user / _approver do), so
+        the redirect raised AccessError immediately after a successful
+        save. TransactionCase runs as superuser by default, which is
+        exactly why the earlier tests in this file never caught it —
+        this test drives the wizard as a REAL non-superuser mrp user
+        via with_user() so the regression can't hide again."""
+        wo = self._make_wo()
+        mrp_group = self.env.ref("mrp.group_mrp_user")
+        operator = self.env["res.users"].create({
+            "name": "W034 Shop Floor Operator",
+            "login": "w034_operator@test",
+            "email": "w034_operator@test",
+            "group_ids": [(4, mrp_group.id)],
+        })
+
+        # Sanity check on the premise: this operator has no read access
+        # on southbrook.eco at all. If this assertion ever fails (e.g.
+        # someone widens southbrook.eco access to mrp users), the rest
+        # of this test still must pass, but the redirect-avoidance
+        # design would no longer be strictly necessary.
+        with self.assertRaises(AccessError):
+            self.Eco.with_user(operator).search([], limit=1)
+
+        wiz = self.Wizard.with_user(operator).with_context(
+            default_workorder_id=wo.id,
+            active_model="mrp.workorder",
+            active_id=wo.id,
+        ).create({
+            "title": "W034 real-user submit",
+            "description": "Operator-filed issue, non-sudo session.",
+            "severity": "high",
+        })
+
+        # This must NOT raise AccessError — that's the whole bug.
+        result = wiz.action_submit()
+
+        self.assertEqual(
+            result.get("type"), "ir.actions.client",
+            "Submit must return a client action, never an act_window "
+            "onto a model the operator can't read.")
+        self.assertEqual(result.get("tag"), "display_notification")
+        params = result.get("params", {})
+        self.assertEqual(params.get("type"), "success")
+        self.assertFalse(params.get("sticky"))
+        self.assertIn("W034 real-user submit", params.get("message", ""))
+
+        # The ECO really was created (via the sudo'd create inside the
+        # wizard), even though the operator can't read it back directly.
+        eco = self._eco_by_title("W034 real-user submit")
+        self.assertTrue(
+            eco.exists(),
+            "ECO must exist after a real-operator submit, even though "
+            "that operator has no direct read access to the model.")
+
+        # The operator CAN read the traceable back-link on the WO they
+        # already have access to.
+        wo_as_operator = wo.with_user(operator)
+        wo_as_operator.invalidate_recordset()
+        body = " ".join(wo_as_operator.message_ids.mapped("body") or [])
+        self.assertIn("Engineering change reported", body)
+        self.assertIn(eco.name, body)

@@ -15,8 +15,15 @@ which branches on the ECO type's ``target_kind``:
 Approval gating: leaving a stage flagged ``approval_required`` demands the actor
 be in ``southbrook_plm.group_southbrook_plm_approver``.
 """
+import logging
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError, ValidationError
+
+from .plm_lifecycle import PLM_LIFECYCLE, is_plm_lifecycle_authorised
+from .southbrook_cut_spec import CONSTANT_FIELDS
+
+_logger = logging.getLogger(__name__)
 
 
 class SouthbrookEco(models.Model):
@@ -102,6 +109,16 @@ class SouthbrookEco(models.Model):
         "mrp.bom",
         string="Target BoM",
         help="The canonical template BoM this ECO versions.",
+        # FIX 7 (2026-08-02 blindspot pass): Odoo's Many2one default is
+        # ondelete='set null'. Deleting the target BoM out from under an
+        # open ECO would silently blank a required field (_check_target_
+        # required demands bom_id for a bom-kind ECO) with no trace of
+        # what happened — the ECO just quietly becomes invalid the next
+        # time someone tries to apply it, no chatter, no error at delete
+        # time. 'restrict' surfaces the conflict at the moment of the
+        # deletion attempt instead, matching eco_type_id's existing
+        # ondelete='restrict' above.
+        ondelete="restrict",
     )
     new_bom_id = fields.Many2one(
         "mrp.bom",
@@ -114,6 +131,10 @@ class SouthbrookEco(models.Model):
         "southbrook.cut.spec",
         string="Candidate Cut Spec",
         help="The draft cut spec this ECO activates on apply.",
+        # FIX 7 (2026-08-02 blindspot pass): same rationale as bom_id
+        # above — the default ondelete='set null' would let a deleted
+        # candidate spec silently empty a required field on an open ECO.
+        ondelete="restrict",
     )
     git_ref = fields.Char(
         string="Git Reference",
@@ -271,6 +292,26 @@ class SouthbrookEco(models.Model):
             rec.document_count = len(rec.document_ids)
 
     # ------------------------------------------------------------------
+    # Lifecycle sentinel helper (FIX 1, 2026-08-02 blindspot pass)
+    # ------------------------------------------------------------------
+    def _plm_lifecycle_authorised(self):
+        """True only for a write/create authorised by THIS module's own
+        lifecycle actions — never by a caller-supplied context value.
+
+        See plm_lifecycle.py's module docstring for the full JSON-RPC-
+        forgery rationale: the old guards below tested
+        ``self.env.context.get("plm_lifecycle")`` for plain truthiness,
+        which a bare RPC call could forge by attaching
+        ``{"context": {"plm_lifecycle": true}}`` to ANY write()/create().
+        This compares by object IDENTITY against a module-level singleton
+        that only importable, in-process Python can reference — no JSON
+        payload can fabricate it. Every call site in this file that used
+        to read the context key directly, or set it to ``True``, now goes
+        through this helper / the ``PLM_LIFECYCLE`` singleton instead.
+        """
+        return is_plm_lifecycle_authorised(self.env)
+
+    # ------------------------------------------------------------------
     # Naming
     # ------------------------------------------------------------------
     @api.model_create_multi
@@ -281,19 +322,63 @@ class SouthbrookEco(models.Model):
             # actions — but a bare RPC create({'state': 'applied'}) would
             # mint terminal history with no handler run and no approval at
             # all (spotted 2026-08-02: the old demo XML did exactly this).
-            # Same escape hatch as write(): the plm_lifecycle context.
+            # Same escape hatch as write(): the lifecycle sentinel (FIX 1 —
+            # identity-checked, not the old truthiness read of the bare
+            # context key, which a JSON-RPC caller could forge).
             if vals.get("state") in ("applied", "rejected") and not (
-                self.env.context.get("plm_lifecycle")
+                self._plm_lifecycle_authorised()
             ):
                 raise UserError(_(
                     "An ECO cannot be CREATED in a terminal state "
                     "(Applied / Rejected) — terminal states are reached "
                     "only via the Apply or Reject actions."))
+            # FIX 5 (2026-08-02 blindspot pass): emergency_bypass /
+            # bypass_reason are the four-eyes break-glass — the form view
+            # already restricts them to the PLM Approver group, but RPC
+            # ignores views entirely, and the ACL gives a plain PLM User
+            # perm_write (they need to author their own draft ECOs), which
+            # also meant perm_write on THESE two fields. A plain user
+            # could create their own ECO with emergency_bypass=True armed
+            # from the start and unlock self-approval/self-apply on it —
+            # the exact thing the four-eyes rule exists to prevent.
+            if (
+                ("emergency_bypass" in vals or "bypass_reason" in vals)
+                and not self.env.user.has_group(
+                    "southbrook_plm.group_southbrook_plm_approver"
+                )
+            ):
+                raise UserError(
+                    _(
+                        "Emergency Bypass is a PLM Approver-only field — "
+                        "only a PLM Approver may set Emergency Bypass or "
+                        "Bypass Reason."
+                    )
+                )
             if not vals.get("name") or vals["name"] == _("New"):
                 vals["name"] = self.env["ir.sequence"].next_by_code(
                     "southbrook.eco"
                 ) or _("New")
-        return super().create(vals_list)
+        records = super().create(vals_list)
+        # FIX 5 continued: arming the bypass is logged separately from
+        # USING it. action_approve/action_apply already post an
+        # "EMERGENCY BYPASS — approved/applied by ..." line at the moment
+        # the flag is exercised to self-approve/self-apply, but an ECO can
+        # be CREATED with it already armed (and possibly never used, or
+        # used much later) — the audit trail should show who armed it and
+        # why regardless of whether it's ever exercised.
+        for rec, vals in zip(records, vals_list):
+            if vals.get("emergency_bypass"):
+                rec.message_post(
+                    body=_(
+                        "Emergency Bypass ARMED at creation by %(user)s. "
+                        "Reason: %(reason)s"
+                    )
+                    % {
+                        "user": self.env.user.display_name,
+                        "reason": rec.bypass_reason or _("(no reason given)"),
+                    }
+                )
+        return records
 
     # ------------------------------------------------------------------
     # Approval gating + terminal-stage write protection
@@ -312,17 +397,52 @@ class SouthbrookEco(models.Model):
     }
 
     def write(self, vals):
+        # FIX 5 (2026-08-02 blindspot pass): emergency_bypass / bypass_reason
+        # are the four-eyes break-glass — the form view restricts them to
+        # the PLM Approver group, but RPC ignores views, and the ACL gives
+        # a plain PLM User perm_write (needed so they can author their own
+        # draft ECOs), which also covers THESE two fields. Without this
+        # guard a plain user could write emergency_bypass=True + a reason
+        # onto their own draft and unlock self-approval / self-apply —
+        # exactly what the four-eyes rule exists to prevent. Checked here,
+        # server-side, independent of the view.
+        if (
+            ("emergency_bypass" in vals or "bypass_reason" in vals)
+            and not self.env.user.has_group(
+                "southbrook_plm.group_southbrook_plm_approver"
+            )
+        ):
+            raise UserError(
+                _(
+                    "Emergency Bypass is a PLM Approver-only field — only "
+                    "a PLM Approver may set Emergency Bypass or Bypass "
+                    "Reason."
+                )
+            )
+        # Capture, BEFORE the write, which records are about to flip
+        # emergency_bypass False -> True — arming the bypass is logged
+        # separately from USING it (action_approve/action_apply already
+        # post an "EMERGENCY BYPASS — approved/applied by ..." line at the
+        # moment it's exercised, but an armed-and-never-used bypass, or one
+        # armed well before it's used, deserves its own audit line). Must
+        # be computed before super().write() runs, or every record in
+        # `self` would already read emergency_bypass=True and "newly"
+        # armed would be indistinguishable from "already armed".
+        newly_armed = self.browse()
+        if vals.get("emergency_bypass") is True:
+            newly_armed = self.filtered(lambda e: not e.emergency_bypass)
         # Immutability of terminal ECOs (Applied / Rejected). An applied or
         # rejected ECO IS the change-control audit trail — editing it after
         # the fact would let someone quietly rewrite what was actually
         # approved/applied/rejected. The sanctioned way to change course is
         # a NEW ECO (action_create_superseding for an applied one; Reset to
         # Draft for a rejected one). Lifecycle actions authorise their own
-        # writes via the plm_lifecycle context flag (same flag the forge-
-        # guard below already relies on), so this does not block
+        # writes via the lifecycle sentinel (FIX 1 — identity-checked, not
+        # the old truthiness read of the bare context key, which a
+        # JSON-RPC caller could forge), so this does not block
         # action_reset_draft / action_create_superseding themselves — only
         # a bare RPC/UI write against history.
-        if not self.env.context.get("plm_lifecycle") and (
+        if not self._plm_lifecycle_authorised() and (
             set(vals) - self._TERMINAL_WRITE_ALLOWLIST
         ):
             if any(eco.state in ("applied", "rejected") for eco in self):
@@ -337,28 +457,63 @@ class SouthbrookEco(models.Model):
             new_stage = self.env["southbrook.eco.stage"].browse(vals["stage_id"])
         # Terminal states/stages (Applied / Rejected) are reachable ONLY through
         # the gated action methods (action_apply / action_reject), which run the
-        # change handlers, enforce PLM Approver rights, and set plm_lifecycle=True
-        # on their write. A direct write of state=applied|rejected — or of
-        # stage_id to a final stage — is a workflow-forge attempt and is refused.
+        # change handlers, enforce PLM Approver rights, and pass the lifecycle
+        # sentinel on their write. A direct write of state=applied|rejected — or
+        # of stage_id to a final stage — is a workflow-forge attempt and is
+        # refused.
         #
         # The prior guard only fired on the stage_id path and only when `state`
         # didn't already match, so `write({"stage_id": applied, "state":
         # "applied"})` slipped through: a non-approver (group_southbrook_plm_user
         # has perm_write) could forge an 'applied' ECO with NO handler run
         # (no BoM copy / cut-spec activation) and a blank approver_id. Gate on
-        # the action-set context flag instead, covering both the state and the
+        # the sentinel instead, covering both the state and the
         # stage_id paths. (Bug found by demo walkthrough 2026-06-01 part 9;
         # forge path found by the 2026-07-11 security audit.)
         hits_terminal = (
             vals.get("state") in ("applied", "rejected")
             or (new_stage is not None and new_stage.is_final)
         )
-        if hits_terminal and not self.env.context.get("plm_lifecycle"):
+        if hits_terminal and not self._plm_lifecycle_authorised():
             raise UserError(_(
                 "An ECO reaches a terminal state (Applied / Rejected) only via "
                 "the Apply or Reject actions — which run the ECO's change "
                 "handlers and enforce PLM Approver rights — not by a direct "
                 "edit of state or stage."))
+        # FIX 3 (2026-08-02 blindspot pass): gate stage ENTRY into the
+        # Approved stage, not just terminal-stage entry/exit (handled
+        # above). is_approved_stage is deliberately NOT is_final (an
+        # approved ECO still has to pass through Apply), so the
+        # hits_terminal guard above never fires for it — a bare
+        # write({"stage_id": approved.id}) from a plain PLM User (RPC,
+        # dragging the kanban card, clicking the statusbar) sailed straight
+        # past every check above and landed the ECO in the Approved stage
+        # with approver_id/approval_date left blank. action_apply's own
+        # approved-stage check then blocked Apply, but the pipeline itself
+        # was already lying: an ECO could sit in "Approved" having never
+        # actually been approved. Only action_approve may place an ECO in
+        # the Approved stage, and it must do so with BOTH PLM Approver
+        # rights AND the lifecycle sentinel — a bare write can forge
+        # neither.
+        if (
+            new_stage is not None
+            and new_stage.is_approved_stage
+            and not (
+                self._plm_lifecycle_authorised()
+                and self.env.user.has_group(
+                    "southbrook_plm.group_southbrook_plm_approver"
+                )
+            )
+        ):
+            raise UserError(
+                _(
+                    "An ECO enters the Approved stage only via the "
+                    "Approve action — which stamps approver_id / "
+                    "approval_date and enforces PLM Approver rights and "
+                    "the four-eyes rule — not by a direct edit of "
+                    "stage_id."
+                )
+            )
         # A non-terminal advance OUT of an approval-required stage still needs
         # PLM Approver rights.
         if new_stage is not None:
@@ -378,7 +533,21 @@ class SouthbrookEco(models.Model):
                         )
                         % {"eco": eco.name, "stage": eco.stage_id.name}
                     )
-        return super().write(vals)
+        result = super().write(vals)
+        # FIX 5 continued: post the "armed" chatter line AFTER the write
+        # commits (so bypass_reason — possibly set in this same vals dict
+        # — is already on the record when we read it back).
+        for eco in newly_armed:
+            eco.message_post(
+                body=_(
+                    "Emergency Bypass ARMED by %(user)s. Reason: %(reason)s"
+                )
+                % {
+                    "user": self.env.user.display_name,
+                    "reason": eco.bypass_reason or _("(no reason given)"),
+                }
+            )
+        return result
 
     # ------------------------------------------------------------------
     # Delete guard
@@ -450,6 +619,20 @@ class SouthbrookEco(models.Model):
         recordset one step (the old self.action_advance() call), because
         "the Approved stage" is not necessarily "the next stage in
         sequence" for every pipeline configuration.
+
+        FIX 2 (2026-08-02 blindspot pass): the pipeline MUST define exactly
+        one stage flagged is_approved_stage or this method now refuses to
+        run at all — see the matching fail-closed rationale on
+        action_apply below. The old behaviour fell back to
+        self.action_advance() when no stage carried the flag, which was
+        permissive exactly where it should have been strict: an admin who
+        forgot to flag a stage (or unset it on every stage) got a
+        pipeline that silently kept working via the old advance-by-
+        sequence path, never surfacing that "Approved" wasn't actually
+        being recorded anywhere is_approved_stage-shaped. Combined with the
+        new at-most-one constraint on southbrook.eco.stage, a pipeline is
+        now always in exactly one of two states: zero flagged stages
+        (refused here) or exactly one (used here) — never ambiguous.
         """
         if not self.env.user.has_group(
             "southbrook_plm.group_southbrook_plm_approver"
@@ -458,7 +641,37 @@ class SouthbrookEco(models.Model):
         approved_stage = self.env["southbrook.eco.stage"].search(
             [("is_approved_stage", "=", True)], limit=1
         )
+        if not approved_stage:
+            raise UserError(
+                _(
+                    "No ECO stage is flagged as the Approved stage — "
+                    "Approve cannot record where an approved ECO should "
+                    "land. Flag exactly one stage as 'Approved Stage' "
+                    "before approving any ECO."
+                )
+            )
         for eco in self:
+            # FIX 9 (2026-08-02 blindspot pass): serialise concurrent
+            # approvals of the SAME ECO. Without a row lock here, two
+            # approvers clicking Approve on the same ECO at the same
+            # moment both pass the state/already-approved checks below,
+            # both compute their own approver_id/approval_date, and the
+            # SECOND write simply overwrites the first's stamp — last-
+            # write-wins, no conflict signal, and the audit trail records
+            # the wrong approver as if the race never happened. FOR UPDATE
+            # blocks the second approval until the first's transaction
+            # commits (or rolls back); invalidate_recordset then forces
+            # the checks below to read the POST-COMMIT state rather than a
+            # stale ORM cache read. Mirrors the exact FOR UPDATE +
+            # invalidate pattern _apply_bom already uses for the same
+            # class of race (see FIX 8 on _apply_bom, below).
+            self.env.cr.execute(
+                "SELECT id FROM southbrook_eco WHERE id = %s FOR UPDATE",
+                (eco.id,),
+            )
+            eco.invalidate_recordset(
+                ["state", "approver_id", "approval_date", "stage_id"]
+            )
             if eco.state != "open":
                 raise UserError(
                     _("ECO %s is not Open — only an open ECO can be approved.")
@@ -506,14 +719,15 @@ class SouthbrookEco(models.Model):
                 }
             )
             eco.message_post(body=_("Approved by %s.") % self.env.user.display_name)
-            if approved_stage:
-                eco.write({"stage_id": approved_stage.id})
-            else:
-                # Backward-compat fallback: no stage in this pipeline
-                # carries is_approved_stage (e.g. an install predating
-                # this flag) — fall back to the old single-step advance
-                # behaviour so approval still moves the ECO forward.
-                eco.action_advance()
+            # approved_stage is guaranteed non-empty here (checked, fail-
+            # closed, before this loop) — no fallback branch needed
+            # anymore. The lifecycle sentinel is required on THIS write:
+            # write()'s FIX 3 guard refuses a bare entry into an
+            # is_approved_stage-flagged stage from anyone but this exact,
+            # sanctioned call site.
+            eco.with_context(plm_lifecycle=PLM_LIFECYCLE).write(
+                {"stage_id": approved_stage.id}
+            )
         return True
 
     def action_reject(self):
@@ -578,7 +792,9 @@ class SouthbrookEco(models.Model):
             write_vals = {"state": "rejected"}
             if rejected_stage:
                 write_vals["stage_id"] = rejected_stage.id
-            eco = eco.with_context(plm_lifecycle=True)
+            # FIX 1 (2026-08-02 blindspot pass): pass the identity-checked
+            # sentinel, not a bare True — see plm_lifecycle.py.
+            eco = eco.with_context(plm_lifecycle=PLM_LIFECYCLE)
             eco.write(write_vals)
             eco.message_post(body=_("Rejected by %s.") % self.env.user.display_name)
         return True
@@ -628,12 +844,16 @@ class SouthbrookEco(models.Model):
                     )
                     % eco.name
                 )
-            # plm_lifecycle authorises this write past both the terminal-
-            # write immutability guard (a rejected ECO IS terminal) and
-            # the terminal-forge guard, since we've already run the
-            # approver-group check that stands in for those guards' intent
-            # here.
-            eco.with_context(plm_lifecycle=True).write({
+            # The lifecycle sentinel (FIX 1 — identity-checked, not a bare
+            # True a JSON-RPC caller could forge) authorises this write
+            # past both the terminal-write immutability guard (a rejected
+            # ECO IS terminal) and the terminal-forge guard, since we've
+            # already run the approver-group check that stands in for
+            # those guards' intent here. first_stage is never
+            # is_approved_stage-flagged in a sane pipeline (it's the FIRST
+            # non-final stage), so the FIX 3 stage-entry guard on write()
+            # is a non-issue here too.
+            eco.with_context(plm_lifecycle=PLM_LIFECYCLE).write({
                 "state": "open",
                 "stage_id": first_stage.id,
                 "applied_date": False,
@@ -669,8 +889,39 @@ class SouthbrookEco(models.Model):
         include eco_type_id, which isn't copy=False, so the constraint
         fires at create time — not just at Apply). This keeps the method
         usable for all four target kinds.
+
+        FIX 11 (2026-08-02 blindspot pass): the successor does NOT inherit
+        the predecessor's description or attachments. copy() otherwise
+        carries the FULL description/document_ids forward (neither is
+        copy=False), so an approver reviewing the successor could read the
+        OLD rationale/cut-sheets and sign off a change while thinking
+        they're reading about the NEW one. The description default below
+        is a short stub linking back to the predecessor by name instead of
+        duplicating its text; document_ids is explicitly cleared.
+        emergency_bypass / bypass_reason are already copy=False (verified
+        against the field definitions above) — copy() drops them from the
+        successor's vals entirely, so no explicit clear is needed for
+        those two; noted here rather than duplicated.
         """
         self.ensure_one()
+        # FIX 4 (2026-08-02 blindspot pass): action_create_superseding used
+        # to be callable repeatedly on the same applied ECO. superseded_by_id
+        # is a plain Many2one — nothing stopped a second call from silently
+        # OVERWRITING it with a second successor, orphaning the first
+        # successor from the audit chain (self.superseded_by_id now points
+        # only at the second one; the first is left dangling with a
+        # supersedes_id pointing back at self but nothing pointing forward
+        # to it). Refuse outright and name the existing successor so the
+        # user works on THAT ECO instead of minting a competing one.
+        if self.superseded_by_id:
+            raise UserError(
+                _(
+                    "ECO %(eco)s has already been superseded by "
+                    "%(succ)s — work on that ECO instead of creating "
+                    "another successor."
+                )
+                % {"eco": self.name, "succ": self.superseded_by_id.display_name}
+            )
         if self.state != "applied":
             raise UserError(
                 _("ECO %s is not applied — only an applied ECO can be superseded.")
@@ -695,15 +946,29 @@ class SouthbrookEco(models.Model):
                     self.cut_spec_id.id if self.target_kind == "cut_spec" else False
                 ),
                 "git_ref": self.git_ref if self.target_kind == "rule" else False,
+                # FIX 11: stale-evidence guard — see the docstring above.
+                # A short stub, not the predecessor's own description,
+                # so the approver is prompted to state the NEW rationale
+                # rather than re-reading (and unintentionally re-approving)
+                # the OLD one.
+                "description": _(
+                    "<p>Supersedes %s. State the NEW rationale here.</p>"
+                )
+                % self.name,
+                # FIX 11: clear engineering documents — the predecessor's
+                # vendor cut sheets / spec PDFs answered the OLD change;
+                # carrying them forward would let an approver sign off the
+                # new ECO while looking at attachments for a different one.
+                "document_ids": [(5, 0, 0)],
             }
         )
         # sudo() on the back-link: the PLM User record rule scopes a plain
         # user's writes to their OWN OPEN ECOs, and this write targets an
         # applied one (possibly someone else's). The method's own state
-        # gate + the plm_lifecycle flag make this the sanctioned lifecycle
+        # gate + the lifecycle sentinel make this the sanctioned lifecycle
         # link, and any PLM User may raise a successor — so elevate for
         # exactly this one write.
-        self.sudo().with_context(plm_lifecycle=True).write(
+        self.sudo().with_context(plm_lifecycle=PLM_LIFECYCLE).write(
             {"superseded_by_id": new.id}
         )
         self.message_post(body=_("Superseded by %s.") % new.display_name)
@@ -726,26 +991,43 @@ class SouthbrookEco(models.Model):
         never run, which meant Apply alone was a complete bypass of the
         approval step — a PLM Approver could go straight Draft ->
         Applied. That's now refused: approver_id + approval_date must
-        already be set (i.e. action_approve must have run), and — when
-        the pipeline defines an Approved stage — the ECO must actually
-        be sitting in it. Both checks fall back to permissive behaviour
-        only when the pipeline predates these fields entirely, so an
-        older install isn't hard-broken by upgrading this module.
+        already be set (i.e. action_approve must have run), and the ECO
+        must actually be sitting in the Approved stage.
+
+        FIX 2 (2026-08-02 blindspot pass): the Approved-stage check below
+        used to be PERMISSIVE when no stage carried is_approved_stage at
+        all ("an older install isn't hard-broken") — but that made it
+        trivially defeatable going forward: any approver could unset the
+        flag on every stage and every ECO became applyable straight from
+        Draft, with no error, no chatter, nothing to notice. Fail-closed
+        now: Apply refuses outright when no stage is flagged, instead of
+        silently permitting. Combined with the new at-most-one constraint
+        on southbrook.eco.stage, a pipeline is always in exactly one of
+        two states — zero flagged stages (refused) or exactly one (used)
+        — never the ambiguous "flag drifted away and nobody noticed"
+        state the old fallback allowed.
         """
         if not self.env.user.has_group(
             "southbrook_plm.group_southbrook_plm_approver"
         ):
             raise UserError(_("Only a PLM Approver may apply an ECO."))
-        # search_count, not search+bool, so an empty pipeline (no stage
-        # carries the flag at all) is unambiguous from "the flagged stage
-        # just doesn't happen to be this ECO's stage" — see the fallback
-        # comment below, mirroring the is_rejected_stage fallback pattern
-        # already used elsewhere in this file.
+        # search_count, not search+bool, purely so the intent below reads
+        # as "is there at least one" rather than relying on bool()'s
+        # implicit truthiness of a recordset.
         approved_stage_exists = bool(
             self.env["southbrook.eco.stage"].search_count(
                 [("is_approved_stage", "=", True)]
             )
         )
+        if not approved_stage_exists:
+            raise UserError(
+                _(
+                    "No ECO stage is flagged as the Approved stage — Apply "
+                    "cannot verify that an ECO has actually passed "
+                    "approval. Flag exactly one stage as 'Approved Stage' "
+                    "before applying any ECO."
+                )
+            )
         for eco in self:
             if eco.state == "applied":
                 raise UserError(_("ECO %s is already applied.") % eco.name)
@@ -772,12 +1054,11 @@ class SouthbrookEco(models.Model):
                     )
                     % eco.name
                 )
-            # Backward-compat fallback: only enforce the Approved-stage
-            # location when some stage in this pipeline actually carries
-            # is_approved_stage. An install that hasn't configured that
-            # flag on any stage keeps the pre-hardening behaviour (approval
-            # bookkeeping alone gates Apply).
-            if approved_stage_exists and not eco.stage_id.is_approved_stage:
+            # approved_stage_exists is guaranteed True here (checked,
+            # fail-closed, before this loop) — the location check is now
+            # unconditional; there is no more "pipeline predates the flag"
+            # branch to fall back to.
+            if not eco.stage_id.is_approved_stage:
                 raise UserError(
                     _(
                         "ECO %s must pass approval and sit in the "
@@ -823,10 +1104,32 @@ class SouthbrookEco(models.Model):
             # SAMI PRD PLM-02 — flag live MOs that were referencing the
             # versioned target. Non-fatal: failure to scan MUST NEVER
             # block the ECO apply itself.
+            #
+            # FIX 10 (2026-08-02 blindspot pass): the bare try/except here
+            # was documented "non-fatal" but wasn't actually safe against
+            # every failure mode — a DB-level error (e.g. an
+            # IntegrityError from the m2m write) poisons the CURSOR, not
+            # just raises a Python exception, and every subsequent
+            # statement on that cursor (including the terminal-state write
+            # below, and this whole ECO's apply) then fails too, rolling
+            # back the ECO's own already-committed change handler right
+            # along with it. `with self.env.cr.savepoint():` scopes any
+            # such failure to a rollback of ONLY the scan, leaving the
+            # cursor usable for everything after it — the exact pattern
+            # southbrook_plm_productgraph's ECO bridge already uses for
+            # this identical class of problem (see
+            # _trigger_pg_release there). Logged via the module logger
+            # instead of a silent `pass` so an operator can actually see
+            # that the scan failed, even though the apply itself proceeds.
             try:
-                eco._scan_and_flag_affected_mos()
+                with self.env.cr.savepoint():
+                    eco._scan_and_flag_affected_mos()
             except Exception:  # noqa: BLE001
-                pass
+                _logger.exception(
+                    "southbrook_plm: impact scan failed for ECO %s — the "
+                    "apply itself is unaffected (informational only).",
+                    eco.name,
+                )
             applied_stage = self.env["southbrook.eco.stage"].search(
                 [("is_applied_stage", "=", True)], limit=1
             )
@@ -837,12 +1140,12 @@ class SouthbrookEco(models.Model):
                 "stage_id": applied_stage.id if applied_stage else eco.stage_id.id,
             }
             # approver_id/approval_date are guaranteed set already (checked
-            # above) — no de-facto stamping here. plm_lifecycle authorises
-            # the terminal-state write past the write() forge-guard AND the
-            # new terminal-write immutability guard — we are inside the
-            # approver-gated action and have already run the change
-            # handler.
-            eco.with_context(plm_lifecycle=True).write(write_vals)
+            # above) — no de-facto stamping here. The lifecycle sentinel
+            # (FIX 1) authorises the terminal-state write past the write()
+            # forge-guard AND the terminal-write immutability guard — we
+            # are inside the approver-gated action and have already run
+            # the change handler.
+            eco.with_context(plm_lifecycle=PLM_LIFECYCLE).write(write_vals)
         return True
 
     # ------------------------------------------------------------------
@@ -861,17 +1164,59 @@ class SouthbrookEco(models.Model):
         # IS the authorization. (NF: caught by test_bom_eco_versions_and_archives
         # on the live v19 install — AccessError creating mrp.bom otherwise.)
         old = self.bom_id.sudo()
-        # Serialise concurrent applies against the same BoM. Without this,
-        # two ECOs applying to the same bom_id both read version N, both create
-        # an active version N+1, and both archive the original — leaving TWO
-        # active BoMs at the same version and breaking the "one active BoM per
-        # template" invariant the confirm-time snapshot relies on. FOR UPDATE
-        # blocks the second apply until the first commits; we then re-read and
-        # refuse if the BoM was archived out from under us. (Security audit
-        # 2026-07-11 — H3/M2.)
+        # Serialise concurrent applies against the same TEMPLATE, not just
+        # this one BoM row.
+        #
+        # The 2026-08-01 hardening pass locked only `old`'s row, then
+        # computed next_version from max(southbrook_version) across every
+        # mrp.bom sharing old.product_tmpl_id. That left a gap: two ECOs
+        # applying concurrently against DIFFERENT SIBLING VARIANT BoMs of
+        # the SAME template (e.g. old_A = 24" white BoM, old_B = 30" white
+        # BoM, both product_tmpl_id=T) each take a row lock on their OWN
+        # row — those locks don't conflict with each other at all — so
+        # both pass the archived-check, both read the same max() across T,
+        # both compute the same next_version, and the second COPY then
+        # dies on mrp.bom's version-uniqueness constraint (see
+        # mrp_bom.py._check_southbrook_version_unique). Not a silent
+        # corruption like the original H3/M2 gap, but still a hard,
+        # confusing failure for a legitimate concurrent apply.
+        #
+        # Fix (M4x hardening, 2026-08-02 blindspot pass): lock EVERY
+        # mrp.bom row for the template — not just `old`'s — before
+        # computing max(). The ordering below is deliberate and must stay
+        # in this sequence:
+        #
+        #   1. LOCK      — SELECT ... FOR UPDATE across ALL rows for the
+        #                   template, in a deterministic id order (ORDER
+        #                   BY id) so two concurrent applies against
+        #                   different sibling rows always attempt to
+        #                   acquire the SAME lock sequence and block each
+        #                   other rather than deadlocking against each
+        #                   other in opposite orders.
+        #   2. INVALIDATE — drop the ORM cache for exactly the rows we
+        #                   just locked, so the checks/reads in steps 3-4
+        #                   see the POST-LOCK, POST-COMMIT database state
+        #                   rather than a stale pre-lock cache read.
+        #   3. CHECK      — old.active, unchanged from the 2026-08-01 pass
+        #                   (refuse if a concurrent apply already archived
+        #                   `old` out from under us).
+        #   4. COMPUTE    — max(southbrook_version) across the (now
+        #                   lock-held, cache-fresh) template rows.
+        #
+        # Only after all four does the copy()/archive below run. The
+        # second apply in a concurrent pair blocks at step 1 until the
+        # first's transaction commits or rolls back, so it computes its
+        # max() against a template that already includes the first
+        # apply's new row — no collision is possible.
         self.env.cr.execute(
-            "SELECT id FROM mrp_bom WHERE id = %s FOR UPDATE", (old.id,))
-        old.invalidate_recordset(["active", "southbrook_version"])
+            "SELECT id FROM mrp_bom WHERE product_tmpl_id = %s ORDER BY id "
+            "FOR UPDATE",
+            (old.product_tmpl_id.id,),
+        )
+        locked_ids = [row[0] for row in self.env.cr.fetchall()]
+        self.env["mrp.bom"].browse(locked_ids).invalidate_recordset(
+            ["active", "southbrook_version"]
+        )
         if not old.active:
             raise UserError(_(
                 "BoM %s is already archived — it was versioned by a concurrent "
@@ -889,7 +1234,8 @@ class SouthbrookEco(models.Model):
         # alongside this hardening pass (see mrp_bom.py) would reject that
         # collision anyway, but computing it right here avoids ever hitting
         # that constraint in the first place. active_test=False so archived
-        # rows count too. (M4x hardening, 2026-08-01.)
+        # rows count too. (M4x hardening, 2026-08-01; lock widened to the
+        # whole template on 2026-08-02 — see above.)
         all_versions = (
             self.env["mrp.bom"]
             .sudo()
@@ -924,10 +1270,67 @@ class SouthbrookEco(models.Model):
             raise ValidationError(
                 _("ECO %s: a Candidate Cut Spec is required.") % self.name
             )
-        self.cut_spec_id.action_activate()
+        # FIX 12 (2026-08-02 blindspot pass): _scan_and_flag_affected_mos
+        # returns early for every target_kind other than 'bom' — cut specs
+        # don't bind to mrp.production directly — so activating a new cut
+        # spec (which changes panel-cut geometry for EVERY future job
+        # built against it) used to notify nobody at all. Capture the
+        # CURRENTLY active spec's values before action_activate supersedes
+        # it, so we can diff old vs new and post a delta. Deliberately
+        # read via sudo() + _get_active(), matching mrp_bom.py's
+        # _get_cut_constants() seam (cut specs are PLM-restricted reads).
+        prior_spec = self.env["southbrook.cut.spec"].sudo()._get_active()
+        prior_values = prior_spec.constants_dict() if prior_spec else {}
+        new_values = self.cut_spec_id.constants_dict()
+        # FIX 6 (2026-08-02 blindspot pass): action_activate now refuses to
+        # run unless it was reached with the lifecycle sentinel — this is
+        # the one sanctioned call site. See southbrook.cut.spec.
+        # action_activate's own docstring for the full rationale (bare
+        # public method + RPC ignoring view restrictions = a live spec
+        # activation with zero ECO trail).
+        self.cut_spec_id.with_context(
+            plm_lifecycle=PLM_LIFECYCLE
+        ).action_activate()
         self.message_post(
             body=_("Cut spec %s activated.") % self.cut_spec_id.display_name
         )
+        # Post the geometry delta. Deliberately defensive and entirely
+        # separate from the activation above: this notice is informational
+        # only (same non-fatal contract as _scan_and_flag_affected_mos /
+        # action_apply's impact scan) and must never block or unwind an
+        # apply that has already committed the real change.
+        try:
+            changed = {
+                fname: (prior_values.get(fname), new_values.get(fname))
+                for fname in CONSTANT_FIELDS
+                if prior_values.get(fname) != new_values.get(fname)
+            }
+            if changed:
+                delta_lines = "".join(
+                    "<li>%s: %s -> %s</li>" % (fname, old_val, new_val)
+                    for fname, (old_val, new_val) in changed.items()
+                )
+                self.message_post(
+                    body=_(
+                        "Cut-spec geometry delta (affects every future "
+                        "cut job): <ul>%s</ul>"
+                    )
+                    % delta_lines
+                )
+            elif prior_spec:
+                self.message_post(
+                    body=_(
+                        "Cut spec activated with no changed geometric "
+                        "constants versus the prior active spec."
+                    )
+                )
+        except Exception:  # noqa: BLE001
+            _logger.exception(
+                "southbrook_plm: cut-spec geometry-delta notice failed for "
+                "ECO %s (informational only — activation already "
+                "committed).",
+                self.name,
+            )
 
     def _apply_rule(self):
         self.ensure_one()
@@ -993,12 +1396,29 @@ class SouthbrookEco(models.Model):
         self.ensure_one()
         if self.target_kind != "bom" or not self.bom_id:
             return self.env["mrp.production"]
-        affected = self.env["mrp.production"].search([
+        # sudo() on the MO search + the m2m write. A PLM Approver is NOT
+        # necessarily a Manufacturing user — the two groups are unrelated —
+        # so this read raised AccessError for exactly the people the module
+        # expects to apply ECOs. The failure was invisible: action_apply
+        # swallows scan errors by design (the impact scan must never block a
+        # committed change), so every apply by a non-mrp approver silently
+        # produced an EMPTY affected-MO list. That is the root cause of the
+        # 2026-08-01 review's "affected_mo_count reads 0 on every ECO".
+        #
+        # Elevating is correct here on the same reasoning already applied to
+        # _apply_bom's BoM copy and mrp_bom._get_cut_constants' spec read:
+        # the ECO approval gate IS the authorization, and this is a
+        # read-only impact analysis whose ONLY side effect is populating a
+        # readonly audit m2m on the ECO itself. It grants no MO access to
+        # the user — the smart button that drills into the list is still
+        # subject to that user's own mrp.production rights.
+        # (2026-08-02: found by the blindspot pass's own test run.)
+        affected = self.env["mrp.production"].sudo().search([
             ("bom_id", "=", self.bom_id.id),
             ("state", "in", ["confirmed", "progress", "to_close"]),
         ])
         if affected:
-            self.affected_mo_ids = [(4, mo.id) for mo in affected]
+            self.sudo().affected_mo_ids = [(4, mo.id) for mo in affected]
         return affected
 
     def action_rescan_affected_mos(self):

@@ -15,7 +15,7 @@ rename them. Two flags carry behaviour:
   to Applied.
 """
 from odoo import _, api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 
 
 class SouthbrookEcoStage(models.Model):
@@ -51,6 +51,48 @@ class SouthbrookEcoStage(models.Model):
         help="Distinguishes the Rejected terminal stage from the Applied "
         "terminal stage. action_reject moves the ECO here.",
     )
+
+    # FIX 2 (2026-08-02 blindspot pass) considered adding tracking=True to
+    # approval_required / is_applied_stage / is_approved_stage / is_final /
+    # is_rejected_stage so flag drift (an admin quietly unflagging the
+    # Approved stage, say) shows up in the record's chatter. That requires
+    # this model to inherit mail.thread (tracking is chatter-backed), which
+    # it does not today. Adding that _inherit here would be schema churn
+    # (a new mail.thread's relational tables + a fat migration surface) on
+    # a model that has never carried a chatter — out of scope for a
+    # security/integrity fix batch that is supposed to touch behaviour, not
+    # add a new capability. Deliberately deferred; the audit-trail gap this
+    # leaves is real but is a separate, smaller follow-up (add mail.thread,
+    # then tracking=True on these five fields) rather than folded in here.
+
+    # ------------------------------------------------------------------
+    # Single-Approved-stage invariant
+    # ------------------------------------------------------------------
+    @api.constrains("is_approved_stage")
+    def _check_single_approved_stage(self):
+        # Mirrors southbrook.cut.spec._check_single_active's style exactly
+        # (search_count rather than a partial-unique index / EXCLUDE
+        # constraint — this model has no natural DB-level way to express
+        # "at most one row with flag=True" without one). FIX 2 (2026-08-02
+        # blindspot pass): southbrook.eco.action_apply / action_approve now
+        # both treat "the stage flagged is_approved_stage" as THE single,
+        # unambiguous Approved stage (see the fail-closed hardening on
+        # both of those methods). More than one flagged stage would make
+        # "sitting in the Approved stage" ambiguous again and reopen a
+        # version of the same gap this pass closes: an admin could flag a
+        # second stage instead of unflagging the only one, and Apply would
+        # accept an ECO sitting in either — silently widening what counts
+        # as "approved".
+        if self.filtered(lambda s: s.is_approved_stage):
+            approved = self.search_count([("is_approved_stage", "=", True)])
+            if approved > 1:
+                raise ValidationError(
+                    _(
+                        "At most one ECO stage may be flagged as the "
+                        "Approved stage — action_apply and action_approve "
+                        "both rely on that stage being unambiguous."
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Delete guard

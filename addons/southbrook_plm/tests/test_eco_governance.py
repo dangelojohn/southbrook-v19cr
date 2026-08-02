@@ -22,6 +22,7 @@ Run with:
     odoo-bin --test-enable --stop-after-init \\
         -i southbrook_plm -d <db>
 """
+from odoo.addons.southbrook_plm.models.plm_lifecycle import PLM_LIFECYCLE
 from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.tests import TransactionCase, new_test_user, tagged
 
@@ -103,11 +104,22 @@ class TestSouthbrookPlmGovernance(TransactionCase):
         self.assertNotEqual(eco.state, "applied")
 
     def test_apply_without_prior_approve_blocked(self):
-        """Forcing stage_id into the Approved stage by a bare write (NOT via
-        action_approve) must not satisfy Apply's gate — approver_id /
-        approval_date must actually have been stamped by action_approve."""
+        """Apply's gate cannot be satisfied by faking the stage.
+
+        Originally this test forced stage_id into the Approved stage by a
+        bare write and then asserted Apply still refused (because
+        approver_id/approval_date were blank). The 2026-08-02 hardening
+        closed the hole one level earlier: entering the Approved stage by a
+        bare write is itself refused, so the ECO can never even *look*
+        approved without action_approve having run. Assert both layers.
+        """
         eco = self._make_rule_eco("Apply without approve blocked")
-        eco.with_user(self.approver).write({"stage_id": self.stage_approved.id})
+        # Layer 1 — the stage cannot be forged, even by an approver.
+        with self.assertRaises(UserError):
+            eco.with_user(self.approver).write(
+                {"stage_id": self.stage_approved.id}
+            )
+        # Layer 2 — and Apply still refuses an unapproved ECO regardless.
         self.assertFalse(eco.approver_id)
         with self.assertRaises(UserError):
             eco.with_user(self.approver).action_apply()
@@ -227,7 +239,11 @@ class TestSouthbrookPlmGovernance(TransactionCase):
     def test_terminal_write_allowed_with_plm_lifecycle_context(self):
         eco = self._make_rule_eco("Terminal write lifecycle bypass")
         self._approve_and_apply(eco)
-        eco.with_context(plm_lifecycle=True).write(
+        # 2026-08-02: authorisation is the in-process PLM_LIFECYCLE sentinel,
+        # NOT the plain value True — a JSON-RPC caller can put `true` in a
+        # context dict but cannot fabricate object identity. The forged-True
+        # case is asserted to RAISE in test_eco_governance2.
+        eco.with_context(plm_lifecycle=PLM_LIFECYCLE).write(
             {"title": "Provenance-authorised edit"}
         )
         self.assertEqual(eco.title, "Provenance-authorised edit")
