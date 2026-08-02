@@ -1077,14 +1077,36 @@ $sbk-amber:      var(--sb-status-warn-fg);
 // `opacity: 0.7`. Against this box's actual background (`.o_sbk_remainder`'s
 // #FEF9EC), that measured 2.87:1 — well under the WCAG AA 4.5:1 text
 // minimum (computed via the standard relative-luminance formula, not
-// eyeballed). Swapped to the canonical --sb-status-late-fg token
-// (southbrook_ui, closest hue/value to the removed amber) at full
-// opacity: #AC5819 on #FEF9EC = 4.80:1 (PASS). De-emphasis now comes
-// from the smaller font-size alone, not from diluting contrast.
+// eyeballed).
+//
+// Fix round 1 (review) — the first pass swapped only the foreground to
+// --sb-status-late-fg (a THEME-REACTIVE custom property — see southbrook_
+// ui's `_sb_tokens.scss` dark-mode mixin) while leaving it sitting on the
+// hardcoded, non-reactive #FEF9EC background. That passes in light mode
+// (4.80:1) but FAILS the instant a viewer's OS prefers dark: the token's
+// dark-mode value (#DF7421) measures only 3.00:1 against the same locked
+// #FEF9EC — an unmatched reactive-fg-on-static-bg pairing.
+//
+// Correct fix: the MATCHED --sb-status-late-* triple, the SAME pattern
+// this file already uses for `.o_sbk_data_flag` and `.o_sbk_validation_
+// chip` (color + background + border-color all from one status set).
+// Because bg and fg rebind TOGETHER under [data-theme="dark"] /
+// prefers-color-scheme, both stay AA by the token file's own contract:
+//   light: #AC5819 fg on #FBF1E9 bg = 4.53:1 (PASS)
+//   dark:  #DF7421 fg on #392719 bg = 4.50:1 (PASS)
+// This intentionally decouples this one small pill from its parent
+// `.o_sbk_remainder`'s own still-hardcoded #FEF9EC/#FDE68A (that
+// container has no dark-mode rule anywhere in this file today) — a
+// known, accepted visual seam until the parent gets full theme support;
+// see the task-38 report's Concerns section.
 .o_sbk_remainder_strategy {
     font-size: 10px;
-    color: var(--sb-status-late-fg);
     margin-left: 4px;
+    padding: 1px 5px;
+    border-radius: var(--sb-corner-sm, 4px);
+    color: var(--sb-status-late-fg);
+    background: var(--sb-status-late-bg);
+    border: 1px solid var(--sb-status-late-border);
 }
 .o_sbk_snap_hint {
     margin: 8px 0 4px;
@@ -1223,19 +1245,38 @@ $sbk-amber:      var(--sb-status-warn-fg);
 // Task 38 (client hardening, corner-remediation) — this used to inherit
 // .o_sbk_viewbtn's #1a2233 and dilute it with `opacity: 0.55`. Against
 // the viewbar's actual (near-white) background that measured 3.69:1 —
-// under the WCAG AA 4.5:1 text minimum (computed via the standard
-// relative-luminance formula, not eyeballed). Swapped to $sbk-muted
-// (var(--sb-ink-dim)) at full opacity — the same de-emphasized-text
-// token this file's own header note already fixed to ~4.83:1 against
-// white for every other $sbk-muted consumer; measured here specifically
-// at #6B7280 on white = 4.83:1 (PASS). De-emphasis now comes from the
-// smaller font-size alone, not from diluting contrast.
+// under the WCAG AA 4.5:1 text minimum.
+//
+// Fix round 1 (review) — the first pass swapped to `$sbk-muted` (i.e.
+// `var(--sb-ink-dim)`), which passes in light mode (4.83:1) but is a
+// THEME-REACTIVE custom property: under a dark OS preference it rebinds
+// to #8A93A3 (southbrook_estimating's `_southbrook_design_tokens.scss`
+// dark mixin) — measured only ~3.10:1 against this SAME hardcoded,
+// non-reactive #FFFFFF-ish viewbar background, because `.o_sbk_viewbar`/
+// `.o_sbk_viewbtn` never gained their own dark-mode rule anywhere in
+// this file. A reactive foreground on a locked-light background is
+// exactly backwards.
+//
+// Correct fix: this whole viewbar is a light-surface-only component
+// today (no `[data-theme]`/`prefers-color-scheme` block exists for it
+// anywhere in this stylesheet) — so the foreground must be equally
+// non-reactive, not a token that silently drifts out from under it.
+// $sbk-mid (#4A4E57, a plain SCSS literal — NOT `var(--sb-ink-dim)`,
+// already used elsewhere in this file, e.g. `.o_sbk_metric`) is that:
+// fixed in both themes because nothing here participates in theming.
+//   light normal (#4A4E57 vs white viewbar)                = 8.34:1 (PASS)
+//   light active (#4A4E57 vs .is-active's rgba(26,102,212,.18) tint) = 6.45:1 (PASS)
+//   dark normal  (same literal, same locked-light bg — unchanged)   = 8.34:1 (PASS)
+//   dark active  (same literal, same locked-light bg — unchanged)   = 6.45:1 (PASS)
+// Both states already clear AA with one literal — no separate
+// `.is-active`-scoped override is needed (unlike the round-1 fg, which
+// failed the active state at ~3.7:1; see the report for that number).
 .o_sbk_viewkey {
     margin-left: auto;
     // Typo-spec item 2 — keyboard-shortcut key label, bare monospace → mono token.
     font-family: var(--sb-font-mono);
     font-size: 10px;
-    color: $sbk-muted;
+    color: $sbk-mid;
 }
 .o_sbk_viewsep {
     height: 1px;

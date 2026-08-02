@@ -122,3 +122,56 @@ test("a second, later call still updates state normally once the first has alrea
         "a later, non-overlapping call must still update state normally");
     h.destroy();
 });
+
+// Fix round 1 (review, MINOR) — the `finally` block used to clear
+// `state.validation.loading` unconditionally on EVERY settlement, stale
+// or not. With 3+ overlapping calls a very-stale response (the OLDEST of
+// three) could settle before the newest one comes back, flipping the
+// loading indicator off while a still-pending, still-relevant request is
+// genuinely in flight. The fix gates that write with the exact same
+// `seq === this._validationReqSeq` check the data-write guard already
+// uses. This test drives a 3-way overlap end to end.
+test("fix round 1 (review): loading is not cleared by a very-stale response while a newer request is still in flight (3-way overlap)", async () => {
+    const h = await mountHydrated();
+    const resolvers = [];
+    __onRoute("/southbrook_kitchen/configurator/validate", () => new Promise((resolve) => {
+        resolvers.push(resolve);
+    }));
+
+    const pOldest = h.component._refreshValidation();   // seq N   (oldest)
+    const pMiddle = h.component._refreshValidation();   // seq N+1 (middle)
+    const pNewest = h.component._refreshValidation();   // seq N+2 (newest)
+    assert.equal(resolvers.length, 3, "all three overlapping calls each fired their own RPC");
+    assert.equal(h.component.state.validation.loading, true);
+
+    // The OLDEST request settles FIRST (very stale) while the middle AND
+    // newest are BOTH still genuinely in flight.
+    resolvers[0]({ issues: [], counts: { blocking: 0, warning: 0 }, ready: true });
+    await pOldest;
+    assert.equal(h.component.state.validation.loading, true,
+        "a very-stale response settling must NOT clear loading while a newer request is still pending");
+
+    // The NEWEST request settles next — it currently matches the live
+    // counter, so it's the one that gets to apply data AND clear loading.
+    resolvers[2]({
+        issues: [{ code: "EMPTY_DESIGN", severity: "blocking",
+                   message: "z", line_ids: [], layout_keys: [] }],
+        counts: { blocking: 1, warning: 0 }, ready: false,
+    });
+    await pNewest;
+    assert.equal(h.component.state.validation.counts.blocking, 1,
+        "the newest response's data is applied");
+    assert.equal(h.component.state.validation.loading, false,
+        "the newest (currently-matching) request owns clearing loading once it settles");
+
+    // The MIDDLE request settles LAST, after the newest already landed
+    // and cleared loading — it is now ALSO stale (a newer request — the
+    // one above — has been issued and already resolved since it started).
+    resolvers[1]({ issues: [], counts: { blocking: 0, warning: 0 }, ready: true });
+    await pMiddle;
+    assert.equal(h.component.state.validation.counts.blocking, 1,
+        "the middle (now also stale) response must not overwrite the newest data");
+    assert.equal(h.component.state.validation.loading, false,
+        "a stale response settling after loading was already cleared must not flip it back on");
+    h.destroy();
+});

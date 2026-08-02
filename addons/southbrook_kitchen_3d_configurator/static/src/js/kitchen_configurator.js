@@ -1984,11 +1984,19 @@ class SouthbrookKitchenConfigurator extends Component {
             console.warn(
                 "[SouthbrookKitchenConfigurator] validate failed:", e);
         } finally {
-            // A stale/superseded response still clears ITS OWN loading
-            // write; the newer, still-in-flight request (if any) owns
-            // setting this back to true and will flip it false again
-            // when IT settles — no lost state either way.
-            this.state.validation.loading = false;
+            // Fix round 1 (review) — this used to clear `loading`
+            // unconditionally. With 3+ overlapping calls, a very-stale
+            // request (seq 1 of 3) could settle AFTER a newer one (seq
+            // 2) already applied its data but BEFORE the newest (seq 3)
+            // has come back — clearing `loading` here would flip the
+            // indicator off while seq 3 is still genuinely in flight.
+            // Only the request that currently matches the live counter
+            // (i.e. no newer request has been issued since) may own
+            // this write; every other settlement — earlier or later in
+            // wall-clock time — leaves it alone.
+            if (seq === this._validationReqSeq) {
+                this.state.validation.loading = false;
+            }
         }
     }
 
