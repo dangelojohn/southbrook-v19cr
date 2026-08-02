@@ -857,6 +857,133 @@ class MrpBom(models.Model):
         })
         return product
 
+    # ------------------------------------------------------------------
+    # Researched North American sheet-goods costs (client-authorized,
+    # 2026-08-02 pricing pass). Applied by
+    # ``_southbrook_apply_researched_sheet_goods_costs`` below. Full
+    # citations live in scratchpad/retest/pricing-sheetgoods.md — read
+    # that file in full before touching this table.
+    #
+    # SCOPE (deliberately not comprehensive — see the source doc's own
+    # gaps section): "melamine 3/4in", "melamine 1/4in (backs)",
+    # "maple edge tape", "baltic birch 5x5", and "thermofoil door" all
+    # have researched figures too, but NONE of them has a real,
+    # purchasable BOM-component product in this codebase to apply to —
+    # this generator has no baltic-birch/drawer-box substrate, no
+    # distinct maple-veneer-tape SKU (only the one generic PVC roll),
+    # and no purchased-slab-door product at all (doors are cut from the
+    # ply_3_4 panel-substrate placeholder, not bought finished). Those
+    # figures are intentionally NOT applied to anything here rather than
+    # invented onto the wrong product — see pricing-applied.md for the
+    # explicit skip log.
+    _RESEARCHED_SHEET_GOODS_COSTS = {
+        "melamine_white_5_8": {
+            "price": 58.00,
+            "source": (
+                "Mid-point of $44 (Chamberlain Timber Mart, live "
+                "small-yard CAD price) to $73 (RONA Crystal White, "
+                "box-store) CAD/sheet, 2026-08-02, confidence: medium. "
+                "UNIT CAVEAT (pre-existing, not fixed by this seeder): "
+                "this RM- placeholder's BOM qty is 1-unit-per-PANEL, "
+                "not per real sheet (see _southbrook_get_or_create_"
+                "raw_material's own docstring) — applying a per-sheet "
+                "figure here overstates true per-panel cost until real "
+                "area-based costing lands (sb_material_core / "
+                "sb_material_mrp, currently uninstalled). Flagged, not "
+                "silently corrected — that is a separate, larger "
+                "architecture decision, not this seeder's job."
+            ),
+        },
+        "ply_3_4": {
+            "price": 103.99,
+            "source": (
+                "RONA - Maple Sanded Air-Dried Prefinished Plywood "
+                "3/4in x 4x8, SKU 51206975, $103.99 CAD/sheet, "
+                "2026-08-02, confidence: high (specific dated CAD "
+                "quote). SKU MAPPING: this RM- placeholder is the "
+                "generic '3/4in Plywood Panel Stock' bound to "
+                "door-panel lines; no distinct maple-specific SKU "
+                "exists in this catalog, so the maple-faced-ply figure "
+                "is applied here as the best available match. Same "
+                "per-panel-not-per-sheet caveat as melamine above "
+                "applies."
+            ),
+        },
+    }
+    # Edge-banding tape: research gives a $/linear-ft mid-range rate;
+    # this product's BOM qty is whole linear METRES (see
+    # _southbrook_get_or_create_edge_banding_tape — qty =
+    # ceil(edge_banding_length_mm / 1000)). UNIT CONVERSION: $0.12
+    # CAD/ft (mid of the $0.10-0.15/ft working range — WWHardware /
+    # Westlund non-glued white PVC .018in tape, various listings,
+    # 2026-08-02, confidence: medium) x 3.28084 ft/m = $0.3937 CAD/m.
+    _EDGEBAND_FT_TO_M_PRICE = round(0.12 * 3.28084, 4)
+
+    @api.model
+    def _southbrook_apply_researched_sheet_goods_costs(self):
+        """Idempotent, fill-zeros-only seeder for the panel-substrate +
+        edge-banding placeholder costs researched 2026-08-02
+        (client-authorized — see scratchpad/retest/pricing-
+        sheetgoods.md).
+
+        Uses the SAME get-or-create helpers the catalog BoM generator
+        itself uses (``_southbrook_get_or_create_raw_material`` /
+        ``_southbrook_get_or_create_edge_banding_tape``) so this
+        seeder works correctly whether or not the catalog generator has
+        already run on a given database — it materializes the
+        placeholder product if missing (idempotent by stable xmlid,
+        exactly like the generator's own calls), then only ever fills
+        its price if that price is currently zero.
+
+        HARD RULE (do not relax): never overwrites a non-zero
+        ``standard_price`` — see southbrook_hardware_catalog's sibling
+        method for the full rationale (a concurrent Marathon
+        warehouse/brand pricing pass always wins). Re-running this
+        method after it has already applied a cost is a no-op.
+
+        Company-currency note: figures are CAD — same "verify
+        res.company.currency_id before trusting these numbers" caveat
+        as the hardware/fastener sibling seeders; logged, non-blocking.
+
+        Returns {"applied": [...], "skipped_nonzero": [...]} (default
+        codes).
+        """
+        company_currency = self.env.company.currency_id.name
+        if company_currency != "CAD":
+            _logger.warning(
+                "Researched sheet-goods cost seeder: company currency "
+                "is %s, not CAD — the figures in _RESEARCHED_SHEET_"
+                "GOODS_COSTS / _EDGEBAND_FT_TO_M_PRICE are "
+                "CAD-denominated and are applied as-is to "
+                "standard_price regardless. Verify res.company."
+                "currency_id before trusting these numbers on this "
+                "database (db=%s).",
+                company_currency, self.env.cr.dbname,
+            )
+
+        applied, skipped_nonzero = [], []
+
+        for substrate, info in self._RESEARCHED_SHEET_GOODS_COSTS.items():
+            product = self._southbrook_get_or_create_raw_material(substrate)
+            if product.standard_price:
+                skipped_nonzero.append(product.default_code)
+                continue
+            product.standard_price = info["price"]
+            applied.append(product.default_code)
+
+        eb_product = self._southbrook_get_or_create_edge_banding_tape()
+        if eb_product.standard_price:
+            skipped_nonzero.append(eb_product.default_code)
+        else:
+            eb_product.standard_price = self._EDGEBAND_FT_TO_M_PRICE
+            applied.append(eb_product.default_code)
+
+        _logger.info(
+            "Researched sheet-goods cost seeder: applied=%s "
+            "skipped_nonzero=%s", applied, skipped_nonzero,
+        )
+        return {"applied": applied, "skipped_nonzero": skipped_nonzero}
+
     def _southbrook_get_or_create_edge_banding_tape(self):
         """Get-or-create a single placeholder edge-banding-tape product,
         same get-or-create-by-stable-xmlid pattern as

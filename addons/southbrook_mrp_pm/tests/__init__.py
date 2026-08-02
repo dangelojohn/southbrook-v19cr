@@ -7,3 +7,4 @@ from . import test_w019_today_plan_sections
 from . import test_w048_shop_daily
 from . import test_w068_plan_delta
 from . import test_p1_late_tile
+from . import test_researched_fastener_pricing_2026_08_02

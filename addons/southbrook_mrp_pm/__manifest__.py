@@ -40,7 +40,7 @@ analysis. Layered build:
       M17 Floor Manager access group
       M20 ECO → in-flight MO notification rule
 """,
-    "version": "19.0.1.14.1",
+    "version": "19.0.1.14.2",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "website": "https://southbrookcabinetry.space",

@@ -283,3 +283,215 @@ class SouthbrookHardwareCatalog(models.AbstractModel):
             return None
         size_key = f"{pull_size_mm}mm"
         return finish_map.get(size_key) or finish_map.get("default")
+
+    # ------------------------------------------------------------------
+    # Researched North American component costs (client-authorized,
+    # 2026-08-02 pricing pass). Applied by
+    # ``_southbrook_apply_researched_hardware_costs`` below. Full
+    # citations live in scratchpad/retest/pricing-hardware.md (read that
+    # file for the complete sourcing table) — each entry here is a
+    # one-line summary of that document's provenance for the SKU, per
+    # the task's "the code IS the provenance record" instruction.
+    #
+    # x_pricing_pending is DELIBERATELY left untouched by this seeder
+    # (still True on every SKU below, before and after). See
+    # tests/test_pending_pricing.py::test_every_seed_sku_is_pricing_
+    # pending — that invariant is CORRECT to keep: every figure below is
+    # a retail-derived or explicit low-confidence estimate (Richelieu,
+    # the real Ontario trade source, gates its net pricing behind a
+    # trade-account login per pricing-hardware.md's own caveat), not a
+    # confirmed trade-account cost. "Pending" still accurately describes
+    # these numbers even once applied.
+    _RESEARCHED_HARDWARE_COSTS = {
+        "BLM-110-SC": {
+            "price": 9.00,
+            "source": (
+                "Rockler.com - Blum 71B3550 CLIP top BLUMOTION 110deg "
+                "soft-close 20-pack $109.99 USD ($5.50/hinge) x 1.40 "
+                "CAD/USD + Blum Warehouse UK 0mm mounting plate ~$1.30 "
+                "CAD cross-ref, 2026-08-02, confidence: medium "
+                "(retail-derived)."
+            ),
+        },
+        "SAL-C2R-165": {
+            "price": 5.25,
+            "source": (
+                "Westlund Distributing - Salice C2RFA99 165deg blind-"
+                "corner hinge, $3.75 USD single-unit x 1.40, 2026-08-02, "
+                "confidence: medium (retail-derived)."
+            ),
+        },
+        "BLM-MOV-450": {
+            "price": 43.75,
+            "source": (
+                "WWHardware.com - Blum 563H4570B TANDEM 18in full-"
+                "extension slide PAIR, $31.25 USD/set x 1.40, "
+                "2026-08-02, confidence: firm (retail quote). PRICED "
+                "PER PAIR - hardware_map.json's per_drawer rule already "
+                "carries qty=1/drawer meaning one pair; no further unit "
+                "conversion needed on this SKU."
+            ),
+        },
+        "MRH-CAMLOCK-KIT": {
+            "price": 0.55,
+            "source": (
+                "Hartert-Russell-Home (Hafele Minifix-15 cam, $0.14 "
+                "USD) + Hafele.com (Minifix C100 spreading bolt, ~$0.25 "
+                "USD), summed x 1.40, 2026-08-02, confidence: low-medium "
+                "(retail-derived, two micro-retailers stitched "
+                "together). SKU MAPPING: pricing-hardware.md's own "
+                "header names MRH-CAMLOCK-KIT (not FAST-CAM) as the "
+                "repo SKU this cam+bolt figure targets."
+            ),
+        },
+        "MRH-HDL-PUL128": {
+            "price": 2.83,
+            "source": (
+                "Home Depot Canada - Richelieu Essentials 128mm bar "
+                "pull 6-pack, $16.98 CAD / 6, 2026-08-02, confidence: "
+                "medium (firm CAD price, quoted for the Brushed English "
+                "Gold finish tier - this SKU's actual Brushed Nickel "
+                "finish wasn't independently re-priced this pass)."
+            ),
+        },
+        "MRH-MTGSCR-25PK": {
+            # UNIT CONVERSION: research gives $/each; this SKU's UoM is
+            # a 25-pack (see southbrook_hardware_seed.xml's "Eurocam
+            # Screw 25-Pack"). $0.1257 CAD/ea x 25 = $3.1425/pack.
+            "price": round(0.1257 * 25, 4),
+            "source": (
+                "Home Depot - Everbilt #8x1-1/4in wood screw, $8.98 "
+                "USD/100 x 1.40 = $0.1257 CAD/ea, 2026-08-02, "
+                "confidence: firm retail (USD converted). SKU MAPPING "
+                "INFERENCE: the research found no confirmed repo-SKU "
+                "match for a generic wood screw; MRH-MTGSCR-25PK "
+                "('Eurocam Screw 25-Pack, cabinet mounting') is this "
+                "catalog's closest generic cabinet-mounting screw - "
+                "applied here as the best available match, not a "
+                "research-confirmed exact SKU tie."
+            ),
+        },
+        "SB-CM-BCO": {
+            "price": 991.19,
+            "source": (
+                "Ferguson Home - Rev-A-Shelf 5PSP-18SC-CR 18in blind-"
+                "corner pull-out (soft-close), $707.99 USD x 1.40, "
+                "2026-08-02, confidence: medium (retail-derived, mid "
+                "tier - the research's recommended default)."
+            ),
+        },
+        "SB-CM-CPOS": {
+            "price": 173.17,
+            "source": (
+                "Home Depot - Rev-A-Shelf 6472-32-11-52 32in white "
+                "polymer 2-shelf kidney lazy-susan set, $123.69 USD x "
+                "1.40, 2026-08-02, confidence: firm retail (USD "
+                "converted). SKU MAPPING: verified against "
+                "corner_solutions_seed.xml - this is the mechanism "
+                "hardware_map.json's 'corner:diag' per_family_subtype "
+                "rule resolves to for a diagonal lazy-susan cabinet "
+                "(seeded product name says 'Pull-Out Shelving' rather "
+                "than 'lazy susan' but occupies the same functional "
+                "slot; SB-CM-LCPOS/SB-CM-PBCO/etc. are NOT wired to any "
+                "resolve() rule and are out of scope here)."
+            ),
+        },
+        "SB-CM-PBCO": {
+            # UNRELIABLE tier per the task brief — set the conservative
+            # LOW end of the sourced range, flagged for a supplier
+            # quote (see note_append below, written to x_material).
+            "price": 1120.00,
+            "source": (
+                "UNRELIABLE (Vauth-Sagel VS COR premium tier) - no firm "
+                "current price found for a full VS COR Fold assembly; "
+                "comparable VS COR Flex subassemblies run ~$400-500 USD "
+                "each (not a full set) on CabinetParts.com, 2026-08-02, "
+                "confidence: LOW. Conservative LOW end of the "
+                "directional $1,120-1,680 CAD range applied per task "
+                "instruction (set the LOW figure + flag for a supplier "
+                "quote rather than guess the midpoint)."
+            ),
+            "note_append": "PRICING ESTIMATE — needs supplier quote (2026-08-02)",
+        },
+    }
+
+    @api.model
+    def _southbrook_apply_researched_hardware_costs(self):
+        """Idempotent, fill-zeros-only seeder for the hinge / slide /
+        cam-lock / handle / corner-mechanism costs researched 2026-08-02
+        (client-authorized — see scratchpad/retest/pricing-hardware.md,
+        read in full before touching ``_RESEARCHED_HARDWARE_COSTS``
+        above).
+
+        HARD RULE (do not relax): a product whose ``standard_price`` is
+        already non-zero is SKIPPED, never overwritten. A concurrent
+        session may be applying real Marathon warehouse/brand pricing
+        to the same SKUs — that data always wins over this
+        retail-derived research pass. Re-running this method after it
+        has already applied a cost is a no-op for every SKU it touched
+        the first time (idempotent): once ``standard_price`` is
+        non-zero, this method's own prior write makes every later call
+        treat that SKU as already-priced and skip it exactly like a
+        concurrent session's write would.
+
+        Company-currency note: the sourced figures are CAD. This method
+        does NOT convert currency — it assumes ``standard_price`` is
+        being set in the current company's own currency. Callers /
+        reviewers must verify ``res.company.currency_id`` is actually
+        CAD before trusting the numeric values on a given database; a
+        mismatch is logged as a warning but does not block the write
+        (this seeder never touches a production company).
+
+        Returns a dict: {"applied": [...], "skipped_nonzero": [...],
+        "skipped_no_product": [...]} — SKU lists, for logging and test
+        assertions.
+        """
+        company_currency = self.env.company.currency_id.name
+        if company_currency != "CAD":
+            _logger.warning(
+                "Researched hardware cost seeder: company currency is "
+                "%s, not CAD — the figures in _RESEARCHED_HARDWARE_"
+                "COSTS are CAD-denominated and are applied as-is to "
+                "standard_price regardless. Verify res.company."
+                "currency_id before trusting these numbers on this "
+                "database (db=%s).",
+                company_currency, self.env.cr.dbname,
+            )
+
+        Product = self.env["product.product"].sudo()
+        applied, skipped_nonzero, skipped_no_product = [], [], []
+
+        for sku, info in self._RESEARCHED_HARDWARE_COSTS.items():
+            product = Product.search([
+                "|", ("x_marathon_sku", "=", sku), ("default_code", "=", sku),
+            ], limit=1)
+            if not product:
+                skipped_no_product.append(sku)
+                _logger.warning(
+                    "Researched hardware cost seeder: SKU '%s' not "
+                    "found in the installed catalog — skipped.", sku,
+                )
+                continue
+            if product.standard_price:
+                skipped_nonzero.append(sku)
+                continue
+
+            product.standard_price = info["price"]
+            note_append = info.get("note_append")
+            if note_append and note_append not in (product.x_material or ""):
+                product.x_material = (
+                    f"{product.x_material} — {note_append}"
+                    if product.x_material else note_append
+                )
+            applied.append(sku)
+
+        _logger.info(
+            "Researched hardware cost seeder: applied=%s "
+            "skipped_nonzero=%s skipped_no_product=%s",
+            applied, skipped_nonzero, skipped_no_product,
+        )
+        return {
+            "applied": applied,
+            "skipped_nonzero": skipped_nonzero,
+            "skipped_no_product": skipped_no_product,
+        }
