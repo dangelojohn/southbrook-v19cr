@@ -1355,6 +1355,16 @@ class SouthbrookKitchenDesign(models.Model):
             "price":           cabinet_price,
             "cabinet_price":   cabinet_price,
             "filler_price":    filler_price,
+            # Fix A (P0, 2026-08-02) — load_design_lines/rearrange both
+            # already source their "summary" key from this ONE method
+            # (see the class comment above), so it's the design-level
+            # payload a reload actually gets without a controller
+            # change. Echoed here (not just in action_open_configurator's
+            # params) so a direct-URL reload — which skips those params
+            # entirely, per the PR2.5a Gap 1 comment in controllers/
+            # main.py's load_design_lines — still rehydrates the
+            # customer chip instead of leaving it blank.
+            "partner_name":    self.partner_id.name or "",
         }
 
     # ── Touch editing v1 (2026-08-02 spec §4 item 2) ─────────────────────────────
@@ -1399,6 +1409,7 @@ class SouthbrookKitchenDesign(models.Model):
         out = []
         for line in lines:
             product = line.product_id
+            tmpl = product.product_tmpl_id
             out.append({
                 "id":             product.id,
                 "product_id":     product.id,
@@ -1425,6 +1436,25 @@ class SouthbrookKitchenDesign(models.Model):
                 "zone":           line.zone or "base_run",
                 "appliance_type": line.appliance_type or False,
                 "is_unresolved":  line.is_unresolved,
+                # Fix B (P1, 2026-08-02) — the line list showed "—" for
+                # SKU/Material/BoM on every loaded line even though the
+                # product resolves fine; this was a display gap in the
+                # serializer, not a resolution failure. `product`/`tmpl`
+                # can legitimately be empty (an is_unresolved ghost slot
+                # never got a real product), so every read here is
+                # getattr-style defensive — same style controllers/
+                # main.py's /products route already uses for these same
+                # southbrook_* fields (main.py ~1671/1691/1696).
+                "sku":            product.default_code or "",
+                "material":       getattr(tmpl, "southbrook_material", None) or "",
+                # southbrook_bom_available is product.template's own
+                # @api.depends("bom_ids") compute (product_template.py)
+                # — reusing it (rather than a per-line mrp.bom search)
+                # means Odoo's prefetch computes it ONCE for every
+                # template in this recordset's batch, not N queries.
+                # Degrades to False if the field isn't there at all.
+                "bom_available":  bool(getattr(tmpl, "southbrook_bom_available",
+                                                False)),
             })
         return out
 
@@ -1439,6 +1469,54 @@ class SouthbrookKitchenDesign(models.Model):
     # SB-CORNER; wall uses SB-WALL-CORNER. (Style variants — blind/diagonal —
     # are a later refinement driven by run length + storage choice.)
     _CORNER_SKU = {"base": "SB-CORNER", "wall": "SB-WALL-CORNER"}
+
+    # P0 E2E fix (2026-08-02) — "Auto-arrange" report support. Counts
+    # blocking same-elevation footprint collisions among ACTIVE cabinet
+    # lines, using the exact same primitive
+    # (`kitchen_layout_engine.solid_overlap_from_anchor_mm`, OBB-aware,
+    # rotation-honouring) and elevation classification as
+    # `_check_production_ready`'s check #7 (FOOTPRINT_COLLISION) — this
+    # is a deliberate MIRROR, not a shared call, because check #7's
+    # `_footprint_layer` is a local closure (it also feeds check #3's
+    # dedupe there) and hoisting it out is a bigger, riskier refactor
+    # than this single-purpose fix warrants. Any drift between the two
+    # would only ever make this counter and the actual validator
+    # blocker disagree, which is why the classification below is a
+    # byte-for-byte copy. Used by action_auto_arrange to report
+    # `overlaps_before`/`overlaps_after` so the explicit "Auto-arrange"
+    # button can tell a user whether it actually resolved their
+    # blocker instead of returning silent success (V-report P0).
+    def _sb_count_footprint_overlaps(self):
+        def _layer(line):
+            if line.cabinet_type == "wall" or (
+                    line.cabinet_type == "corner" and line.zone == "wall"):
+                return "wall"
+            return "base"
+
+        by_layer = {}
+        for line in self.cabinet_line_ids:
+            if line.cabinet_type in ("filler", "panel"):
+                continue
+            by_layer.setdefault(_layer(line), []).append(line)
+        count = 0
+        for lines in by_layer.values():
+            for i in range(len(lines)):
+                for j in range(i + 1, len(lines)):
+                    a, b = lines[i], lines[j]
+                    cab_a = {"width_mm": (a.width_in or 0) * _MM_PER_IN,
+                             "depth_mm": (a.depth_in or 0) * _MM_PER_IN}
+                    cab_b = {"width_mm": (b.width_in or 0) * _MM_PER_IN,
+                             "depth_mm": (b.depth_in or 0) * _MM_PER_IN}
+                    place_a = {"x": (a.x_position_in or 0) * _MM_PER_IN,
+                               "z": (a.z_position_in or 0) * _MM_PER_IN,
+                               "rotation_deg": a.rotation_deg or 0}
+                    place_b = {"x": (b.x_position_in or 0) * _MM_PER_IN,
+                               "z": (b.z_position_in or 0) * _MM_PER_IN,
+                               "rotation_deg": b.rotation_deg or 0}
+                    if kitchen_layout_engine.solid_overlap_from_anchor_mm(
+                            cab_a, place_a, cab_b, place_b):
+                        count += 1
+        return count
 
     def action_auto_arrange(self, sync=True):
         """Auto-distribute this design's cabinets across walls into an L/U
@@ -1457,8 +1535,43 @@ class SouthbrookKitchenDesign(models.Model):
         re-arrange back, so the design is never left half-modified. Callable
         from HTTP, tests, cron, or shell.
 
-        Returns {corners, removed, inserted}. Raises LayoutCapacityExceeded
-        when the cabinets cannot physically fit the room.
+        Returns {corners, removed, inserted, moved, overlaps_before,
+        overlaps_after, summary}. Raises LayoutCapacityExceeded when the
+        cabinets cannot physically fit the room.
+
+        P0 E2E fix (2026-08-02) — the "Auto-arrange" toolbar button
+        (kitchen_configurator.js Task 35) re-invokes this method directly;
+        before this fix its return value carried no before/after signal,
+        so a user who clicked it while a FOOTPRINT_COLLISION blocker was
+        active saw identical counts/price/blocker either way — indistin-
+        guishable from the button doing nothing. `moved`/`overlaps_before`/
+        `overlaps_after`/`summary` (new) let the caller report what
+        actually happened, including the honest "nothing to do" and
+        "didn't fully resolve it" cases (moved=0 is a real, representable
+        outcome, not an absent key).
+
+        Wall preservation (why `auto_assign` stays `not manual`, unchanged
+        by this fix): within any one (wall, zone-cursor) run,
+        kitchen_layout_engine.layout() computes every member's position
+        from a cumulative-width cursor — it is NEVER read from the
+        cabinet's prior stored x/z. That makes an overlap between two
+        cabinets sharing a wall+zone mathematically impossible to survive
+        a call to this method, whether or not `auto_assign` re-buckets
+        cabinets onto different walls first. Passing auto_assign=True for
+        the manual branch would therefore buy no additional overlap-
+        safety — it would only discard every cabinet's WALL, which a
+        Floor Manager who deliberately placed one on the left wall does
+        not expect from "Auto-arrange". So this fix keeps `auto_assign =
+        not manual` (preserve wall choices) and instead makes the
+        (previously invisible) *result* honest: `overlaps_before`/
+        `overlaps_after` are measured directly against the persisted
+        lines (same OBB collision primitive as the validator's
+        FOOTPRINT_COLLISION check), so a residual collision this method's
+        per-run packer cannot reach — e.g. two runs on DIFFERENT walls
+        that physically collide in a corner cell because the corner SKU
+        couldn't be resolved (see the "corner sku missing" warning below)
+        — is reported as still-blocking instead of silently declared
+        fixed.
         """
         self.ensure_one()
         design = self.sudo()
@@ -1468,6 +1581,23 @@ class SouthbrookKitchenDesign(models.Model):
         MM = 25.4
         _t0 = time.time()
         _logger.info("[auto-arrange] started design=%s", design.id)
+
+        # P0 E2E fix (2026-08-02) — captured OUTSIDE the savepoint (pure
+        # reads, nothing to roll back) against the lines exactly as the
+        # user left them before clicking arrange. `pre_state` keys off
+        # line id so the post-run comparison below can tell a REPOSITIONED
+        # survivor from a superseded/inserted one (those are already
+        # counted by `removed`/`inserted`) — a line id absent from the
+        # post-run active set just isn't compared, never miscounted as
+        # "moved".
+        overlaps_before = design._sb_count_footprint_overlaps()
+        pre_state = {
+            l.id: (l.wall, round(l.x_position_in or 0.0, 3),
+                   round(l.y_position_in or 0.0, 3),
+                   round(l.z_position_in or 0.0, 3),
+                   round(l.rotation_deg or 0.0, 3))
+            for l in design.cabinet_line_ids
+        }
 
         with self.env.cr.savepoint():
             # RESET TO CANONICAL — every run is a pure transformation of the
@@ -1527,7 +1657,15 @@ class SouthbrookKitchenDesign(models.Model):
                     "run_seq": dl.run_seq or 0,
                 })
             if not cabs:
-                return {"corners": 0, "removed": 0, "inserted": 0, "empty": True}
+                # P0 E2E fix — same {moved, overlaps_before, overlaps_after,
+                # summary} shape as the normal-completion return below, so
+                # every caller can read this dict uniformly without a
+                # None/missing-key branch for the empty-design case.
+                return {"corners": 0, "removed": 0, "inserted": 0,
+                        "empty": True, "moved": 0,
+                        "overlaps_before": overlaps_before,
+                        "overlaps_after": overlaps_before,
+                        "summary": "No cabinets to arrange."}
 
             room = {
                 "width_mm":  (design.room_width_in or 0) * MM,
@@ -1909,13 +2047,52 @@ class SouthbrookKitchenDesign(models.Model):
         # engine-inserted one from this method's caller's point of view.
         total_inserted = len(r["inserted"]) + backfilled_inserted
         total_removed = len(r["removed_ids"]) + backfilled_removed
+
+        # P0 E2E fix (2026-08-02) — the actionable report. `moved` only
+        # compares survivors present in BOTH `pre_state` and the current
+        # active set (see `pre_state`'s own comment above) — a superseded
+        # or newly-inserted corner line is already counted by
+        # `removed`/`inserted` and must not double-count here too.
+        moved = sum(
+            1 for l in design.cabinet_line_ids
+            if l.id in pre_state
+            and pre_state[l.id] != (
+                l.wall, round(l.x_position_in or 0.0, 3),
+                round(l.y_position_in or 0.0, 3),
+                round(l.z_position_in or 0.0, 3),
+                round(l.rotation_deg or 0.0, 3)))
+        overlaps_after = design._sb_count_footprint_overlaps()
+        overlaps_resolved = max(0, overlaps_before - overlaps_after)
+        if overlaps_before == 0 and moved == 0 and not total_removed \
+                and not total_inserted:
+            summary = "Already arranged — nothing to change."
+        elif overlaps_after == 0 and overlaps_before > 0:
+            summary = ("Rearranged %d cabinet(s) — resolved all %d "
+                       "overlap(s)." % (moved, overlaps_before))
+        elif overlaps_after > 0 and overlaps_resolved > 0:
+            summary = ("Rearranged %d cabinet(s) — resolved %d of %d "
+                       "overlap(s); %d remain (may need manual "
+                       "repositioning)." % (moved, overlaps_resolved,
+                                             overlaps_before, overlaps_after))
+        elif overlaps_after > 0:
+            summary = ("Rearranged %d cabinet(s), but %d overlap(s) "
+                       "could not be resolved automatically — reposition "
+                       "the flagged cabinets manually." % (
+                           moved, overlaps_after))
+        else:
+            summary = "Rearranged %d cabinet(s)." % moved
+
         _logger.info("[auto-arrange] finished design=%s corners=%d removed=%d "
-                     "inserted=%d (backfilled=%d) elapsed=%dms", design.id,
+                     "inserted=%d (backfilled=%d) moved=%d overlaps=%d->%d "
+                     "elapsed=%dms", design.id,
                      len(r["corners"]) + backfilled_inserted, total_removed,
-                     total_inserted, backfilled_inserted,
+                     total_inserted, backfilled_inserted, moved,
+                     overlaps_before, overlaps_after,
                      int((time.time() - _t0) * 1000))
         return {"corners": len(r["corners"]) + backfilled_inserted,
-                "removed": total_removed, "inserted": total_inserted}
+                "removed": total_removed, "inserted": total_inserted,
+                "moved": moved, "overlaps_before": overlaps_before,
+                "overlaps_after": overlaps_after, "summary": summary}
 
     # Task 32 (corner-remediation follow-up) — see the "3a" call site's
     # comment in action_auto_arrange above for why this exists. Only ever
@@ -2342,6 +2519,11 @@ class SouthbrookKitchenDesign(models.Model):
                 "room_depth_in":          self.room_depth_in,
                 "room_height_in":         self.room_height_in,
                 "partner_id":             self.partner_id.id if self.partner_id else False,
+                # Fix A (P0, 2026-08-02) — the client seeds
+                # `partnerName: params.partner_name || ""` from these
+                # params; partner_id alone left the customer chip an
+                # empty grey pill for every design that HAS a customer.
+                "partner_name":           self.partner_id.name or "",
                 "filler_strategy":        self.filler_strategy or "split",
                 # SBK-026 — 0 means "unset" (to_soffit gated); do NOT
                 # substitute a truthy fallback here or the client can
@@ -4796,7 +4978,7 @@ class SouthbrookKitchenDesignLine(models.Model):
 
     @api.depends("cabinet_type", "x_position_in", "z_position_in",
                  "is_unresolved", "appliance_type", "width_in",
-                 "template_slot_code")
+                 "template_slot_code", "wall")
     def _compute_position_label(self):
         type_map = {
             "base": "Base", "wall": "Wall", "tall": "Tall",
@@ -4815,7 +4997,26 @@ class SouthbrookKitchenDesignLine(models.Model):
                     line.appliance_type or "space", line.width_in or 0)
                 continue
             label = type_map.get(line.cabinet_type, line.cabinet_type)
-            line.position_label = "%s @ X=%.0f\"" % (label, line.x_position_in)
+            # Fix C (P1, 2026-08-02) — this used to always read
+            # x_position_in. Per kitchen_layout_engine._WALL_SPEC's own
+            # axis table, back/front runs advance along world X, but
+            # left/right runs advance along world Z — on those two walls
+            # x_position_in is the CROSS (wall-anchor) offset, constant
+            # for the whole run (see the "a left-wall cabinet's
+            # x_position_in is CONSTANT" note ~line 2522 in this same
+            # file), not the along-wall coordinate. Reading it
+            # unconditionally made two cabinets on different walls at
+            # the same cross offset render the identical "@ X=120"
+            # label. Read whichever axis this line's own wall actually
+            # advances on, and name the wall so a Floor Manager can tell
+            # them apart at a glance.
+            wall = line.wall or "back"
+            wall_spec = kitchen_layout_engine._WALL_SPEC.get(
+                wall, kitchen_layout_engine._WALL_SPEC["back"])
+            along_in = (line.z_position_in if wall_spec["along"] == "z"
+                        else line.x_position_in)
+            line.position_label = "%s · %s wall @ %.0f\"" % (
+                label, wall, along_in or 0)
 
     # ── T5 (corner remediation 2026-07-30) — ONE corner price-resolution
     # path (V3-products.md claim 3). Before this, the auto-arrange corner

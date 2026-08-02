@@ -1833,6 +1833,34 @@ $sbk-amber:      var(--sb-status-warn-fg);
 }
 .o_sbk_edit_input { font-variant-numeric: tabular-nums; }
 
+// Fix 10 (E2E P1) — the Placement block's 1/8" nudge buttons. They sit beside
+// the along-wall offset input, so they borrow that control's border, radius and
+// focus ring rather than inventing a second visual language for the same row.
+// Square-ish and tabular so a column of them stays aligned with the number they
+// adjust; the whole block is disabled while state.loading, and a disabled nudge
+// must read as inert rather than merely faded.
+.o_sbk_nudge_btn {
+    min-width: 30px;
+    padding: 6px 8px;
+    border: 1px solid var(--sb-border);
+    border-radius: var(--sb-radius);
+    background: white;
+    font-size: 13px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    color: $sbk-ink;
+    cursor: pointer;
+    &:hover:not(:disabled) { background: var(--sb-surface-2, #f4f6f8); }
+    &:active:not(:disabled) { transform: translateY(1px); }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+        border-color: rgba(26, 102, 212, 0.45);
+    }
+    &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
 .o_sbk_detail_card {
     display: flex;
     gap: 10px;

@@ -325,3 +325,28 @@ from . import test_thumb_family_backfill_migration
 from . import test_touch_kill_switch
 from . import test_touch_health_counters
 from . import test_send_to_wall
+
+# E2E P0/P1 remediation (2026-08-02) — partner_name on open-configurator
+# params + reload rehydration, sku/material/bom_available on serialized
+# lines, and the wall-aware position label (see the module docstring).
+from . import test_configurator_payload
+
+# E2E P0 remediation (2026-08-02) — save_design no longer silently
+# re-runs auto-arrange over a manually-positioned (pinned) multi-wall
+# design (drag-then-autosave revert / undo-destroys-itself, both fixed
+# by gating action_auto_arrange on `pinned` + the new opt-in
+# `allow_relayout` kwarg), and /user_defaults' no-preference fallback
+# is now a 144x120x96in room instead of 12x24in (live evidence: 0-
+# cabinet "Walk-in - 12x120"/"Walk-in - 12x42" designs).
+from . import test_save_preserves_positions
+
+# P0 E2E remediation (2026-08-02) — "Auto-arrange" on a MANUAL
+# (multi-wall) design now actually resolves a same-run footprint
+# overlap (auto_assign=False only preserves WALL choice — the packer's
+# cumulative-width cursor makes same-run overlap mathematically
+# impossible to survive a call regardless of auto_assign — see
+# action_auto_arrange's docstring) and returns an honest report
+# (moved/overlaps_before/overlaps_after/summary) instead of silent
+# success, so a caller can tell "resolved" from "already arranged"
+# from "didn't fully resolve it".
+from . import test_manual_arrange_resolves

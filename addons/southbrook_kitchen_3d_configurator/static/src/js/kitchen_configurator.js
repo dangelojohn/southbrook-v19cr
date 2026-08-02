@@ -84,6 +84,13 @@ import {
 
 const actionRegistry = registry.category("actions");
 
+// Fix 10 (E2E P1) — the Placement panel's fine nudge step. Deliberately
+// NOT the touch pad's NUDGE_STEP_IN (6in, imported above) — that pad is
+// tuned for fast coarse repositioning by touch; this panel exists
+// specifically so a rep who hits an overlap blocker can dial in the
+// small correction (an eighth of an inch) that actually resolves it.
+const PLACEMENT_NUDGE_STEP_IN = 0.125;
+
 // ─── Task 7 (SBK-033) — the ONE cabinet-count partition ─────────────────────
 // V4-counters-templates.md claim 1: four different places in this codebase
 // each computed their OWN count of "how many cabinets" from state.items —
@@ -266,7 +273,57 @@ class SouthbrookKitchenConfigurator extends Component {
                       && typeof s.resId === "number"
               )
             : null;
-        const restoredDesignId = restoredDesignFrame ? restoredDesignFrame.resId : null;
+        let restoredDesignId = restoredDesignFrame ? restoredDesignFrame.resId : null;
+
+        // FIX 6 (P0, E2E) — the `/odoo/<model>/<resid>/<tag>` shape handled
+        // above is NOT the only URL a refresh/deep-link can restore. This
+        // client action is ALSO reachable by its own persisted
+        // ir.actions.client record (views/kitchen_configurator_views.xml
+        // `action_sbk_kitchen_configurator`, wired to the "3D Configurator"
+        // menu item) — a doAction/URL for that goes through router.js
+        // `urlToState`'s numeric-`action-<id>` branch instead, e.g.
+        // `/odoo/action-1460/6/southbrook_kitchen_configurator`. Traced
+        // against the vendored router.js in the local Odoo 19 checkout:
+        // that path segment loop pushes THREE frames —
+        //   [{action:1460}, {action:1460, resId:6},
+        //    {active_id:6, action:"southbrook_kitchen_configurator"}]
+        // — and, unlike the model-based shape above, NONE of them ever
+        // carry a `model` key (an `action-<id>` segment has no model of
+        // its own), so `restoredDesignFrame` above can never match this
+        // shape at all — the id was silently dropped and the user landed
+        // on the picker instead of their design.
+        // Recover it here from the trailing frame instead: `active_id`
+        // (falling back to `resId`, the same key `urlToState` would use
+        // one frame earlier if `active_id` were ever absent) on the frame
+        // whose own `action` equals THIS client action's tag — i.e. we
+        // only trust a frame that is unambiguously our own action's
+        // resolved id, not some unrelated frame that happens to be
+        // sitting on the stack. This is safe from the same "bare open"
+        // confusion the model-based check above guards against: the
+        // "bare" entry points (southbrook_room.py action_open_kitchen_3d /
+        // sale_order.py action_open_in_kitchen_3d) return plain dict
+        // actions with no persisted `id`, so per action_service.js
+        // `makeState` they only ever serialize to the tag-string URL
+        // shape (handled above, correctly filtered by `model`) — they can
+        // never produce this numeric `action-<id>` shape, so a resId/
+        // active_id found here cannot be a room/SO id in disguise.
+        // Defensive throughout: `actionStack` on this path may be
+        // absent, short, or missing keys entirely — never throw.
+        if (restoredDesignId === null && Array.isArray(restoredStack)) {
+            const ownTag = (this.props.action && this.props.action.tag)
+                || "southbrook_kitchen_configurator";
+            const restoredActionFrame = restoredStack.find(
+                (s) => s && s.action === ownTag
+            );
+            if (restoredActionFrame) {
+                const candidate = typeof restoredActionFrame.active_id === "number"
+                    ? restoredActionFrame.active_id
+                    : restoredActionFrame.resId;
+                if (typeof candidate === "number") {
+                    restoredDesignId = candidate;
+                }
+            }
+        }
         // Room dims / design name are never part of `params` on a URL
         // restore (only the id survives) — _hydrateFromDesign() backfills
         // them additively from the /load_design_lines response (server
@@ -1419,7 +1476,25 @@ class SouthbrookKitchenConfigurator extends Component {
                 .find(p => p.product_id === line.product_id);
             defaultCode = (product && product.sku) || null;
         }
-        return { ...line, name: line.product_name, default_code: defaultCode };
+        return {
+            ...line,
+            name: line.product_name,
+            default_code: defaultCode,
+            // E2E P1 fix — the detail-panel SKU/Material/BoM dt/dd
+            // (~L5338-5358) read these three keys straight off
+            // state.selected. /layout-generated items (_product_payload)
+            // already carry them; a HYDRATED line (this method's only
+            // caller) previously left them undefined whenever the
+            // server line dict didn't include them, rendering "—" even
+            // when the underlying product resolves to a real SKU.
+            // Explicit default here (never relying on the bare `...line`
+            // spread above) so every item this method ever returns has
+            // all three keys, whatever the server payload does or
+            // doesn't send.
+            sku:           line.sku || "",
+            material:      line.material || "",
+            bom_available: !!line.bom_available,
+        };
     }
 
     // Task 20 (SBK-034) — the single place every "the id in the URL/
@@ -1496,6 +1571,22 @@ class SouthbrookKitchenConfigurator extends Component {
             }
             if (resp && resp.design_name && !this._hasExplicitDesignName) {
                 this.state.designName = resp.design_name;
+            }
+            // E2E P0 fix — same additive-backfill shape as room/
+            // design_name just above: a live button-click open always
+            // carries `partner_name` via action params (setup(), ~L471);
+            // a direct-URL reload loses every param except the design
+            // id, so `state.partnerName` is still "" here in that case.
+            // Backfill from the server's own echo so the topbar customer
+            // chip (guarded on state.partnerId, template ~L4409) never
+            // renders a populated pill with a blank name. Never clobber
+            // a value params already supplied (`!this.state.partnerName`
+            // mirrors the `_hasExplicit*` guards' precedence rule — this
+            // function runs once, before any user customer-picker
+            // action, so an already-truthy partnerName here can only
+            // have come from params).
+            if (resp && resp.partner_name && !this.state.partnerName) {
+                this.state.partnerName = resp.partner_name;
             }
             // Task 7 (SBK-033) — seed state.summary from the server's
             // authoritative _get_counter_summary() before the local
@@ -3537,6 +3628,19 @@ class SouthbrookKitchenConfigurator extends Component {
         this._touchStats = accumulateTouchStats(this._touchStats, kind);
     }
 
+    // Fix 10 (E2E P1) — the along-wall axis a cabinet slides on, keyed
+    // off which wall it's currently placed on. Factored out of
+    // `_nudgeSelected` (below) unchanged (z_position_in on the left/
+    // right walls, x_position_in on back/front — matches
+    // `_cycleSelection`'s `alongRunIn` convention) so the new Placement
+    // panel's numeric offset field/fine-nudge buttons and the pre-
+    // existing touch-pad nudge can never disagree about which axis a
+    // given wall uses.
+    _alongWallAxisField(wall) {
+        return (wall === WALLS.LEFT || wall === WALLS.RIGHT)
+            ? "z_position_in" : "x_position_in";
+    }
+
     // Nudge left/right — drives the SAME position-commit pipeline the
     // mouse drag path uses (_savePinnedPosition + _recomputeLayoutFromItems
     // + _queueAutoSave; see _onCanvasMove), just with a fixed-step delta
@@ -3545,19 +3649,24 @@ class SouthbrookKitchenConfigurator extends Component {
     // left/right walls, x_position_in on back/front) and is clamped to
     // the room bounds minus the cabinet's own width so a nudge can never
     // push a cabinet off the visible run.
-    _nudgeSelected(dir) {
+    // `stepIn` defaults to the touch pad's 6" step (NUDGE_STEP_IN,
+    // unchanged call site at the bottom of this file) — Fix 10's
+    // Placement panel passes PLACEMENT_NUDGE_STEP_IN (1/8") instead for
+    // the fine-grained overlap-fixing nudge buttons, reusing this exact
+    // commit pipeline rather than a second copy of it.
+    _nudgeSelected(dir, stepIn = NUDGE_STEP_IN) {
         const item = this.state.selected;
         if (!item) return;
         if (!getPadAffordances(item).nudge) return;
         this._markUserAction();
         this._pushUndoSnapshot();
         this._placementsDirty = true;
-        const alongZ = item.wall === WALLS.LEFT || item.wall === WALLS.RIGHT;
-        const axisField = alongZ ? "z_position_in" : "x_position_in";
+        const axisField = this._alongWallAxisField(item.wall || WALLS.BACK);
+        const alongZ = axisField === "z_position_in";
         const roomBoundIn = alongZ
             ? this.state.room.depth_in : this.state.room.width_in;
         const maxPos = Math.max(0, roomBoundIn - (item.width_in || 0));
-        const next = (item[axisField] || 0) + dir * NUDGE_STEP_IN;
+        const next = (item[axisField] || 0) + dir * stepIn;
         item[axisField] = Math.min(Math.max(next, 0), maxPos);
         item.pinned = true;
         this._savePinnedPosition(item);
@@ -3645,9 +3754,16 @@ class SouthbrookKitchenConfigurator extends Component {
     // (action_move's _write_then_rearrange rolls back and raises on a
     // layout that doesn't fit, exactly like every other governed write
     // on this line model).
-    async _sendSelectedToWall() {
+    //
+    // Fix 10 (E2E P1) — split into this target-accepting body and the
+    // thin cycle wrapper below it, so the Placement panel's explicit
+    // wall selector (rep picks "Left" deliberately) and the touch pad's
+    // blind "cycle to the next wall" tap drive the exact same
+    // action_move RPC and can never diverge in behaviour.
+    async _sendSelectedToWallTarget(targetWall) {
         const item = this.state.selected;
         if (!item || !getPadAffordances(item).sendToWall) return;
+        if (!targetWall || targetWall === (item.wall || WALLS.BACK)) return;
         if (!this.state.designId) {
             this._toast(
                 "Save the design first, then use Send to wall.",
@@ -3655,7 +3771,12 @@ class SouthbrookKitchenConfigurator extends Component {
             );
             return;
         }
-        const targetWall = nextWall(item.wall || WALLS.BACK);
+        // Fix 10 — this is an explicit user action (Placement panel's
+        // wall selector, same class as the touch pad's own tap); open
+        // the T7 gate so a debounced autosave from an EARLIER edit this
+        // session is never silently skipped just because THIS action
+        // itself persists immediately via action_move below.
+        this._markUserAction();
         // Finding-3 pattern (see _swapCornerProductOnServer) — flush any
         // pending debounced autosave FIRST so a stale write can never
         // land after the move and silently revert it.
@@ -3721,6 +3842,116 @@ class SouthbrookKitchenConfigurator extends Component {
             + `${this._wallLabel(targetWall)} wall`,
             { type: "success" }
         );
+        this._refreshValidation();
+    }
+
+    // Touch pad's "cycle icon" — unchanged entry point/behaviour, now a
+    // thin wrapper over `_sendSelectedToWallTarget` above (Fix 10).
+    async _sendSelectedToWall() {
+        const item = this.state.selected;
+        if (!item) return;
+        return this._sendSelectedToWallTarget(nextWall(item.wall || WALLS.BACK));
+    }
+
+    // ─── Fix 10 (E2E P1) — Placement panel ──────────────────────────────────────
+    // The Selected Cabinet panel used to expose only Product + Width — a
+    // rep who hit an overlap blocker had no field to type the number
+    // that would fix it. These three methods back that panel's new
+    // Placement block (template further down): a wall picker wired to
+    // the EXISTING `_sendSelectedToWallTarget` (action_move) above, and
+    // a along-wall offset field + 1/8" nudge buttons wired to the
+    // EXISTING `_savePinnedPosition` (save_position route) via
+    // `_nudgeSelected` — no new server route for either.
+
+    // Template-bound booleans — simple, no-arg calls (no chained
+    // `getPadAffordances(state.selected).sendToWall`-style expression
+    // in the t-if binding itself) so the Placement panel matches this
+    // template's existing "simple names only" convention (see
+    // _sameTypeProducts/_materialLabel's single-arg calls above). Both
+    // delegate to the SAME getPadAffordances() classification the
+    // touch pad and the keyboard nudge/rotate guards already use, so
+    // this panel can never offer a control a cabinet's family doesn't
+    // actually support (e.g. no wall-picker for a corner, no offset
+    // field for a filler/panel).
+    _selectedCanSendToWall() {
+        return !!(this.state.selected
+            && getPadAffordances(this.state.selected).sendToWall);
+    }
+
+    _selectedCanNudgePlacement() {
+        return !!(this.state.selected
+            && getPadAffordances(this.state.selected).nudge);
+    }
+
+    // Template-bound getter — the numeric offset field's current value.
+    // Simple/no-arg by design (OWL-expression-linter friendly): all the
+    // branching lives here in JS, never in the template binding itself.
+    // Defensive like every other selector in this file even though the
+    // template only calls this while state.selected is truthy.
+    _selectedAlongWallOffset() {
+        const item = this.state.selected;
+        if (!item) return 0;
+        const axisField = this._alongWallAxisField(item.wall || WALLS.BACK);
+        const raw = item[axisField] || 0;
+        // Round for display only — the stored value keeps full
+        // precision; this just keeps the field from showing long float
+        // noise (e.g. 24.000000000000004) after repeated 1/8" nudges.
+        return Math.round(raw * 1000) / 1000;
+    }
+
+    // Wall selector <select> change handler — moves the selected
+    // cabinet to the chosen wall via the SAME action_move RPC the touch
+    // pad's cycle button uses (`_sendSelectedToWallTarget` above).
+    _setSelectedWall(wallValue) {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).sendToWall) return;
+        if (!wallValue || wallValue === (item.wall || WALLS.BACK)) return;
+        this._sendSelectedToWallTarget(wallValue);
+    }
+
+    // Numeric "position along wall" field's commit handler (on change/
+    // blur, matching `_updateSelectedWidth`'s pattern right below this
+    // block in the template). Explicit user action — `_markUserAction()`
+    // first (T7 gate) so a debounced `_queueAutoSave()` this triggers
+    // is never silently dropped — then the SAME commit pipeline
+    // `_nudgeSelected`/the mouse-drag path already use: clamp to
+    // [0, roomBound - width], persist via `_savePinnedPosition`
+    // (save_position route), recompute, and refresh the validation chip
+    // so a rep resolving an overlap blocker sees it clear immediately.
+    _setSelectedAlongWallOffset(rawValue) {
+        const item = this.state.selected;
+        if (!item) return;
+        if (!getPadAffordances(item).nudge) return;
+        const parsed = parseFloat(rawValue);
+        if (!Number.isFinite(parsed)) return;
+        this._markUserAction();
+        this._pushUndoSnapshot();
+        this._placementsDirty = true;
+        const axisField = this._alongWallAxisField(item.wall || WALLS.BACK);
+        const alongZ = axisField === "z_position_in";
+        const roomBoundIn = alongZ
+            ? this.state.room.depth_in : this.state.room.width_in;
+        const maxPos = Math.max(0, roomBoundIn - (item.width_in || 0));
+        item[axisField] = Math.min(Math.max(parsed, 0), maxPos);
+        item.pinned = true;
+        this._savePinnedPosition(item);
+        this._recomputeLayoutFromItems();
+        this._refreshValidation();
+        this._queueAutoSave();
+    }
+
+    // Fine nudge buttons (1/8") — thin wrapper over the existing
+    // `_nudgeSelected` commit pipeline (now step-parameterized, see its
+    // own comment above) plus an immediate validation refresh, since
+    // this panel's whole purpose is letting a rep see an overlap
+    // blocker clear right away rather than waiting on the next
+    // hydrate/save/arrange refresh cycle. Guarded identically to
+    // `_nudgeSelected` itself so `_refreshValidation()` only fires
+    // after a move that actually happened.
+    _nudgeSelectedFine(dir) {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).nudge) return;
+        this._nudgeSelected(dir, PLACEMENT_NUDGE_STEP_IN);
         this._refreshValidation();
     }
 
@@ -4042,6 +4273,22 @@ class SouthbrookKitchenConfigurator extends Component {
         // a full-replace writer. See the catch branch in
         // _hydrateFromDesign() for the full rationale.
         if (this._hydrationFailed) return;
+        // P0 (E2E fix) — the 5-10s boot/continue/new-design window
+        // (state.loading true) must never schedule a persist.
+        // _startNewDesign() leaves state.designId null for that entire
+        // window; if a mutating control slips an edit through mid-load
+        // (e.g. a room-dim keystroke racing the input-disable added for
+        // this same fix, or any other programmatic call), the old
+        // behaviour would still debounce into a save_design POST with
+        // design_id:false — the server mints a brand-new, unasked-for
+        // record ("Walk-in - WxD - <date>"). state.loading IS this
+        // codebase's only "a load is in flight" signal (set true for
+        // the whole onWillStart/_startNewDesign/_continueDesign async
+        // window, including the null-designId case), so this one check
+        // covers both. _autoSave() re-checks the same flag immediately
+        // before its RPC as a second gate against the debounce timer
+        // outliving a slow load.
+        if (this.state.loading) return;
         // T7 — first-action gate: until the rep genuinely touches the
         // design (_markUserAction), programmatic refresh paths must not
         // schedule a full-replace save over a saved/template design.
@@ -4058,6 +4305,12 @@ class SouthbrookKitchenConfigurator extends Component {
     }
 
     async _autoSave() {
+        // P0 (E2E fix) — see _queueAutoSave()'s matching guard just
+        // above for the full rationale. Re-checked here (not just at
+        // schedule time) because the debounce timer's 3s can easily
+        // outlive the boot load: a design's first record must never get
+        // silently minted mid-load with design_id:false.
+        if (this.state.loading) return;
         if (this.state.saving) return;       // manual save in flight - skip
         if (this.state.autoSaving) {
             // Task 38 (client hardening) — a save requested while one is
@@ -4358,8 +4611,18 @@ SouthbrookKitchenConfigurator.template = xml`
       <label class="o_sbk_room_dim">
         <span class="o_sbk_room_dim_label">Width</span>
         <div class="o_sbk_room_dim_input_row">
+          <!-- P0 (E2E fix) — disabled while state.loading: these were
+               live during the 5-10s boot/hydrate window, sitting
+               outside the o_sbk_loading gate below. A keystroke here
+               mid-load both got silently clobbered by the load's own
+               room-dim writeback and (via _changeRoom -> _queueAutoSave)
+               could mint an unasked-for design record — see the
+               _queueAutoSave() guard for the write-side half of this
+               fix. Disabled (dimmed, native cursor) rather than hidden
+               so the topbar layout never jumps. -->
           <input type="number" min="12" max="480" step="6"
                  t-att-value="state.room.width_in"
+                 t-att-disabled="state.loading"
                  t-on-change="(ev) => this._changeRoom('width_in', ev.target.value)"/>
           <span class="o_sbk_room_dim_ft"><t t-esc="(state.room.width_in / 12).toFixed(1)"/>′</span>
         </div>
@@ -4372,6 +4635,7 @@ SouthbrookKitchenConfigurator.template = xml`
         <span class="o_sbk_room_dim_label">Depth</span>
         <input type="number" min="12" max="480" step="6"
                t-att-value="state.room.depth_in"
+               t-att-disabled="state.loading"
                t-on-change="(ev) => this._changeRoom('depth_in', ev.target.value)"/>
         <span t-if="state.roomDimErrors.depth_in" class="o_sbk_field_error"
               t-esc="state.roomDimErrors.depth_in"/>
@@ -4380,16 +4644,25 @@ SouthbrookKitchenConfigurator.template = xml`
         <span class="o_sbk_room_dim_label">Height</span>
         <input type="number" min="84" max="144" step="6"
                t-att-value="state.room.height_in"
+               t-att-disabled="state.loading"
                t-on-change="(ev) => this._changeRoom('height_in', ev.target.value)"/>
         <span t-if="state.roomDimErrors.height_in" class="o_sbk_field_error"
               t-esc="state.roomDimErrors.height_in"/>
       </label>
       <!-- Templates T3 (user directive): the template entry lives in the
            TOP FRAME beside the room dimensions — dims first, then shape
-           + cabinet selections (the four-dropdown picker dialog). -->
+           + cabinet selections (the four-dropdown picker dialog).
+           P0 (E2E fix) — label renamed "Start Custom" -> "New Kitchen":
+           this is the single most important control on a bare/new
+           session and the old label didn't say so (it opens a dialog
+           titled "Start from a Sample Kitchen" — that dialog's own XML
+           title is unchanged here, still owned by another file). Also
+           disabled while state.loading, same rationale as the room-dim
+           inputs above. -->
       <button class="o_sbk_btn o_sbk_btn_template" type="button"
               title="Start from a prebuilt sample kitchen"
-              t-on-click="_openTemplatePicker">Start Custom</button>
+              t-att-disabled="state.loading"
+              t-on-click="_openTemplatePicker">New Kitchen</button>
     </div>
     <!-- Task #48 / P3 — Customer picker (top-bar).
          Hidden entirely for portal users — Agent A's default_get
@@ -4417,6 +4690,12 @@ SouthbrookKitchenConfigurator.template = xml`
                 aria-label="Unassign customer">×</button>
       </div>
       <t t-else="">
+        <!-- P0 (E2E fix) — disabled while state.loading, same class of
+             mutating topbar control as the room-dim inputs above
+             (picking a customer here routes through _setCustomer ->
+             _markUserAction -> _queueAutoSave, which is now also
+             hard-gated on state.loading, but disabling the control
+             itself avoids the dead interaction entirely). -->
         <input type="text" class="o_sbk_customer_input"
                placeholder="No customer assigned — search contacts…"
                autocomplete="off"
@@ -4428,6 +4707,7 @@ SouthbrookKitchenConfigurator.template = xml`
                t-att-aria-expanded="state.pickerOpen ? 'true' : 'false'"
                t-att-aria-activedescendant="_customerActiveOptionId()"
                t-att-value="state.customerQuery"
+               t-att-disabled="state.loading"
                t-on-focus="_openCustomerPicker"
                t-on-blur="_closeCustomerPicker"
                t-on-input="_onCustomerTyped"
@@ -5331,6 +5611,63 @@ SouthbrookKitchenConfigurator.template = xml`
                  inline, next to the field; see _updateSelectedWidth. -->
             <span t-if="state.selectedWidthError" class="o_sbk_field_error"
                   t-esc="state.selectedWidthError"/>
+          </label>
+        </div>
+
+        <!-- Fix 10 (E2E P1) — Placement block. Before this, the panel
+             had no field to type the number that fixes an overlap
+             blocker. Wall picker reuses the SAME action_move RPC the
+             touch pad's send-to-wall cycle button already calls
+             (_sendSelectedToWallTarget, via _setSelectedWall); the
+             offset field + 1/8" nudge buttons reuse the SAME
+             save_position route the drag/keyboard-nudge path already
+             calls (_savePinnedPosition, via _setSelectedAlongWallOffset
+             / _nudgeSelectedFine) — no new server route either way.
+             Reuses the EXISTING o_sbk_edit_grid/o_sbk_edit_field/
+             o_sbk_edit_select/o_sbk_edit_input classes above (this is
+             a JS-file-only fix — no new SCSS); o_sbk_nudge_btn/
+             o_sbk_placement_offset are unstyled hooks for a future
+             styling pass and render with plain browser button chrome
+             until then. Per-affordance visibility uses the two simple
+             no-arg booleans below (_selectedCanSendToWall/
+             _selectedCanNudgePlacement) rather than a chained
+             getPadAffordances(...).x expression in the binding itself,
+             matching this template's existing single-call convention
+             (_sameTypeProducts/_materialLabel above) — so e.g. a
+             corner cabinet never shows a wall picker it can't use.
+             "Nothing selected" is already covered by this whole
+             panel's own outer t-if; state.loading disables each
+             control individually, the same P0 (E2E fix) convention
+             every other mutating control in this template follows. -->
+        <div class="o_sbk_edit_grid">
+          <label t-if="_selectedCanSendToWall()" class="o_sbk_edit_field">
+            <span>Wall</span>
+            <select class="o_sbk_edit_select"
+                    t-att-value="state.selected.wall"
+                    t-att-disabled="state.loading"
+                    t-on-change="(ev) => this._setSelectedWall(ev.target.value)">
+              <option value="back">Back</option>
+              <option value="left">Left</option>
+              <option value="front">Front</option>
+              <option value="right">Right</option>
+            </select>
+          </label>
+          <label t-if="_selectedCanNudgePlacement()" class="o_sbk_edit_field">
+            <span>Position along wall (in)</span>
+            <div class="o_sbk_placement_offset">
+              <button type="button" class="o_sbk_nudge_btn"
+                      aria-label="Nudge 1/8 inch back"
+                      t-att-disabled="state.loading"
+                      t-on-click="() => this._nudgeSelectedFine(-1)">−</button>
+              <input type="number" step="0.125" min="0" class="o_sbk_edit_input"
+                     t-att-value="_selectedAlongWallOffset()"
+                     t-att-disabled="state.loading"
+                     t-on-change="(ev) => this._setSelectedAlongWallOffset(ev.target.value)"/>
+              <button type="button" class="o_sbk_nudge_btn"
+                      aria-label="Nudge 1/8 inch forward"
+                      t-att-disabled="state.loading"
+                      t-on-click="() => this._nudgeSelectedFine(1)">+</button>
+            </div>
           </label>
         </div>
 

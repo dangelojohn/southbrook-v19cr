@@ -574,7 +574,7 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
     def save_design(self, name, room, items, partner_id=False, design_id=False,
                      filler_strategy=None, wall_cab_top_alignment=None,
                      soffit_height_in=None, counter_thickness_in=None,
-                     touch_stats=None):
+                     touch_stats=None, allow_relayout=False):
         """
         Persist (or update) a KitchenDesign and its layout lines.
 
@@ -607,6 +607,15 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         sent" — leaves the persisted value untouched, so a caller that
         only cares about room/items (e.g. an older client build, or a
         test) never clobbers these.
+
+        P0 fix (drag-revert / undo-corruption, 2026-08-02) —
+        `allow_relayout` is an OPTIONAL, opt-IN kwarg (default False)
+        that lets a caller explicitly ask this save to run the corner-
+        resolution auto-arrange (see the `pinned`-gating comment further
+        down, at the `if len(walls_used) >= 2:` block) even though the
+        design already has a manually-positioned line. Omitted, it
+        changes nothing for any existing caller: a design with no
+        pinned line still auto-arranges exactly as before.
         """
         # PR2 — validate every incoming item's `wall` BEFORE any
         # create/write happens, so a bad payload never partially
@@ -1125,39 +1134,106 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # wall assignment.
         relaid = False
         layout_warning = None
-        walls_used = {
-            (dl.wall or "back")
-            for dl in design.cabinet_line_ids.filtered(
-                lambda l: l.origin == "configurator"
-                and l.layout_role != "derived"
-                and l.cabinet_type not in ("filler", "panel"))
-        }
+        _arrangeable_lines = design.cabinet_line_ids.filtered(
+            lambda l: l.origin == "configurator"
+            and l.layout_role != "derived"
+            and l.cabinet_type not in ("filler", "panel"))
+        walls_used = {(dl.wall or "back") for dl in _arrangeable_lines}
+        # P0 fix (drag-revert / undo-corruption, 2026-08-02) — this used
+        # to be an unconditional `design.action_auto_arrange(sync=False)`
+        # the moment walls_used >= 2, on EVERY save of a multi-wall
+        # design. action_auto_arrange is a RESET-TO-CANONICAL re-derive
+        # (see its own docstring/comments, models/kitchen_design.py):
+        # it deletes every derived artifact, restores every superseded
+        # canonical line, then repositions ALL surviving canonical lines
+        # from a fresh run of kitchen_layout_engine — it does not read
+        # `pinned` at all, so it is emphatically NOT idempotent against a
+        # design a human has manually rearranged. Two verified,
+        # user-visible bugs came out of that:
+        #   (a) drag-then-revert — the client debounces a full
+        #       save_design 3s after any change. A rep drags a cabinet;
+        #       `save_position` persists the new pose (and flips
+        #       `pinned` True) immediately on pointer-up; three seconds
+        #       later the OWN autosave fires, lands here with
+        #       walls_used >= 2, and action_auto_arrange silently
+        #       recomputes that same cabinet's pose from scratch,
+        #       stomping the drag the user just watched happen. The rep
+        #       sees their move "take" for three seconds and then
+        #       unexplainably snap back.
+        #   (b) undo-destroys-itself — an undo (client-side, restores a
+        #       prior item snapshot into state.items) calls this same
+        #       save_design to persist the restored snapshot. If the
+        #       restored design still spans 2+ walls, THIS save's own
+        #       trailing autosave re-triggers auto-arrange, which
+        #       re-derives poses/cabinet substitutions from the
+        #       CURRENT (just-restored) canonical set — not from
+        #       whatever the user actually undid to — so the
+        #       just-restored state is immediately overwritten again,
+        #       including cabinet_type/price on any line a corner
+        #       absorbed. The undo "worked" for one render frame and
+        #       then quietly un-did itself.
+        # Fix: only auto-arrange when nothing in this design has been
+        # manually positioned — `pinned` (the Smart-pinning field,
+        # v19.0.4.20.0) is that existing signal; it is flipped True by
+        # `save_position` the moment a rep drags/rotates a cabinet, and
+        # persisted on every line this endpoint writes (see `line_vals`
+        # above). No line pinned -> this is a freshly-generated/
+        # untouched design -> auto-arrange still runs on every save,
+        # unchanged from before (a template instantiation or a
+        # cabinet-add flow still gets its corner resolved live). Any
+        # line pinned -> a human has taken over placement -> skip the
+        # re-derive so this save never overwrites what they just did.
+        # `allow_relayout` (new, default False, see docstring) is the
+        # explicit-opt-in escape hatch for a future caller that KNOWS it
+        # wants a forced re-arrange (e.g. a "Reset Layout" action) even
+        # over pinned lines — no such caller exists yet, so in practice
+        # this only ever widens the gate, never narrows it.
+        _has_pinned = any(dl.pinned for dl in _arrangeable_lines)
+        # The `if len(walls_used) >= 2:` test itself is UNCHANGED from
+        # before this fix — it still gates the whole if/elif pair below
+        # (walls_used>=2 -> try to resolve corners; fewer than 2 walls
+        # -> the elif's stale-derived-line cleanup). Only the decision
+        # of whether to actually CALL action_auto_arrange is nested
+        # inside it now, so a pinned multi-wall design that skips the
+        # call still lands in this branch (not the elif) and leaves any
+        # existing derived corner lines exactly as they are — the elif's
+        # own premise ("fewer than 2 walls now in use") does not apply
+        # to it.
         if len(walls_used) >= 2:
-            try:
-                design.action_auto_arrange(sync=False)
-                relaid = True
-            except LayoutCapacityExceeded as e:
-                # action_auto_arrange runs inside its own cr.savepoint() —
-                # this exception means it already rolled itself back, so
-                # the design as saved above is untouched/still persisted.
-                # relaid stays False: nothing changed for the client to
-                # pull, but we still owe the rep a plain-English reason
-                # the corner didn't resolve.
-                outside = getattr(e, "outside", []) or []
-                if outside:
-                    worst_overflow_in = max(
-                        (o.get("overflow_mm") or 0) for o in outside
-                    ) / 25.4
-                    layout_warning = (
-                        "Your cabinet run is too long for the wall: %d "
-                        "cabinet(s) don't fit (worst overflows ~%.1f in). "
-                        "Remove a cabinet or enlarge the room."
-                    ) % (len(outside), round(worst_overflow_in, 1))
-                else:
-                    layout_warning = (
-                        "Your cabinet run is too long for the wall. "
-                        "Remove a cabinet or enlarge the room."
-                    )
+            if allow_relayout or not _has_pinned:
+                try:
+                    design.action_auto_arrange(sync=False)
+                    relaid = True
+                except LayoutCapacityExceeded as e:
+                    # action_auto_arrange runs inside its own
+                    # cr.savepoint() — this exception means it already
+                    # rolled itself back, so the design as saved above
+                    # is untouched/still persisted. relaid stays False:
+                    # nothing changed for the client to pull, but we
+                    # still owe the rep a plain-English reason the
+                    # corner didn't resolve.
+                    outside = getattr(e, "outside", []) or []
+                    if outside:
+                        worst_overflow_in = max(
+                            (o.get("overflow_mm") or 0) for o in outside
+                        ) / 25.4
+                        layout_warning = (
+                            "Your cabinet run is too long for the wall: "
+                            "%d cabinet(s) don't fit (worst overflows "
+                            "~%.1f in). Remove a cabinet or enlarge the "
+                            "room."
+                        ) % (len(outside), round(worst_overflow_in, 1))
+                    else:
+                        layout_warning = (
+                            "Your cabinet run is too long for the wall. "
+                            "Remove a cabinet or enlarge the room."
+                        )
+            # else: at least one line is pinned and the caller did not
+            # opt in via allow_relayout — leave this design exactly as
+            # the create/write loop above just persisted it. `relaid`
+            # stays False (truthful: nothing was relaid) and
+            # `layout_warning` stays None (this isn't a capacity
+            # failure, it's a deliberate no-op).
         elif design.cabinet_line_ids.filtered(
             lambda l: l.layout_role == "derived"
         ):
@@ -1829,6 +1905,22 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
 
         Stored as ir.config_parameter keyed by uid so each rep gets
         their own sticky defaults; no res.users schema bump required.
+
+        P0 fix (2026-08-02) — the FALLBACKS below (used only when this
+        user has never saved a preference) used to be 12in width x 24in
+        depth. `_loadUserDefaults()` calls this endpoint unconditionally
+        from "+ New Design", so every brand-new user — before they ever
+        touch the Room panel — got seeded into a 12x24 room, which is
+        smaller than a single 24in-deep base cabinet's footprint. Live
+        evidence: real design records named "Walk-in - 12x120" and
+        "Walk-in - 12x42" with 0 cabinets — the rep opened a new design,
+        the 12x24 fallback room silently made every cabinet they tried
+        to add un-placeable, and they gave up before ever resizing the
+        Room panel. New fallback (144in x 120in x 96in, i.e. a
+        12ft x 10ft room, 8ft ceiling) is merely a saner FIRST GUESS —
+        it changes nothing for any user who has ever saved a preference
+        (the `if save:` block above already persisted their real value,
+        and `_read` returns THAT before ever reaching this default).
         """
         ICP = request.env["ir.config_parameter"].sudo()
         uid = request.env.uid
@@ -1848,8 +1940,8 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             except Exception:
                 return default
         return {
-            "width":  _read("w", 12),
-            "depth":  _read("d", 24),
+            "width":  _read("w", 144),
+            "depth":  _read("d", 120),
             "height": _read("h", 96),
         }
 
