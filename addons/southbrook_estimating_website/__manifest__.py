@@ -3,7 +3,7 @@
     "name": "Southbrook Estimating — Website",
     "summary": "The customer-facing one-page kitchen configurator on "
                "southbrookcabinetry.space (Phase 2 + Phase 3 deliverable).",
-    "version": "19.0.31.16.0",
+    "version": "19.0.31.16.1",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "website": "https://southbrookcabinetry.space",
@@ -110,6 +110,7 @@
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/pack_row.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/easing.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/ortho_frustum.esm.js",
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/color_utils.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/selection.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/drop_raycaster.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/room_shell.esm.js",
@@ -123,6 +124,16 @@
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/scene_dispose.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/camera_controller.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/pointer_pipeline.esm.js",
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/corner_cabinet.esm.js",
+            # Touch editing Wave 2 (2026-08-02 prod incident, same class as
+            # the backend bundle's fix): kitchen_canvas.esm.js imports the
+            # gesture reducer + manipulation visual-state layer — every
+            # imported module needs its own entry in EVERY bundle that
+            # carries the importer; the loader has no disk fallback, and a
+            # missing entry leaves the whole import chain (up to
+            # portal_boot/room_chat here) silently unprocessed.
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/touch_gestures.esm.js",
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/manipulation_states.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/kitchen_canvas.esm.js",
             # Touch editing v1 (2026-08-02 spec) — the shared control-pad
             # SCSS (T3, Wave 1) + component/pure-helpers module (Wave 2).
