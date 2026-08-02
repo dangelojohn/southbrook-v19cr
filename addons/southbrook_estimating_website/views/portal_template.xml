@@ -64,8 +64,19 @@
              orders can still see the standard "Your Orders" / "Your
              Quotations" rows below the prominent CTA. -->
         <xpath expr="//div[hasclass('o_portal_docs')]" position="inside">
+            <!-- 2026-08-02 UX Phase 2 vocab gate — this sidebar entry
+                 has no order-scoped order_mode to read (it's rendered on
+                 the general /my account page, not a bound order), so it
+                 reads the same is_portal_user signal
+                 _prepare_southbrook_portal_values computes order_mode
+                 from, directly. Dealers work Order Builder from the
+                 Odoo backend (CLAUDE.md §2.2), so a share=False user
+                 landing here at all is the edge case, not the norm. -->
             <t t-call="portal.portal_docs_entry">
-                <t t-set="title">Order Builder</t>
+                <t t-set="title">
+                    <t t-if="request.env.user.share">My Kitchen Design</t>
+                    <t t-else="">Order Builder</t>
+                </t>
                 <t t-set="url">/my/southbrook/order-builder</t>
                 <t t-set="placeholder_count" t-value="0"/>
             </t>
@@ -80,7 +91,13 @@
         name="Southbrook Order Builder Portal Page">
         <t t-call="portal.portal_layout">
             <t t-set="breadcrumbs_searchbar" t-value="True"/>
-            <t t-set="title">Southbrook Order Builder</t>
+            <!-- 2026-08-02 UX Phase 2 vocab gate — order_mode is the
+                 SAME flag FooterActions/OrderTitlebar/CustomerPanel
+                 already branch on (computed once in
+                 _prepare_southbrook_portal_values, threaded through
+                 owl_props_json as `mode`). Reps keep "Order Builder";
+                 customers never see the internal tool name. -->
+            <t t-set="title" t-value="'My Kitchen Design' if order_mode == 'customer' else 'Southbrook Order Builder'"/>
 
             <!-- Breadcrumb -->
             <ol class="breadcrumb">
@@ -88,7 +105,8 @@
                     <a t-att-href="'/my'">My Account</a>
                 </li>
                 <li class="breadcrumb-item active">
-                    Order Builder
+                    <t t-if="order_mode == 'customer'">My Kitchen Design</t>
+                    <t t-else="">Order Builder</t>
                 </li>
                 <li class="breadcrumb-item active" t-if="order_id">
                     <span t-esc="order_name"/>
@@ -136,9 +154,17 @@
                      mount stays empty, so a minimal prompt belongs here. -->
                 <div class="o_southbrook_portal_no_order card mb-3">
                     <div class="card-body">
-                        <h2 class="card-title h4 mb-1">Order Builder</h2>
+                        <h2 class="card-title h4 mb-1">
+                            <t t-if="order_mode == 'customer'">My Kitchen Design</t>
+                            <t t-else="">Order Builder</t>
+                        </h2>
                         <p class="card-text text-muted mb-0">
-                            Pick or create an order to configure your kitchen.
+                            <t t-if="order_mode == 'customer'">
+                                Pick or create a quote to configure your kitchen.
+                            </t>
+                            <t t-else="">
+                                Pick or create an order to configure your kitchen.
+                            </t>
                         </p>
                     </div>
                 </div>
@@ -189,12 +215,24 @@
                             </a>
                         </p>
                     </t>
+                    <t t-elif="order_mode == 'customer'">
+                        <!-- 2026-08-02 UX Phase 2 vocab gate — this is
+                             the pre-hydration fallback a slow/blocked-JS
+                             visitor sees; it used to read "Order id 1234
+                             loaded for partner Jane Doe. The OWL
+                             configurator mounts here." (raw id, internal
+                             "partner"/"OWL" vocabulary). -->
+                        <strong>My Kitchen Design — loading…</strong>
+                        <p>
+                            Loading your kitchen design for
+                            <strong t-esc="order.partner_id.name"/>.
+                        </p>
+                    </t>
                     <t t-else="">
                         <strong>Order Builder — loading…</strong>
                         <p>
-                            Order id <code t-esc="order_id"/> loaded for
-                            partner <strong t-esc="order.partner_id.name"/>.
-                            The OWL configurator mounts here.
+                            Loading order <strong t-esc="order_name"/> for
+                            <strong t-esc="order.partner_id.name"/>.
                         </p>
                     </t>
                 </div>

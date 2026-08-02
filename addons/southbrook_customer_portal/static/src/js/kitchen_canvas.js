@@ -220,8 +220,21 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       mountKitchenCanvas(container, placement);
     } catch (err) {
-      container.innerHTML =
-        `<div class="alert alert-warning">3D preview failed to load: ${err}</div>`;
+      // 2026-08-02 UX Phase 2 vocab gate — this used to interpolate the
+      // raw JS Error's string form (e.g. "TypeError: Cannot read
+      // properties of undefined (reading 'x')") straight into innerHTML,
+      // on the concept-approval page — the single highest-trust moment
+      // in the flow, right before a customer commits to a design
+      // (ux-customer.md audit §5/§7 #4). Log the real error for us;
+      // show the customer plain language via textContent, never raw
+      // error text or unescaped HTML.
+      console.error("3D preview failed to load:", err);
+      container.textContent = "";
+      const notice = document.createElement("div");
+      notice.className = "alert alert-warning";
+      notice.textContent =
+        "The 3D preview didn't load. Try refreshing the page — your design is saved.";
+      container.appendChild(notice);
     }
   }
 });

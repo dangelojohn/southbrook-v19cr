@@ -33,9 +33,15 @@ class SouthbrookDocs(http.Controller):
             "Southbrook-Cabinetry-User-Manual.pdf"),
     }
 
+    # 2026-08-02 — UX Phase 2 vocab gate: sitemap=False. The user-manual
+    # PDF's later chapters are written for reps/dealers ("check the pricing
+    # for your channel... see exactly what your margin is") and search
+    # indexing surfaced that to anonymous homeowners. The PDFs stay public
+    # and directly linkable (homepage links are unaffected) — this only
+    # stops the crawler from independently indexing/ranking them.
     @http.route(
         "/southbrook/docs/<string:slug>.pdf",
-        type="http", auth="public", website=True, sitemap=True, methods=["GET"],
+        type="http", auth="public", website=True, sitemap=False, methods=["GET"],
     )
     def download_doc(self, slug, **kw):
         entry = self._DOCS.get(slug)

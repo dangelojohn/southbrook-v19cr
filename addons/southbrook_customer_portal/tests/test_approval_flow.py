@@ -84,6 +84,36 @@ class TestApprovalFlow(HttpCase):
                          "select must be blocked once the project is approved")
         self.assertTrue(self.opt_b.is_selected)
 
+    def test_state_label_never_leaks_raw_enum(self):
+        """UX Phase 2 vocab gate (ux-customer.md audit §4) — the select/
+        approve routes used to interpolate the raw Selection VALUE
+        (e.g. "awaiting_customer") into customer-facing UserError text.
+        _project_state_label() must return the field's own human label
+        for every declared project state, never the bare enum key."""
+        from odoo.addons.southbrook_customer_portal.controllers.main import (
+            _project_state_label,
+        )
+        selection = dict(self.project._fields["state"].selection)
+        self.assertTrue(selection, "sb.kitchen.project.state has no "
+                                    "Selection values to check")
+        for raw_state, label in selection.items():
+            self.project.write({"state": raw_state})
+            self.assertEqual(
+                _project_state_label(self.project), label,
+                f"state={raw_state!r} did not resolve to its Selection label",
+            )
+            if raw_state != label:
+                # The tell for a raw enum leak: Odoo Selection values are
+                # snake_case, labels are Title Case words — an
+                # underscore surviving into the "label" means the lookup
+                # silently fell back to the raw key.
+                self.assertNotIn(
+                    "_", _project_state_label(self.project),
+                    f"state={raw_state!r} leaked its raw key instead of a label",
+                )
+        # Restore the fixture state other tests in this class depend on.
+        self.project.write({"state": "awaiting_customer"})
+
     def test_approve_advances_state_and_creates_approval_record(self):
         # Pre-select an option via the model (avoids CSRF coupling).
         self.opt_b.with_user(self.user.id).sudo().write({"is_selected": True})

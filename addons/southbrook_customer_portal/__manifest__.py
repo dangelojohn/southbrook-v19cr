@@ -38,7 +38,7 @@ Three.js KitchenCanvas (Phase 2):
     "author": "Southbrook Kitchens / OdooIQ",
     "license": "LGPL-3",
     "category": "Manufacturing",
-    "version": "19.0.0.8.0",
+    "version": "19.0.0.8.1",
     "depends": [
         "web",
         "website",

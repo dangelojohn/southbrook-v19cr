@@ -219,12 +219,17 @@ class KitchenPlanner extends Component {
                         <div class="o_kp_drawer_head_body">
                             <div class="o_kp_drawer_thumb"
                                  t-att-data-family="state.session.template.family"/>
+                            <!-- 2026-08-02 UX Phase 2 vocab gate — this
+                                 page has no dealer/rep mode (it's the
+                                 standalone customer configurator, per
+                                 CLAUDE.md §2.1); an unlabeled SKU code
+                                 served no purpose to a homeowner
+                                 (ux-customer.md audit §4/§7 #6). Dropped
+                                 rather than relabeled — the cabinet name
+                                 above already identifies it. -->
                             <div class="o_kp_drawer_head_meta">
                                 <div class="o_kp_drawer_head_name"
                                      t-esc="state.session.template.name"/>
-                                <div class="o_kp_drawer_head_sku">
-                                    <t t-esc="state.session.template.sku"/>
-                                </div>
                             </div>
                             <!-- P2C5 — live total. Updated after every
                                  set-value RPC. -->
@@ -319,8 +324,9 @@ class KitchenPlanner extends Component {
                          t-att-data-family="selectedCabinet.family"/>
                     <h1 class="o_kp_selection_name"
                         t-esc="selectedCabinet.name"/>
+                    <!-- 2026-08-02 UX Phase 2 vocab gate — dropped SKU
+                         (customer-only page, no rep audience here). -->
                     <dl class="o_kp_selection_meta">
-                        <dt>SKU</dt><dd t-esc="selectedCabinet.sku"/>
                         <dt>Family</dt><dd t-esc="selectedCabinet.family"/>
                         <dt>Retail</dt>
                         <dd t-esc="_fmt(selectedCabinet.list_price)"/>

@@ -84,25 +84,51 @@ export async function rpcJsonCall(url, params = {}) {
 }
 
 // ----------------------------------------------------------------------
+// Order state → human label — SINGLE SOURCE OF TRUTH.
+//
+// 2026-08-02 UX Phase 2 vocab gate — OrderTitlebar's header chip already
+// mapped sale.order state through this table; FooterActions' primary CTA
+// did not, so once a customer's order left draft/sent the button they
+// look at literally read "Submitted (sale)" (ux-customer.md audit §4/§7
+// #1). Both components call the SAME orderStateLabel() below now, so the
+// header chip and the CTA can never drift into two different words for
+// one state again.
+// ----------------------------------------------------------------------
+const ORDER_STATE_LABELS = {
+    draft:  "Draft",
+    sent:   "Estimating",
+    sale:   "Confirmed",
+    done:   "In Production",
+    cancel: "Cancelled",
+};
+function orderStateLabel(state) {
+    return ORDER_STATE_LABELS[state] || state;
+}
+
+// ----------------------------------------------------------------------
 // IllustrativeBanner — T2C7.
 //
 // The yellow strip that marks demo / seed numbers as not-production
-// data (per OQ2 acked + commit-9 ask in southbrook_estimating Build
-// Spec §9.3). Renders only when props.show is truthy.
+// data. Renders only when props.show is truthy.
 //
 // Phase 3 polish reads ir.config_parameter southbrook.seed_mode
 // (already declared by southbrook_estimating data/config_parameters.xml)
-// and toggles render. T2C7 hardcodes show=true so the banner is
-// visible during portal scaffold review.
+// and toggles render.
+//
+// 2026-08-02 UX Phase 2 vocab gate — this used to read "See PUNCHLIST.md
+// OQ2 + Build Spec §9.3", pointing anyone (including a real customer on
+// a database left in illustrative mode) at internal engineering docs
+// that don't exist to them (ux-customer.md audit §4). The banner itself
+// is a legitimate signal for BOTH audiences — it stays visible in every
+// mode, just without the internal doc reference.
 // ----------------------------------------------------------------------
 
 class IllustrativeBanner extends Component {
     static template = xml`
         <div t-if="props.show" class="o_owl_illus_banner">
-            <span class="o_owl_illus_pill">ILLUSTRATIVE SEED</span>
+            <span class="o_owl_illus_pill">SAMPLE DATA</span>
             <span class="o_owl_illus_text">
-                Demo numbers — not production data. See
-                <code>PUNCHLIST.md</code> OQ2 + Build Spec §9.3.
+                These numbers are a sample for preview only — not a live quote.
             </span>
         </div>
     `;
@@ -129,8 +155,19 @@ class OrderTitlebar extends Component {
         <div class="o_owl_titlebar">
             <div class="o_owl_titlebar_lhs">
                 <div class="o_owl_titlebar_crumb">
+                    <!-- 2026-08-02 UX Phase 2 vocab gate — a customer
+                         following "Design Your Kitchen" from the
+                         homepage landed here and this back-link told
+                         them, again, they were in the internal "Order
+                         Builder" (ux-customer.md audit §4/§7 #2). "My
+                         Orders" is the SAME label the order-navigation
+                         toolbar already uses (portal_template.xml) for
+                         this exact target — reused, not invented. -->
                     <a href="/my/southbrook/order-builder"
-                       class="o_owl_back_link">← Back to Order Builder</a>
+                       class="o_owl_back_link">
+                        <t t-if="props.mode === 'customer'">← Back to My Orders</t>
+                        <t t-else="">← Back to Order Builder</t>
+                    </a>
                 </div>
                 <h1 class="o_owl_titlebar_heading">
                     <t t-esc="props.order.partner_name"/>
@@ -169,15 +206,10 @@ class OrderTitlebar extends Component {
         mode: { type: String, optional: true },
     };
 
+    // 2026-08-02 — delegates to the module-level orderStateLabel() so
+    // this chip and FooterActions' primary CTA read off one table.
     _stateLabel(state) {
-        const labels = {
-            draft:  "Draft",
-            sent:   "Estimating",
-            sale:   "Confirmed",
-            done:   "In Production",
-            cancel: "Cancelled",
-        };
-        return labels[state] || state;
+        return orderStateLabel(state);
     }
 
     // 2026-06-27 — compact relative-time formatter for the
@@ -512,11 +544,18 @@ class FooterActions extends Component {
                         t-on-click="_onConfirmClick"
                         t-att-disabled="props.busy || !_canConfirm()">
                     <t t-if="!_canConfirm()">
+                        <!-- 2026-08-02 UX Phase 2 vocab gate — this used
+                             to t-esc the raw sale.order Selection value
+                             ("Submitted (sale)"/"Submitted (done)"),
+                             bypassing the very label-mapper OrderTitlebar's
+                             header chip already uses two components over
+                             (ux-customer.md audit §4/§7 #1). Routes
+                             through the SAME orderStateLabel() now. -->
                         <t t-if="props.mode === 'customer'">
-                            Submitted (<t t-esc="props.order.state"/>)
+                            Submitted (<t t-esc="_stateLabel(props.order.state)"/>)
                         </t>
                         <t t-else="">
-                            Confirmed (<t t-esc="props.order.state"/>)
+                            Confirmed (<t t-esc="_stateLabel(props.order.state)"/>)
                         </t>
                     </t>
                     <t t-elif="props.mode === 'customer'">
@@ -689,6 +728,13 @@ class FooterActions extends Component {
     }
 
     fmtUsd = fmtUsd;
+
+    // 2026-08-02 — OWL resolves unqualified template calls against
+    // `this`, so the primary CTA needs its own _stateLabel even though
+    // it's the exact same table OrderTitlebar reads (orderStateLabel()).
+    _stateLabel(state) {
+        return orderStateLabel(state);
+    }
 
     _canConfirm() {
         const s = this.props.order?.state;
@@ -1416,7 +1462,13 @@ class OrderLine extends Component {
             <div class="o_owl_lineno" t-esc="props.line.sequence"/>
             <div class="o_owl_line_tpl">
                 <t t-esc="props.line.product_name"/>
-                <span t-if="props.line.product_sku"
+                <!-- 2026-08-02 UX Phase 2 vocab gate — SKU stays visible
+                     for reps (they read it off this grid daily); a
+                     customer has no use for a manufacturing part code
+                     next to their own line item (ux-customer.md audit
+                     §4/§7 #4, "SKU codes on customer catalog cards/
+                     lines"). Same mode gate as the rest of this tree. -->
+                <span t-if="props.line.product_sku &amp;&amp; props.mode !== 'customer'"
                       class="o_owl_line_xmlid"
                       t-esc="props.line.product_sku"/>
             </div>
@@ -1432,8 +1484,16 @@ class OrderLine extends Component {
                       class="o_owl_badge o_owl_badge_maple">
                     MAPLE
                 </span>
-                <span t-if="props.line.rule_blocked"
-                      class="o_owl_badge o_owl_badge_rule">
+                <!-- 2026-08-02 UX Phase 2 vocab gate — an unexplained
+                     "RULE" badge means nothing to a customer (there is
+                     no reason string wired to this prop today, so
+                     there's nothing plain-English to show them either);
+                     CLAUDE.md §5 + the design-system skill both say rule
+                     reasons are rep-visible, customer-hidden. Rep mode
+                     is unchanged (ux-customer.md audit §4/§7 #4). -->
+                <span t-if="props.line.rule_blocked &amp;&amp; props.mode !== 'customer'"
+                      class="o_owl_badge o_owl_badge_rule"
+                      title="This line no longer matches a configuration rule — open it to review.">
                     RULE
                 </span>
                 <!-- 2026-06-27 — per-line lead time chip. Highlights as
@@ -1516,6 +1576,8 @@ class OrderLine extends Component {
         // checkbox toggles up to the parent via onBulkToggle(line_id).
         isBulkChecked: { type: Boolean, optional: true },
         onBulkToggle: { type: Function, optional: true },
+        // 2026-08-02 — UX Phase 2 vocab gate (SKU + RULE badge).
+        mode: { type: String, optional: true },
     };
     fmtUsd = fmtUsd;
 
@@ -1695,7 +1757,8 @@ class ZoneGroup extends Component {
                                onDelete="props.onDeleteLine"
                                onQtyChange="props.onLineQtyChange"
                                isBulkChecked="props.bulkChecked &amp;&amp; props.bulkChecked.includes(line.id)"
-                               onBulkToggle="props.onBulkToggle"/>
+                               onBulkToggle="props.onBulkToggle"
+                               mode="props.mode"/>
                     <!-- T2C10 — ConfigDrawer expands below the selected line,
                          spanning all 8 columns of the parent grid. -->
                     <ConfigDrawer t-if="line.id === props.selectedLineId"
@@ -1780,6 +1843,9 @@ class ZoneGroup extends Component {
         // ZoneGroup so _humanLen here doesn't have to reach back into a
         // parent reference. Defaults to "mm".
         unitPreference: { type: String, optional: true },
+        // 2026-08-02 — UX Phase 2 vocab gate, forwarded to OrderLine
+        // (SKU + RULE badge visibility).
+        mode: { type: String, optional: true },
     };
 
     setup() {
@@ -3713,7 +3779,8 @@ const TEMPLATE = xml`
                                onBulkToggle="_onBulkToggle"
                                issuesForLine="_issuesForLine"
                                room="state.room"
-                               unitPreference="(state.room &amp;&amp; state.room.unit_preference) || 'mm'"/>
+                               unitPreference="(state.room &amp;&amp; state.room.unit_preference) || 'mm'"
+                               mode="props.mode || 'dealer'"/>
                 </t>
             </div>
             <div t-elif="state.ui.current_tab === 'kitchen3d'"
@@ -3729,7 +3796,8 @@ const TEMPLATE = xml`
                  class="o_owl_tab_panel o_owl_panel_kitchen3d_design"
                  role="tabpanel" aria-labelledby="o_owl_tab_kitchen3d_design">
                 <KitchenDesignTab orderId="props.orderId"
-                                  payloadVersion="state.payload_version"/>
+                                  payloadVersion="state.payload_version"
+                                  mode="props.mode || 'dealer'"/>
             </div>
             <div t-elif="state.ui.current_tab === 'bom'"
                  class="o_owl_tab_panel o_owl_panel_bom"

@@ -9,6 +9,22 @@ from odoo.http import request
 _logger = logging.getLogger(__name__)
 
 
+def _project_state_label(project):
+    """Human label for sb.kitchen.project.state — never interpolate the
+    raw Selection key (e.g. "awaiting_customer") into customer-facing
+    text (UX Phase 2 vocab gate, ux-customer.md audit §4: a hand-written
+    UserError string bypassed the Selection field's own labels, which
+    the QWeb `t-field="project.state"` widget renders correctly
+    elsewhere on this same page). Falls back to the raw value only if
+    the field's selection list is ever a callable rather than a static
+    list — defensive, not expected to trigger."""
+    try:
+        selection = dict(project._fields["state"].selection)
+    except (TypeError, ValueError):
+        return project.state
+    return selection.get(project.state, project.state)
+
+
 class KitchenPortal(http.Controller):
 
     # ------------------------------------------------------------------
@@ -105,9 +121,19 @@ class KitchenPortal(http.Controller):
         # concept than the one approved, desyncing the quote/MO/spec-sheet from
         # the portal with no re-approval or audit. Mirror the approve gate.
         if project.state not in ("designing", "awaiting_customer"):
+            # 2026-08-02 UX Phase 2 vocab gate — this used to interpolate
+            # the raw Selection VALUE (e.g. "awaiting_customer") into the
+            # customer-facing message; a double-submit or back-navigation
+            # could show literally "Project state is awaiting_customer..."
+            # (ux-customer.md audit §4). _project_state_label() reads the
+            # same field's own human labels — the template's
+            # `t-field="project.state"` already renders those correctly,
+            # this hand-written string just wasn't using them.
             raise UserError(_(
-                "Project state is %s; design options can no longer be changed."
-            ) % project.state)
+                "This project is already %s, so design options can no "
+                "longer be changed. Contact your Southbrook representative "
+                "if you need something adjusted."
+            ) % _project_state_label(project))
         option = project.design_option_ids.filtered(lambda o: o.id == option_id)
         if not option:
             raise MissingError(_("Design option does not belong to this project."))
@@ -128,9 +154,13 @@ class KitchenPortal(http.Controller):
                 "Pick a design option first, then approve."
             ))
         if project.state != "awaiting_customer":
+            # 2026-08-02 UX Phase 2 vocab gate — see the matching fix in
+            # kitchen_project_select_option above; same raw-enum leak,
+            # same fix.
             raise UserError(_(
-                "Project state is %s; cannot record customer approval."
-            ) % project.state)
+                "This project is already %s, so it can't be approved "
+                "again. Refresh the page to see its current status."
+            ) % _project_state_label(project))
         # Create an approval record + advance state.
         request.env["sb.kitchen.approval"].sudo().create({
             "project_id": project.id,

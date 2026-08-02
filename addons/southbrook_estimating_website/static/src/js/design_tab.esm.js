@@ -115,6 +115,55 @@ const MATERIAL_LABELS = {
 // Same fixed tick set as kitchen_configurator.js's o_sbk_ruler.
 const RULER_MARKS = [0, 24, 48, 72, 96, 120, 144];
 
+// ----------------------------------------------------------------------
+// friendlyDesignError — 2026-08-02 UX Phase 2 vocab gate.
+//
+// Every `/design-3d/*` route in this addon's controllers/main.py returns
+// a thin `{"error": "<code>"}` shape (not_found, forbidden, no_design,
+// no_layout_key, no_matching_line, rate_limited, not_a_cabinet,
+// type_mismatch, ROOM_TOO_SMALL — grep controllers/main.py for the
+// authoritative list), and an uncaught RPC exception surfaces as a raw
+// `Error` object. Both used to reach the DOM verbatim via
+// `this.state.error = resp.error` / `e?.message || String(e)`
+// (ux-customer.md audit §5/§7 #4 cites this pattern, with NO_CABINETS /
+// ROOM_OUT_OF_BOUNDS / invalid_wall as the flavor of thing that can leak
+// through a passthrough like this one). Every `state.error =` assignment
+// in this file now routes through this map instead. Known codes get a
+// plain-language "what happened + what to do" message; anything unknown
+// (a real bug, a future code, a raw JS exception string) gets the same
+// generic, non-alarming fallback rather than a stack trace or a bare
+// server token.
+// ----------------------------------------------------------------------
+const DESIGN_ERROR_COPY = {
+    not_found:        "This order couldn't be found. Go back to My Orders and try again.",
+    forbidden:        "You don't have access to make that change.",
+    no_design:        "Your kitchen design hasn't finished loading. Refresh the page and try again.",
+    no_layout_key:    "That cabinet isn't in your design anymore. Refresh the page to see the latest layout.",
+    no_matching_line: "That cabinet isn't in your design anymore. Refresh the page to see the latest layout.",
+    rate_limited:     "You're making changes faster than we can save them. Wait a moment and try again.",
+    not_a_cabinet:    "That item isn't available to add. Pick a cabinet from the list on the right.",
+    type_mismatch:    "That swap isn't available for this cabinet. Pick a cabinet of the same type.",
+    // Defensive — not currently reachable from this tab's own routes, but
+    // the shared layout engine's own vocabulary (see kitchen_3d_configurator),
+    // kept here in case a future wiring change forwards it unmapped.
+    NO_CABINETS:       "Add a cabinet from the panel on the right to get started.",
+    ROOM_OUT_OF_BOUNDS: "Your room size doesn't fit the cabinets already placed. Try a larger room or remove a cabinet.",
+    invalid_wall:       "Pick a wall to place this cabinet on.",
+};
+const DESIGN_ERROR_FALLBACK =
+    "Something didn't load — try again; your design is saved.";
+
+function friendlyDesignError(raw) {
+    if (!raw) return DESIGN_ERROR_FALLBACK;
+    // ROOM_TOO_SMALL is handled by its own caller with the real
+    // dimensions already baked into the sentence (see _onAutoArrange) —
+    // if it ever reaches here unbuilt, still don't show the bare code.
+    if (raw === "ROOM_TOO_SMALL") {
+        return "Not enough wall space for these cabinets. Remove a cabinet or enlarge the room.";
+    }
+    return DESIGN_ERROR_COPY[raw] || DESIGN_ERROR_FALLBACK;
+}
+
 export class KitchenDesignTab extends Component {
     static components = { KitchenCanvas };
     static template = xml`
@@ -277,7 +326,15 @@ export class KitchenDesignTab extends Component {
                         </select>
                     </label>
                     <div class="o_owl_design3d_inv_search">
-                        <input type="search" placeholder="Search name, SKU, type…"
+                        <!-- 2026-08-02 UX Phase 2 vocab gate — SKU stays
+                             in the search hint for reps (they search by
+                             it); a customer doesn't know what a SKU is
+                             (ux-customer.md audit §4/§7 #4/#6). The
+                             search itself still matches against sku for
+                             everyone (see filteredProducts) — only the
+                             displayed hint text changes. -->
+                        <input type="search"
+                               t-att-placeholder="props.mode === 'customer' ? 'Search name, type…' : 'Search name, SKU, type…'"
                                t-att-value="state.inventorySearch"
                                t-on-input="(ev) => state.inventorySearch = ev.target.value"/>
                         <button t-if="state.inventorySearch" type="button"
@@ -298,7 +355,7 @@ export class KitchenDesignTab extends Component {
                                 t-att-title="'Drag onto scene to add ' + product.name">
                             <span class="o_owl_design3d_prod_name" t-esc="product.name"/>
                             <span class="o_owl_design3d_prod_meta"
-                                  t-esc="product.sku + ' · ' + product.width_in + '″'"/>
+                                  t-esc="(props.mode === 'customer' ? '' : product.sku + ' · ') + product.width_in + '″'"/>
                             <span class="o_owl_design3d_prod_price" t-esc="_money(product.price)"/>
                         </button>
                         <div t-if="!filteredProducts.length &amp;&amp; state.products.length"
@@ -318,7 +375,14 @@ export class KitchenDesignTab extends Component {
                             </div>
                         </div>
                         <p class="o_owl_design3d_detail_name" t-esc="state.selected.product_name"/>
-                        <div t-if="state.selected.bom_available === false" class="o_owl_design3d_bom_warn">
+                        <!-- 2026-08-02 UX Phase 2 vocab gate — "No BOM
+                             defined... Bill of Materials" is ops/
+                             manufacturing information a homeowner has no
+                             use for and no way to act on; it stayed
+                             unconditional before (ux-customer.md audit
+                             §4/§7 #3/#4). Rep mode is unchanged. -->
+                        <div t-if="state.selected.bom_available === false &amp;&amp; props.mode !== 'customer'"
+                             class="o_owl_design3d_bom_warn">
                             ⚠ No BOM defined — this item can't be manufactured until
                             a Bill of Materials exists for it.
                         </div>
@@ -340,7 +404,13 @@ export class KitchenDesignTab extends Component {
                             </label>
                         </div>
                         <dl class="o_owl_design3d_detail_spec">
-                            <dt>SKU</dt><dd t-esc="state.selected.sku || '—'"/>
+                            <!-- 2026-08-02 UX Phase 2 vocab gate — SKU
+                                 stays for reps; hidden for customers
+                                 (same mode gate as the rest of this
+                                 tree). -->
+                            <t t-if="props.mode !== 'customer'">
+                                <dt>SKU</dt><dd t-esc="state.selected.sku || '—'"/>
+                            </t>
                             <dt>Height</dt><dd t-esc="state.selected.height_in + ' in'"/>
                             <dt>Depth</dt><dd t-esc="state.selected.depth_in + ' in'"/>
                             <dt>Material</dt><dd t-esc="_materialLabel(state.selected.material)"/>
@@ -369,6 +439,10 @@ export class KitchenDesignTab extends Component {
         // Bumped by OrderBuilder after autosaves; a change re-fetches so the
         // design reseeds if the order's cabinet set changed (T1: reload).
         payloadVersion: { type: Number, optional: true },
+        // 2026-08-02 — UX Phase 2 vocab gate (BOM warning + SKU
+        // visibility). Forwarded from OrderBuilder, same flag
+        // FooterActions/OrderTitlebar already branch on.
+        mode: { type: String, optional: true },
     };
 
     setup() {
@@ -572,12 +646,12 @@ export class KitchenDesignTab extends Component {
                         `Not enough wall space for these cabinets (need ~${needIn}″, ` +
                         `walls hold ~${haveIn}″). Remove cabinets or enlarge the room.`;
                 } else {
-                    this.state.error = resp.error;
+                    this.state.error = friendlyDesignError(resp.error);
                 }
                 return;
             }
         } catch (e) {
-            this.state.error = e?.message || String(e);
+            this.state.error = friendlyDesignError(e?.message);
             return;
         } finally {
             this.state.saving = false;
@@ -604,7 +678,7 @@ export class KitchenDesignTab extends Component {
                 {},
             );
             if (payload && payload.error) {
-                this.state.error = payload.error;
+                this.state.error = friendlyDesignError(payload.error);
                 return;
             }
             if (mutAtStart !== this._itemsMutSeq) {
@@ -615,7 +689,7 @@ export class KitchenDesignTab extends Component {
             this.state.items = payload.items || [];
             this.state.channel = payload.channel || null;
         } catch (e) {
-            this.state.error = e?.message || String(e);
+            this.state.error = friendlyDesignError(e?.message);
         } finally {
             this.state.loading = false;
         }
@@ -765,11 +839,11 @@ export class KitchenDesignTab extends Component {
             if (res && res.room) {
                 this.state.room = res.room;
             } else if (res && res.error) {
-                this.state.error = res.error;
+                this.state.error = friendlyDesignError(res.error);
             }
         } catch (e) {
             if (seq === this._roomSaveSeq) {
-                this.state.error = e?.message || String(e);
+                this.state.error = friendlyDesignError(e?.message);
             }
         } finally {
             if (seq === this._roomSaveSeq) {
@@ -798,8 +872,9 @@ export class KitchenDesignTab extends Component {
                 { layout_key: sel.layout_key },
             );
             if (res && res.error) {
-                this.state.error = res.error;
-                this._pushToast(`Couldn't remove ${sel.product_name}: ${res.error}`, "error");
+                const msg = friendlyDesignError(res.error);
+                this.state.error = msg;
+                this._pushToast(`Couldn't remove ${sel.product_name}: ${msg}`, "error");
                 return;
             }
             this._itemsMutSeq += 1;   // audit A7 pattern — mark the mutation
@@ -809,7 +884,7 @@ export class KitchenDesignTab extends Component {
             this.state.selected = null;
             this._pushToast(`Removed ${sel.product_name}`, "success");
         } catch (e) {
-            const msg = e?.message || String(e);
+            const msg = friendlyDesignError(e?.message);
             this.state.error = msg;
             this._pushToast(`Couldn't remove ${sel.product_name}: ${msg}`, "error");
         } finally {
@@ -829,7 +904,7 @@ export class KitchenDesignTab extends Component {
                 { layout_key: sel.layout_key, width_in: v },
             );
             if (res && res.error) {
-                this.state.error = res.error;
+                this.state.error = friendlyDesignError(res.error);
                 return;
             }
             const width_in = (res && res.width_in) ?? v;
@@ -838,7 +913,7 @@ export class KitchenDesignTab extends Component {
             );
             this.state.selected = { ...sel, width_in };
         } catch (e) {
-            this.state.error = e?.message || String(e);
+            this.state.error = friendlyDesignError(e?.message);
         } finally {
             this.state.saving = false;
         }
@@ -856,8 +931,9 @@ export class KitchenDesignTab extends Component {
                 { layout_key: sel.layout_key, product_id: pid },
             );
             if (res && res.error) {
-                this.state.error = res.error;
-                this._pushToast(`Couldn't swap product: ${res.error}`, "error");
+                const msg = friendlyDesignError(res.error);
+                this.state.error = msg;
+                this._pushToast(`Couldn't swap product: ${msg}`, "error");
                 return;
             }
             if (res && res.item) {
@@ -868,7 +944,7 @@ export class KitchenDesignTab extends Component {
                 this._pushToast(`Swapped to ${res.item.product_name}`, "success");
             }
         } catch (e) {
-            const msg = e?.message || String(e);
+            const msg = friendlyDesignError(e?.message);
             this.state.error = msg;
             this._pushToast(`Couldn't swap product: ${msg}`, "error");
         } finally {
@@ -892,11 +968,11 @@ export class KitchenDesignTab extends Component {
                 },
             );
             if (res && res.error) {
-                this.state.error = res.error;
+                this.state.error = friendlyDesignError(res.error);
                 await this._load();   // resync on server rejection
             }
         } catch (e) {
-            this.state.error = e?.message || String(e);
+            this.state.error = friendlyDesignError(e?.message);
             await this._load();
         } finally {
             this.state.saving = false;
@@ -1025,8 +1101,9 @@ export class KitchenDesignTab extends Component {
                 },
             );
             if (res && res.error) {
-                this.state.error = res.error;
-                this._pushToast(`Couldn't add ${product.name}: ${res.error}`, "error");
+                const msg = friendlyDesignError(res.error);
+                this.state.error = msg;
+                this._pushToast(`Couldn't add ${product.name}: ${msg}`, "error");
             } else if (res && res.relaid && res.payload) {
                 // Continuous corner resolution re-laid the whole scene.
                 // Task 4 — toast + brief stage fade are additive; neither
@@ -1060,7 +1137,7 @@ export class KitchenDesignTab extends Component {
                 this._pushToast(`Added ${res.item.product_name}`, "success");
             }
         } catch (e) {
-            const msg = e?.message || String(e);
+            const msg = friendlyDesignError(e?.message);
             this.state.error = msg;
             this._pushToast(`Couldn't add ${product.name}: ${msg}`, "error");
         } finally {
