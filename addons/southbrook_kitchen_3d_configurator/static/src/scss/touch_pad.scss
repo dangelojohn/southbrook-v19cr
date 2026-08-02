@@ -1,0 +1,232 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+//
+// Touch editing for the 3D kitchen configurator — control-pad styling.
+// Wave 1 of docs/superpowers/specs/2026-08-02-touch-editing-design.md
+// (§3 "Visual language"); full detail in the touch-editing visual spec's
+// State 8 "Precision readouts" and State 9 "Rotation-affordance styling".
+//
+// WAVE 1 SCOPE — styling only. This file is not yet in any asset
+// bundle and kitchen_configurator.scss does not @import it yet; wave 2
+// wires the manifest entry and the OWL markup that renders these
+// classes. Colour/timing/geometry constants that drive the matching
+// 3D-scene visuals live in manipulation_states.esm.js (JS cannot share
+// literals with SCSS, so the two are kept in sync by hand and by the
+// $sbk-touchpad-accent comment below).
+//
+// Two pad anatomies (design spec §1 decision #4 "Portal-first,
+// tablets-everywhere": "Phone = bottom-docked pad in the thumb zone;
+// tablet = floating pad near the selection"):
+//   .o_sbk_touchpad           — phone: full-width bottom-docked bar
+//   .o_sbk_touchpad--floating — tablet: compact pad anchored near the
+//                               selected cabinet (position driven by
+//                               wave-2 JS; this file styles the chip)
+//
+// Tokens only, per the southbrook-design-system skill. southbrook_ui
+// is already a __manifest__.py dependency of this addon (Phase 0,
+// 2026-07-31), so --sb-space-*/--sb-elevation-*/--sb-status-*/
+// --sb-corner-*/--sb-type-* all resolve with no new dependency edge.
+//
+// NO lowercase min()/max()/clamp() anywhere below. Odoo 19 ships
+// libsass 3.6.5, which binds lowercase min()/max()/clamp() to SCSS's
+// own built-in numeric function and evaluates it at compile time —
+// mixed-unit args (e.g. px vs vw) abort with "Incompatible units",
+// and because one failing file takes down the whole
+// web.assets_backend/_frontend bundle, the entire database renders
+// unstyled. southbrook_qr_kit/operator_pin_modal.scss documents the
+// exact failure mode and the Capital-Min()/Max()/Clamp() workaround
+// for when a real CSS min()/max()/clamp() is genuinely needed — not
+// used here because nothing in this file needs it.
+
+// Selection-accent blue — mirrors $sbk-accent (kitchen_configurator.scss)
+// and SELECT_BLUE (manipulation_states.esm.js), all three pinned to the
+// same shipped colour (0x1866D4 / #1866D4, contrast-verified 3.11-4.46:1
+// against every scene surface per the visual spec). Declared locally
+// rather than `@use`d from kitchen_configurator.scss — wave 1 does not
+// touch that file — so keep the three literals in sync by hand if this
+// ever changes (it hasn't since the visual-spec contrast audit locked
+// it in).
+$sbk-touchpad-accent: #1866D4;
+$sbk-touchpad-accent-ink: #ffffff;
+
+// ─── Shared button component (both pad anatomies) ──────────────────────────
+//
+// Idle: white/paper chip, blue glyph (design spec §3 "blue-on-white
+// chips, honest glyphs"; visual-spec State 9 "white/paper chip,
+// #1866D4 glyph"). Pressed: inverts to solid accent fill + white
+// glyph, held for the press duration (State 9). `aria-pressed` drives
+// the pressed look — these are toggle-style affordances (rotate
+// CW/CCW, camera-to-elevation, send-to-wall), matching the existing
+// t-att-aria-pressed convention already used throughout
+// kitchen_configurator.js's view-mode/panel buttons.
+.o_sbk_touchpad_btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--sb-corner-pill, 999px);
+    background: #ffffff;
+    color: $sbk-touchpad-accent;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: background-color 100ms ease-out, color 100ms ease-out,
+        transform 100ms ease-out;
+
+    // The icon itself carries the non-colour redundancy (a
+    // direction-specific curved-arrow glyph, camera icon, cycle icon —
+    // "honest glyphs", design spec §1 decision #3) in markup; this file
+    // only carries the chip's colour/size/motion contract.
+    svg,
+    .o_sbk_touchpad_icon {
+        width: 22px;
+        height: 22px;
+        pointer-events: none;
+    }
+
+    &:disabled,
+    &[aria-disabled="true"] {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+
+    &[aria-pressed="true"] {
+        background: $sbk-touchpad-accent;
+        color: $sbk-touchpad-accent-ink;
+        transform: scale(1.04);
+    }
+
+    &:focus-visible {
+        outline: 2px solid $sbk-touchpad-accent;
+        outline-offset: 2px;
+    }
+}
+
+// State 9: "a single 100ms scale-pulse (1.0 -> 1.06 -> 1.0) on the
+// chip at rotation-complete" — a full 90 deg turn earns its own
+// distinct completion cue rather than reusing the State-7 snap pulse.
+// Wave 2's JS toggles `.is-pulsing` for exactly one animation-duration
+// then removes it.
+@keyframes o_sbk_touchpad_btn_pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.06); }
+    100% { transform: scale(1); }
+}
+
+.o_sbk_touchpad_btn.is-pulsing {
+    animation: o_sbk_touchpad_btn_pulse 100ms ease-in-out;
+}
+
+// ─── .o_sbk_touchpad — phone, bottom-docked thumb-zone bar ─────────────────
+//
+// Design spec §1 decision #4: "Phone = bottom-docked pad in the thumb
+// zone." Full-width bar so every button sits inside the natural
+// one-handed thumb arc regardless of screen width. z-index 45 clears
+// kitchen_configurator.scss's highest in-panel overlay (the view-bar,
+// z-index 40) while staying well below toast/modal layers (1000).
+.o_sbk_touchpad {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: var(--sb-space-2, 8px);
+    padding: var(--sb-space-3, 12px);
+    // Safe-area padding stacks with the token gap so the bar clears an
+    // iOS home-indicator/notch without the buttons themselves
+    // shrinking into it. Matches the existing precedent in
+    // southbrook_mrp_kitchen_workcenters/tablet_workorder_mobile.scss.
+    padding-bottom: calc(var(--sb-space-3, 12px) + env(safe-area-inset-bottom, 0px));
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: var(--sb-elevation-3);
+
+    // Buttons in the bottom-docked bar prefer the shop-floor 56px size
+    // (operator_pin_modal.scss's established touch-target precedent,
+    // `.sbk-op-key`/`.sbk-op-btn` at min-height: 56px) over the 44px
+    // floor — a full-width thumb-zone bar has the room, and this is
+    // the primary phone manipulation surface.
+    .o_sbk_touchpad_btn {
+        width: 56px;
+        height: 56px;
+    }
+}
+
+// ─── .o_sbk_touchpad--floating — tablet, anchored near selection ───────────
+//
+// Design spec §1 decision #4: "tablet = floating pad near the
+// selection." Position is driven by wave-2 JS, tracking the selected
+// cabinet's screen-projected position; this file only styles the chip.
+.o_sbk_touchpad--floating {
+    position: absolute;
+    z-index: 45;
+    display: flex;
+    align-items: center;
+    gap: var(--sb-space-2, 8px);
+    padding: var(--sb-space-2, 8px);
+    border-radius: var(--sb-corner-lg, 12px);
+    background: rgba(255, 255, 255, 0.98);
+    // Elevation-2, not a chromatic border — the visual spec's general
+    // finding: no pale/mid-tone UI border/fill token is a safe
+    // separator against the 3D floor (measured as low as 1.14:1 for a
+    // plain white fill). An ink-tinted --sb-elevation-* shadow is the
+    // one separator technique that works against both the 3D floor and
+    // the 2D report floor, by construction.
+    box-shadow: var(--sb-elevation-2);
+    // Compositor-only positioning (visual-spec State 8's update-cadence
+    // rule: "reposition via transform: translate3d(...) only, never
+    // top/left") — wave 2's JS drives these two custom properties once
+    // per rAF tick while the pad is re-anchoring.
+    transform: translate3d(var(--sbk-touchpad-x, 0), var(--sbk-touchpad-y, 0), 0);
+    will-change: transform;
+
+    // 48px base per State 9: "48 px is the base pick (Material's 48dp
+    // minimum)... 44-48 px-equivalent screen footprint" — smaller than
+    // the phone bar's 56px because this pad is compact and anchored,
+    // not a full thumb-zone bar. Still clears the 44px floor.
+    .o_sbk_touchpad_btn {
+        width: 48px;
+        height: 48px;
+    }
+}
+
+// ─── Precision-readout chip (State 8) ──────────────────────────────────────
+//
+// DOM/HTML overlay, screen-space, camera-projected — never baked 3D
+// text/sprites, never bare unbacked text over the floor (visual-spec
+// State 8, reasons 1-3 in its own text). Southbrook_kitchen_3d_
+// configurator already depends on southbrook_ui, so --sb-type-caption-*
+// and --sb-status-info-* are available with zero new colour work.
+.o_sbk_touchpad_precision {
+    position: absolute;
+    z-index: 46;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sb-space-1, 4px);
+    padding: var(--sb-space-1, 4px) var(--sb-space-2, 8px);
+    border-radius: var(--sb-corner-pill, 999px);
+    font-family: var(--sb-type-caption-family, 'Roboto Flex', 'Inter', system-ui, sans-serif);
+    font-size: var(--sb-type-caption-size, 11px);
+    font-weight: var(--sb-type-caption-weight, 500);
+    line-height: var(--sb-type-caption-line, 1.35);
+    color: var(--sb-status-info-fg);
+    background: var(--sb-status-info-bg);
+    // No chromatic border — see .o_sbk_touchpad--floating's comment
+    // above; the visual spec measured --sb-status-info-border at
+    // 1.94:1 against the 3D floor (a fail). Elevation shadow only.
+    box-shadow: var(--sb-elevation-2);
+    white-space: nowrap;
+    pointer-events: none;
+    // Same compositor-only positioning rule as the floating pad, via
+    // its own pair of custom properties (a precision chip and the
+    // floating pad can be on screen at once, each tracking a different
+    // anchor point).
+    transform: translate3d(var(--sbk-precision-x, 0), var(--sbk-precision-y, 0), 0);
+    will-change: transform;
+}
