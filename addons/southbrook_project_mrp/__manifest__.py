@@ -32,7 +32,7 @@ rather than duplicating them — material/BoM/cost are pulled FROM the linked MO
     # pack takes the next increment rather than reusing theirs. Production
     # already runs 1.7.0 from this branch; the 1.6.1 patch is pure code with no
     # migration, so an explicit -u carries it without a further bump.
-    "version": "19.0.1.8.0",
+    "version": "19.0.1.8.1",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry / OdooIQ",
     "category": "Services/Project",

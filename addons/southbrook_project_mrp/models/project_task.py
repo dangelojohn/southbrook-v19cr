@@ -259,6 +259,17 @@ class ProjectTask(models.Model):
         currency_field="company_currency_id",
         help="Estimated cost = sum of each MO's product standard cost × qty — "
              "meaningful even before the MOs are costed.")
+    job_cost_coverage = fields.Float(
+        string="Cost Coverage", compute="_compute_mrp_status", digits=(3, 2),
+        help="Fraction of this job's manufacturing orders that carry a usable "
+             "cost signal — either a planned cost from the costing module or a "
+             "product standard cost. 1.0 means every MO is costed; 0.0 means "
+             "the cost side of this job is unknown, not zero.")
+    job_cost_missing_count = fields.Integer(
+        string="MOs Without Cost", compute="_compute_mrp_status",
+        help="Manufacturing orders whose product has no standard cost and no "
+             "planned cost. A margin computed while this is non-zero is "
+             "understating cost.")
     company_currency_id = fields.Many2one(
         related="company_id.currency_id", string="Company Currency")
 
@@ -940,6 +951,8 @@ class ProjectTask(models.Model):
                 task.components_available = "none"
                 task.job_industrial_cost = 0.0
                 task.job_estimated_cost = 0.0
+                task.job_cost_coverage = 0.0
+                task.job_cost_missing_count = 0
                 task.job_install_due = False
                 task.job_cad_status = ""
                 task.job_next_action = ""
@@ -981,6 +994,45 @@ class ProjectTask(models.Model):
             task.job_estimated_cost = sum(
                 (m.product_id.standard_price or 0.0) * (m.product_qty or 0.0)
                 for m in mos)
+
+            # Cost COVERAGE, not just cost. A sum of zeros and a genuine zero
+            # are the same float, and downstream margin scoring cannot tell
+            # them apart — so it reported (revenue - 0)/revenue and banded
+            # every job green. Measured on production 2026-07-27: 319 of 321
+            # active variants had a NULL standard_price, the only two with a
+            # cost being "Mileage" and "Event Registration". Coverage makes
+            # the absence visible instead of letting it read as profit.
+            # An MO counts as costed only if it has a cost signal AND that
+            # signal actually includes materials. Measured on production
+            # 2026-07-27: all 9 MOs carrying a planned cost had
+            # planned_mat_cost = 0.00 — the whole figure was labour, because
+            # the component products have no standard_price. A cabinet costed
+            # at labour alone reports an ~80% margin, which passes a naive
+            # "is there a cost?" check while excluding the sheet goods,
+            # hinges and slides that are most of the real cost.
+            costed = 0
+            for mo in mos:
+                has_planned = (getattr(mo, "planned_direct_cost", 0.0)
+                               or getattr(mo, "industrial_cost", 0.0) or 0.0) > 0
+                has_standard = (mo.product_id.standard_price or 0.0) > 0
+                if not (has_planned or has_standard):
+                    continue
+                raw = mo.move_raw_ids
+                if not raw:
+                    costed += 1          # nothing to consume: cost is complete
+                    continue
+                mat = getattr(mo, "planned_mat_cost", None)
+                if mat is None:
+                    # No costing module: fall back to whether the components
+                    # themselves carry a standard cost.
+                    material_ok = any(
+                        (m.product_id.standard_price or 0.0) > 0 for m in raw)
+                else:
+                    material_ok = (mat or 0.0) > 0
+                if material_ok:
+                    costed += 1
+            task.job_cost_coverage = costed / len(mos) if mos else 0.0
+            task.job_cost_missing_count = len(mos) - costed
 
             # Soft pulls from CAD / Intelligence / Shop-Floor tabs.
             install = [d for d in
