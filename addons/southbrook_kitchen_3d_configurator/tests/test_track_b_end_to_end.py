@@ -455,10 +455,18 @@ class TestTrackBEndToEnd(TransactionCase):
         "Walk-in Retail" (the real business-record name already seeded
         by southbrook_estimating demo data), not the old "Walk-in
         Customer" placeholder.
+
+        P3 (2026-08-02) -- this branch's return shape changed from a
+        bare id to {"id", "name"} so the topbar picker can retire its
+        old hardcoded "Walk-in Customer" display label; unwrap ["id"]
+        here, re-targeting the pin without weakening it.
         """
         model = self.env["southbrook.kitchen.design"]
-        first_id = odoo_call_kw(model, "get_or_create_walkin_partner", [], {})
-        second_id = odoo_call_kw(model, "get_or_create_walkin_partner", [], {})
+        first = odoo_call_kw(model, "get_or_create_walkin_partner", [], {})
+        second = odoo_call_kw(model, "get_or_create_walkin_partner", [], {})
+        self.assertIsInstance(first, dict)
+        self.assertEqual(first.get("name"), "Walk-in Retail")
+        first_id, second_id = first["id"], second["id"]
         self.assertEqual(
             first_id, second_id,
             "get_or_create_walkin_partner must return the same id on "
@@ -590,12 +598,14 @@ class TestTrackBEndToEnd(TransactionCase):
             "channel": "retail",
         })
 
-        resolved_id = odoo_call_kw(
+        resolved = odoo_call_kw(
             self.env["southbrook.kitchen.design"],
             "get_or_create_walkin_partner", [], {},
         )
+        # P3 (2026-08-02) -- {"id", "name"}, not a bare id; see test_10.
+        self.assertEqual(resolved.get("name"), "Walk-in Retail")
         self.assertEqual(
-            resolved_id, existing.id,
+            resolved["id"], existing.id,
             "must reuse the pre-existing 'Walk-in Retail' partner",
         )
         self.assertEqual(
@@ -619,12 +629,14 @@ class TestTrackBEndToEnd(TransactionCase):
             "customer_rank": 1,
         })
 
-        resolved_id = odoo_call_kw(
+        resolved = odoo_call_kw(
             self.env["southbrook.kitchen.design"],
             "get_or_create_walkin_partner", [], {},
         )
+        # P3 (2026-08-02) -- {"id", "name"}, not a bare id; see test_10.
+        self.assertEqual(resolved.get("name"), "Walk-in Customer")
         self.assertEqual(
-            resolved_id, legacy.id,
+            resolved["id"], legacy.id,
             "must reuse the pre-existing legacy 'Walk-in Customer' "
             "partner instead of minting a new 'Walk-in Retail' one",
         )

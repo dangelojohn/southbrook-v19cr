@@ -633,17 +633,9 @@ $sbk-amber:      #B45309;
 // the tooltip rides the row's own t-att-title.
 
 // D13 — Searchable inventory + drag-and-drop
-.o_sbk_inv_head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    h3 { margin: 0; }
-}
-.o_sbk_inv_count {
-    font-size: 11px;
-    color: $sbk-muted;
-    font-variant-numeric: tabular-nums;
-}
+// P3 removals (2026-08-02) — .o_sbk_inv_head (the h3 "Cabinet
+// Inventory" + .o_sbk_inv_count span) is gone; see
+// .o_sbk_inv_filtered_count below for its relocated replacement.
 
 // P2 icons-everywhere — catalog preview/detail, shown under the panel
 // header when a row is clicked (state.catalogPreview). Compact by
@@ -750,11 +742,9 @@ $sbk-amber:      #B45309;
 
 // Task 23 (SBK-037) follow-up (Panel P2) — one static line replacing the
 // per-row "Made to order" cell every one of the ~48 rows repeated.
-.o_sbk_inv_madetoorder_note {
-    margin: 0 0 var(--sb-space-2, 8px);
-    font-size: 11px;
-    color: $sbk-muted;
-}
+// P3 removals (2026-08-02) — .o_sbk_inv_madetoorder_note is gone; the
+// note itself was cut from the template (every row is already a
+// cabinet, so it said nothing that needed saying panel-wide either).
 
 // Panel P2 (catalog redesign) — always-visible filter chips, replacing
 // the old "Filter by type" <select>. Two rows share this base: category
@@ -872,6 +862,17 @@ $sbk-amber:      #B45309;
         outline: 2px solid var(--sb-blue);
         outline-offset: 2px;
     }
+}
+// P3 removals (2026-08-02) — the filtered-vs-total readout relocated
+// from the removed .o_sbk_inv_head count span. Sits under the chip
+// rows, only rendered while a search/filter is active
+// (_isInventoryFiltered — see the template), so it never competes with
+// the drag hint just below it for the same "nothing to say yet" slot.
+.o_sbk_inv_filtered_count {
+    margin: 0 0 8px;
+    font-size: 11px;
+    color: $sbk-muted;
+    font-variant-numeric: tabular-nums;
 }
 .o_sbk_inv_draghint {
     margin: 0 0 8px;
@@ -1829,7 +1830,9 @@ $sbk-amber:      #B45309;
         // idiom into the inventory list's own header note
         // (.o_sbk_inv_madetoorder_note) once the per-row "Made to
         // order" cell was removed as zero-discriminating information;
-        // this detail-drawer row is unrelated to that change.
+        // P3 removals (2026-08-02) then cut that panel-level note
+        // entirely. This detail-drawer row is unrelated to either
+        // change and stays.
         &.o_sbk_madetoorder { color: $sbk-mid; text-transform: uppercase; letter-spacing: 0.3px; }
         // Typo-spec item 2 — price numeral gets the mono data token.
         &.price { color: $sbk-accent; font-size: 13px; font-family: var(--sb-font-mono); font-weight: 600; }
@@ -2416,25 +2419,48 @@ $sbk-amber:      #B45309;
     text-overflow: ellipsis;
 }
 
-.o_sbk_customer_channel {
+// P3 (2026-08-02) — the search-result secondary line (city, falling
+// back to email). Replaces the old .o_sbk_customer_channel badge,
+// which only ever came from the retired "recent partners" feed and has
+// no equivalent in a plain res.partner search result; removed as dead
+// (no remaining render site).
+.o_sbk_customer_secondary {
     flex: 0 0 auto;
-    padding: 2px 6px;
-    border-radius: 10px;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.6px;
-    text-transform: uppercase;
-    background: $sbk-bg;
-    color: $sbk-mid;
+    max-width: 120px;
+    margin-left: 8px;
+    font-size: 11px;
+    color: $sbk-muted;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 
-    // Channel-color tokens mirror the existing o_sbk_ch_* used by
-    // the top-bar channel badge, so a dealer picked from the dropdown
-    // and the resolved pricelist badge stay visually consistent.
-    &.o_sbk_ch_dealer       { background: #E0F2FE; color: #075985; }
-    &.o_sbk_ch_tradesperson { background: #FEF3C7; color: #92400E; }
-    &.o_sbk_ch_kd           { background: #EDE9FE; color: #5B21B6; }
-    &.o_sbk_ch_bigbox       { background: #FEE2E2; color: #991B1B; }
-    &.o_sbk_ch_refacing     { background: #DCFCE7; color: #14532D; }
+// Keyboard-highlighted row (Up/Down before Enter/click) — same visual
+// language as :hover/[aria-selected="true"] above, so keyboard and
+// pointer users see an identical highlight.
+.o_sbk_customer_option.is-active {
+    background: $sbk-accent-bg;
+}
+
+.o_sbk_customer_create {
+    padding: 8px 10px;
+    background: transparent;
+    border: none;
+    border-top: 1px solid $sbk-border;
+    text-align: left;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: $sbk-accent;
+    cursor: pointer;
+    transition: var(--sb-transition);
+
+    &:hover { background: $sbk-accent-bg; }
+    &:focus-visible {
+        background: $sbk-accent-bg;
+        outline: 2px solid var(--sb-blue);
+        outline-offset: -2px;
+    }
 }
 
 .o_sbk_customer_sep {
@@ -2465,6 +2491,69 @@ $sbk-amber:      #B45309;
         background: $sbk-accent-bg;
         outline: 2px solid var(--sb-blue);
         outline-offset: -2px;
+    }
+}
+
+// P3 (2026-08-02) — assigned-customer chip. Takes the search input's
+// slot the moment state.partnerId is set; the (x) unassigns back to
+// the search state, the name button opens the contact form.
+.o_sbk_customer_chip {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 4px 4px 10px;
+    background: $sbk-accent-bg;
+    border: 1px solid var(--sb-border);
+    border-radius: 999px;
+    flex-shrink: 0;
+}
+
+.o_sbk_customer_chip_name {
+    max-width: 180px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    // Typo-spec item 4 — body/control-text scale (13px/500), bumped to
+    // 600 (same as .o_sbk_customer_walkin) since this IS the primary
+    // label in this slot now, not a secondary action.
+    font-size: 13px;
+    font-weight: 600;
+    color: $sbk-accent;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+
+    &:hover, &:focus-visible { text-decoration: underline; }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 2px;
+    }
+}
+
+.o_sbk_customer_chip_remove {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: $sbk-muted;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: var(--sb-transition);
+
+    &:hover { background: rgba(0, 0, 0, 0.06); color: $sbk-ink; }
+    &:focus-visible {
+        outline: 2px solid var(--sb-blue);
+        outline-offset: 1px;
     }
 }
 

@@ -23,15 +23,28 @@
  *      helper text says so.
  *   3. The live helper text (item 4 of the brief) reflects all of the
  *      above without a server round-trip.
- *   4. counter_thickness_in is a real, editable setting (item 1) and
- *      moves the fixed_gap number.
- *   5. All four Room-panel settings round-trip through BOTH save paths
- *      (_saveDesign manual save, _autoSave debounced save) — the
- *      concrete bug: before this fix neither RPC sent them at all, so
- *      the design record's stored defaults were the only thing any
- *      later server-side regenerate ever saw.
- *   6. F12's hydrated-design no-op guard (pre-existing) still holds for
- *      the new counter-thickness control.
+ *   4. counter_thickness_in moves the fixed_gap number (it's still a
+ *      real model field with its own default — see kitchen_design.py —
+ *      just no longer editable from this panel; P3 removals below).
+ *   5. filler_strategy/wall_cab_top_alignment/soffit_height_in
+ *      round-trip through BOTH save paths (_saveDesign manual save,
+ *      _autoSave debounced save) — the concrete bug: before this fix
+ *      neither RPC sent them at all, so the design record's stored
+ *      defaults were the only thing any later server-side regenerate
+ *      ever saw.
+ *   6. F12's hydrated-design no-op guard (pre-existing) still holds.
+ *
+ * P3 removals (2026-08-02) — the Room panel's "Counter thickness (in)"
+ * input is gone (its onChange handler and the sidebar helper text were
+ * already cut in bebb5b72); this decision goes one step further and
+ * drops `counter_thickness_in` from BOTH /save payloads too (it was a
+ * guaranteed no-op write — nothing in the client ever changes
+ * state.counterThicknessIn post-boot anymore, so re-sending it on every
+ * save just echoed back whatever the server already had). The model
+ * field itself is untouched and keeps feeding the SBK-026 math via
+ * `_refreshLayout()`'s /layout call, which still sends it — see the
+ * two save tests below (now asserting the key's ABSENCE) and the third,
+ * unchanged /layout test.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -39,7 +52,7 @@ import { mountConfigurator } from "../harness/mount_configurator.mjs";
 
 // ─── save round-trip (the concrete SBK-026 persistence bug) ────────────────
 
-test("_saveDesign round-trips filler_strategy/wall_cab_top_alignment/soffit_height_in/counter_thickness_in", async () => {
+test("_saveDesign round-trips filler_strategy/wall_cab_top_alignment/soffit_height_in, and NEVER sends counter_thickness_in", async () => {
     const h = await mountConfigurator({
         rpcRoutes: {
             "/southbrook_kitchen/configurator/save": () => ({ id: 951, name: "SBK-026 save test" }),
@@ -58,11 +71,16 @@ test("_saveDesign round-trips filler_strategy/wall_cab_top_alignment/soffit_heig
     const last = calls[calls.length - 1].params;
     assert.equal(last.wall_cab_top_alignment, "to_soffit");
     assert.equal(last.soffit_height_in, 90);
-    assert.equal(last.counter_thickness_in, 2.0);
     assert.equal(last.filler_strategy, "split");
+    // P3 removals (2026-08-02) — counter_thickness_in is a guaranteed
+    // no-op round-trip now (nothing edits it client-side anymore), so
+    // it's dropped from the /save payload; the model field keeps its
+    // own value untouched (save_design's `is not None` guard).
+    assert.equal("counter_thickness_in" in last, false,
+        "counter_thickness_in must NOT be a key in the /save payload");
 });
 
-test("_autoSave round-trips the same four fields as _saveDesign", async () => {
+test("_autoSave round-trips the same three fields as _saveDesign, and NEVER sends counter_thickness_in", async () => {
     const h = await mountConfigurator({
         rpcRoutes: {
             "/southbrook_kitchen/configurator/save": () => ({ id: 952, name: "SBK-026 autosave test" }),
@@ -78,7 +96,8 @@ test("_autoSave round-trips the same four fields as _saveDesign", async () => {
     assert.equal(last.wall_cab_top_alignment, "to_ceiling");
     assert.equal(last.soffit_height_in, 0.0,
         "unset soffit must round-trip as 0, never a truthy fallback like 84");
-    assert.equal(last.counter_thickness_in, 1.5);
+    assert.equal("counter_thickness_in" in last, false,
+        "counter_thickness_in must NOT be a key in the /autosave payload");
 });
 
 test("_refreshLayout's /layout call sends counter_thickness_in alongside the existing D8 fields", async () => {

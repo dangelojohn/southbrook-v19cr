@@ -14,11 +14,13 @@
  *      catalog redesign, later found that cell carried the IDENTICAL
  *      value on all ~48 rows — zero discriminating information — and
  *      removed the per-row cell entirely in favour of a single static
- *      note under the panel header, .o_sbk_inv_madetoorder_note; the
- *      tests below were re-targeted at that point, not deleted), and
+ *      note under the panel header, .o_sbk_inv_madetoorder_note; P3
+ *      removals (2026-08-02) then cut that panel-level note too — see
+ *      the re-targeted first test below, now asserting its absence),
+ *      and
  *   2. the selected-cabinet detail drawer's "Available ... pcs" row
- *      (now "Availability" / "Made to order", UNCHANGED by Panel P2 —
- *      that drawer is a separate section this pass didn't touch),
+ *      (now "Availability" / "Made to order", UNCHANGED by Panel P2 or
+ *      P3 — that drawer is a separate section neither pass touched),
  *      reached via the F15 "+ Add" button (see contracts/13_add_button_
  *      and_corner_category.test.mjs for the button contract itself).
  *
@@ -47,7 +49,7 @@ async function mountWithProducts(products) {
     });
 }
 
-test("Panel P2: inventory panel carries no 'Qty' column at all — a single made-to-order note instead", async () => {
+test("Panel P2/P3: inventory panel carries no 'Qty' column and no made-to-order note", async () => {
     const h = await mountWithProducts([ZERO_QTY_PRODUCT]);
     await tick();
 
@@ -62,9 +64,17 @@ test("Panel P2: inventory panel carries no 'Qty' column at all — a single made
         .some((el) => el.children.length === 0 && el.textContent.trim() === "Qty");
     assert.equal(bareQty, false, "no element anywhere in the panel reads the bare old 'Qty' label");
 
-    const note = h.root.querySelector(".o_sbk_inv_madetoorder_note");
-    assert.ok(note, "the panel-level made-to-order note renders");
-    assert.equal(note.textContent.trim(), "All Southbrook cabinets are made to order.");
+    // P3 removals (2026-08-02, client-approved ticket) — the panel-
+    // level made-to-order note is gone too now (every row carried the
+    // identical value; Panel P2 already noted zero discriminating
+    // information even at the single-note stage). Re-targeted from
+    // asserting the note's presence to asserting its absence.
+    assert.equal(h.root.querySelector(".o_sbk_inv_madetoorder_note"), null,
+        "the panel-level made-to-order note no longer renders");
+    const bareNote = [...h.root.querySelectorAll(".o_sbk_inventory *")]
+        .some((el) => el.children.length === 0
+            && el.textContent.trim() === "All Southbrook cabinets are made to order.");
+    assert.equal(bareNote, false, "the made-to-order sentence renders nowhere in the panel");
 });
 
 test("Panel P2: catalog row carries no per-row availability cell — no numeric quantity, no red '0'", async () => {

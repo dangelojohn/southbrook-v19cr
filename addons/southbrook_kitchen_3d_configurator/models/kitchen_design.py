@@ -899,7 +899,18 @@ class SouthbrookKitchenDesign(models.Model):
                     assignable.write({"partner_id": walkin.id})
                 return {"type": "ir.actions.client", "tag": "reload"}
 
-        return walkin.id
+        # P3 (2026-08-02) — was a bare `walkin.id`. The 3D-canvas picker
+        # (kitchen_configurator.js `_useWalkInCustomer`) used to pair
+        # this id with a HARDCODED "Walk-in Customer" display label
+        # regardless of which record actually got resolved above (it
+        # can legitimately be either "Walk-in Retail" or the legacy
+        # "Walk-in Customer", per the search order a few lines up) —
+        # that mismatch was the "magic-string prefill" the client-
+        # approved ticket asked to retire. Returning the real name
+        # alongside the id lets the chip always show the truth. The
+        # object-button branch above is untouched (different dispatch
+        # path, different return contract, its own tests).
+        return {"id": walkin.id, "name": walkin.name}
 
     # ── Open linked Sale Order (Agent B smart button target) ───────────────────
     # 2026-07-01 task #48 — wire target for the "Quote" oe_stat_button on the

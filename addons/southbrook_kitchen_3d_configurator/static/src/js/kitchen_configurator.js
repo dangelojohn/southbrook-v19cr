@@ -450,17 +450,38 @@ class SouthbrookKitchenConfigurator extends Component {
             // Task #48 — Top-bar customer picker.
             //   partnerName mirrors state.partnerId for display; kept
             //     alongside the Number id so the topbar can render the
-            //     selected customer's label without a second RPC.
+            //     selected customer's label without a second RPC. Once
+            //     a customer IS assigned, this is the ONLY thing the
+            //     chip ever shows — never a typed-but-unselected value
+            //     (see customerQuery below).
             //   portalUser is a memoized `!user.isInternalUser` — set
             //     once in setup() so it survives OWL reactive reads.
-            //   picker* control the dropdown lifecycle (open, loading,
-            //     result list). Results fetched lazily on focus so the
-            //     initial paint isn't gated by the RPC.
+            //   picker* control the search dropdown's lifecycle (open,
+            //     loading, result list, keyboard-highlighted row).
             partnerName:       params.partner_name || "",
             portalUser:        false,
             pickerOpen:        false,
             pickerLoading:     false,
             pickerResults:     [],
+            // P3 — real res.partner autocomplete (retires the free-text
+            // input pre-filled with the "Walk-in Customer" magic
+            // string). customerQuery is the rep's IN-PROGRESS typed
+            // text — deliberately a SEPARATE field from partnerName, so
+            // a search that's abandoned (blur/Escape/close without
+            // picking a result) can never leak into the assigned-
+            // customer label; see _closeCustomerPicker/_setCustomer.
+            // Nothing ever persists customerQuery itself — only a
+            // clicked/Enter-selected result (or Walk-in / quick-create)
+            // ever writes partnerId/partnerName.
+            customerQuery:         "",
+            pickerActiveIndex:     -1,
+            // null = not checked yet (hidden), true/false = the ORM's
+            // own answer for "can this user create a res.partner" —
+            // gates the "Create '<query>'" quick-create row. Checked
+            // lazily, once, the first time the picker actually opens
+            // (_openCustomerPicker) — never on mount, so a test/session
+            // that never touches the picker never fires this RPC.
+            customerCreateAllowed: null,
             // SBK-030 — reactive render mirror of this._toastStore
             // (getView()'s shape). Kept inside the same `state` root as
             // everything else so the template's existing `state.foo`
@@ -503,6 +524,13 @@ class SouthbrookKitchenConfigurator extends Component {
         });
         // Auto-save debounce timer (not reactive; managed imperatively).
         this._autoSaveTimer = null;
+        // P3 — customer-search debounce timer (~250ms, see
+        // _onCustomerTyped) + a monotonic request counter so a slow
+        // early response can never clobber a faster later one
+        // (_searchCustomers checks its own captured id against this
+        // before writing state.pickerResults).
+        this._customerSearchTimer = null;
+        this._customerSearchSeq = 0;
         // Fix-round (coordinator review, corner-remediation 2026-07-30) —
         // dedup flag for _autoSave's structured-rejection toast (see
         // that method's own comment): true once an ongoing auto-save
@@ -683,6 +711,11 @@ class SouthbrookKitchenConfigurator extends Component {
             if (this._autoSaveTimer) {
                 clearTimeout(this._autoSaveTimer);
                 this._autoSaveTimer = null;
+            }
+            // P3 — same rationale for the customer-search debounce.
+            if (this._customerSearchTimer) {
+                clearTimeout(this._customerSearchTimer);
+                this._customerSearchTimer = null;
             }
             // SBK-030 — stop the toast auto-dismiss clock.
             if (this._toastTimer) {
@@ -973,10 +1006,16 @@ class SouthbrookKitchenConfigurator extends Component {
         }
     }
 
-    // ─── Task #48 — Top-bar customer picker ─────────────────────────────────────
-    // Agent A owns the model-side helpers (`_get_recent_partners_for_picker`
-    // and `_get_or_create_walkin_partner`). Both are called via call_kw so
-    // ACLs + rules resolve exactly as they would from any other client.
+    // ─── Task #48 / P3 — Top-bar customer picker ─────────────────────────────────
+    // P3 (2026-08-02, client-approved ticket) — replaced the free-text
+    // input (pre-filled with the "Walk-in Customer" magic string,
+    // advertising role="combobox" with no real listbox wiring) with a
+    // real res.partner search combobox. `get_or_create_walkin_partner`
+    // (model-side, Agent A) still backs the Walk-in button unchanged;
+    // `get_recent_partners_for_picker` stays available server-side
+    // (still covered by its own Python test) but is no longer called
+    // from here — the "recent customers on focus" behavior is
+    // superseded by real search-as-you-type.
     //
     // Never opens for portal users — Agent A's default_get already
     // auto-fills partner_id from user.partner_id, and we render a
@@ -984,30 +1023,32 @@ class SouthbrookKitchenConfigurator extends Component {
     async _openCustomerPicker() {
         if (this.state.portalUser) return;
         this.state.pickerOpen = true;
-        if (this.state.pickerResults && this.state.pickerResults.length) {
-            // Cached from a prior focus — refetch only on _refreshPicker.
-            return;
+        // Lazy, once-per-session permission check (never on mount) —
+        // gates the "Create '<query>'" quick-create row. Fire-and-
+        // forget; _loadCustomerCreatePermission owns its own try/catch
+        // so a denied/failed check never surfaces as an error, it just
+        // keeps the quick-create row hidden.
+        if (this.state.customerCreateAllowed === null) {
+            this._loadCustomerCreatePermission();
         }
-        await this._refreshPicker();
     }
 
-    async _refreshPicker() {
-        if (this.state.portalUser) return;
-        this.state.pickerLoading = true;
+    // @api.model check_access_rights('create', raise_exception=False) —
+    // the same ORM gate the framework's own Many2one quick-create uses.
+    // res.partner is a core model reachable by any authenticated
+    // internal user's default ACLs; this only hides the row for a
+    // locked-down group that's explicitly had create revoked.
+    async _loadCustomerCreatePermission() {
         try {
-            const results = await rpc("/web/dataset/call_kw", {
-                model:  "southbrook.kitchen.design",
-                method: "get_recent_partners_for_picker",
-                args:   [10],
+            const allowed = await rpc("/web/dataset/call_kw", {
+                model:  "res.partner",
+                method: "check_access_rights",
+                args:   ["create", false],
                 kwargs: {},
             });
-            this.state.pickerResults = Array.isArray(results) ? results : [];
-        } catch (e) {
-            // Non-fatal — the walk-in option below still works.
-            console.warn("[SouthbrookKitchenConfigurator] picker fetch failed:", e);
-            this.state.pickerResults = [];
-        } finally {
-            this.state.pickerLoading = false;
+            this.state.customerCreateAllowed = !!allowed;
+        } catch (_) {
+            this.state.customerCreateAllowed = false;
         }
     }
 
@@ -1018,26 +1059,149 @@ class SouthbrookKitchenConfigurator extends Component {
         setTimeout(() => { this.state.pickerOpen = false; }, 150);
     }
 
-    // Input handler mirrors the typed text into state.partnerName so
-    // the field is controlled + rerenders on paste. Selecting an
-    // option overwrites partnerName with the canonical record label.
+    // Debounced (~250ms) search-as-you-type. `state.customerQuery` is
+    // the controlled input's OWN value — kept separate from
+    // `state.partnerName` (the assigned customer's real label) so an
+    // abandoned search never leaks into the assigned display and never
+    // gets persisted (only `_setCustomer`/`_useWalkInCustomer`/
+    // `_createCustomerFromQuery` ever write partnerId/partnerName).
     _onCustomerTyped(ev) {
-        this.state.partnerName = ev.target.value || "";
+        const q = ev.target.value || "";
+        this.state.customerQuery = q;
+        this.state.pickerActiveIndex = -1;
+        if (this._customerSearchTimer) {
+            clearTimeout(this._customerSearchTimer);
+            this._customerSearchTimer = null;
+        }
+        if (!q.trim()) {
+            // Nothing typed — clear results immediately, no RPC needed.
+            this.state.pickerResults = [];
+            this.state.pickerLoading = false;
+            return;
+        }
+        this.state.pickerLoading = true;
+        this._customerSearchTimer = setTimeout(() => {
+            this._customerSearchTimer = null;
+            this._searchCustomers(q);
+        }, 250);
     }
 
-    // Task 34 (SBK-020) — Esc closes the customer-picker dropdown.
-    // The global window keydown handler (`_onKeyDown`) bails out
-    // immediately for any INPUT target (needed so typing in this very
-    // field, or any other, never triggers a hotkey), so Esc-to-close
-    // needs its own listener scoped to this field. Focus never leaves
-    // the input — it opened the dropdown by gaining focus in the
-    // first place, so it's already its own "opener"; nothing to
+    // web_search_read against res.partner's name/email/phone/ref — the
+    // exact fields the brief calls out (name_search's own rec_names_
+    // search on this model covers name/email/ref/vat but NOT phone, so
+    // a hand-built domain is the only way to cover all four in one
+    // round trip). Limit 8; secondary line is city, falling back to
+    // email, matching the brief's "secondary line city-or-email".
+    // `requestId` guards against a slow early response clobbering a
+    // faster later one if the rep keeps typing.
+    async _searchCustomers(query) {
+        const q = (query || "").trim();
+        if (!q) {
+            this.state.pickerResults = [];
+            this.state.pickerLoading = false;
+            return;
+        }
+        const requestId = ++this._customerSearchSeq;
+        try {
+            const domain = ["|", "|", "|",
+                ["name", "ilike", q], ["email", "ilike", q],
+                ["phone", "ilike", q], ["ref", "ilike", q]];
+            const resp = await rpc("/web/dataset/call_kw", {
+                model:  "res.partner",
+                method: "web_search_read",
+                args:   [domain, { name: {}, email: {}, phone: {}, city: {} }],
+                kwargs: { limit: 8 },
+            });
+            if (requestId !== this._customerSearchSeq) return;   // superseded
+            const records = (resp && resp.records) || [];
+            this.state.pickerResults = records.map((r) => ({
+                id:        r.id,
+                name:      r.name || "",
+                secondary: r.city || r.email || "",
+            }));
+        } catch (e) {
+            if (requestId !== this._customerSearchSeq) return;
+            console.warn("[SouthbrookKitchenConfigurator] customer search failed:", e);
+            this.state.pickerResults = [];
+        } finally {
+            if (requestId === this._customerSearchSeq) this.state.pickerLoading = false;
+        }
+    }
+
+    // Full combobox a11y keyboard contract (WAI-ARIA APG): Up/Down move
+    // the highlighted row, Enter picks it, Escape closes without
+    // touching the query or any assignment. Task 34 (SBK-020) note
+    // (unchanged from the prior implementation) — the global window
+    // keydown handler (`_onKeyDown`) bails out immediately for any
+    // INPUT target, so Esc-to-close needs its own listener scoped to
+    // this field; focus never leaves the input, so there's nothing to
     // restore.
     _onCustomerInputKeydown(ev) {
-        if (ev.key === "Escape" && this.state.pickerOpen) {
+        if (!this.state.pickerOpen) {
+            // Arrow keys open the dropdown even before the first
+            // keystroke lands a search (mirrors native <select>/
+            // combobox expectations); every other key here is a no-op
+            // when already closed, INCLUDING Escape — no dropdown, no
+            // preventDefault, nothing to swallow.
+            if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+                ev.preventDefault();
+                this._openCustomerPicker();
+            }
+            return;
+        }
+        const n = (this.state.pickerResults || []).length;
+        if (ev.key === "ArrowDown") {
+            ev.preventDefault();
+            if (n) this.state.pickerActiveIndex = (this.state.pickerActiveIndex + 1) % n;
+        } else if (ev.key === "ArrowUp") {
+            ev.preventDefault();
+            if (n) this.state.pickerActiveIndex =
+                (this.state.pickerActiveIndex - 1 + n) % n;
+        } else if (ev.key === "Enter") {
+            const picked = this.state.pickerResults[this.state.pickerActiveIndex];
+            if (picked) {
+                ev.preventDefault();
+                this._setCustomer(picked);
+            }
+        } else if (ev.key === "Escape") {
             ev.preventDefault();
             ev.stopPropagation();
             this.state.pickerOpen = false;
+        }
+    }
+
+    // The active option's element id, for aria-activedescendant — undefined
+    // (never an empty string) so the attribute is fully ABSENT when
+    // nothing is keyboard-highlighted, same convention as every other
+    // undefined-means-omit t-att in this template.
+    _customerActiveOptionId() {
+        const idx = this.state.pickerActiveIndex;
+        const list = this.state.pickerResults || [];
+        return (idx >= 0 && list[idx]) ? ("sbkCustomerOpt" + list[idx].id) : undefined;
+    }
+
+    // Hides "Create '<query>'" once the typed text already exactly
+    // matches a real search result — no point offering to create a
+    // near-duplicate the rep almost certainly means to just click.
+    _customerExactMatch() {
+        const q = (this.state.customerQuery || "").trim().toLowerCase();
+        if (!q) return false;
+        return (this.state.pickerResults || []).some(
+            (r) => (r.name || "").trim().toLowerCase() === q);
+    }
+
+    // Resets every piece of SEARCH-only state (never partnerId/
+    // partnerName — those are the caller's job) — shared by
+    // _setCustomer and _unassignCustomer so the dropdown always comes
+    // back empty/closed rather than showing a stale query or result set.
+    _resetCustomerSearch() {
+        this.state.pickerOpen        = false;
+        this.state.customerQuery     = "";
+        this.state.pickerResults     = [];
+        this.state.pickerActiveIndex = -1;
+        if (this._customerSearchTimer) {
+            clearTimeout(this._customerSearchTimer);
+            this._customerSearchTimer = null;
         }
     }
 
@@ -1045,7 +1209,7 @@ class SouthbrookKitchenConfigurator extends Component {
         if (!partner || !partner.id) return;
         this.state.partnerId    = partner.id;
         this.state.partnerName  = partner.name || "";
-        this.state.pickerOpen   = false;
+        this._resetCustomerSearch();
         // Refetching /products picks up the new channel pricelist and
         // repaints the inventory prices; /layout follows so the summary
         // and any per-item price fields also update.
@@ -1057,18 +1221,87 @@ class SouthbrookKitchenConfigurator extends Component {
         this._queueAutoSave();
     }
 
+    // The chip's (x) — unassigns back to the empty/search state. Never
+    // deletes the res.partner record itself, only this design's link
+    // to it.
+    async _unassignCustomer() {
+        this.state.partnerId   = null;
+        this.state.partnerName = "";
+        this._resetCustomerSearch();
+        await this._loadProducts();
+        await this._refreshLayout();
+        this._queueAutoSave();
+    }
+
+    // The chip's name — opens the assigned contact's form via the
+    // action service, as a dialog so the rep's in-progress design state
+    // (unsaved room/cabinet edits) is never disturbed by a full
+    // navigation away from the configurator.
+    _openCustomerForm() {
+        if (!this.state.partnerId) return;
+        this.action.doAction({
+            type:      "ir.actions.act_window",
+            res_model: "res.partner",
+            res_id:    this.state.partnerId,
+            views:     [[false, "form"]],
+            target:    "new",
+        });
+    }
+
+    // Quick-create — gated on state.customerCreateAllowed (see
+    // _loadCustomerCreatePermission); the template hides the row
+    // entirely on denial, this is belt-and-suspenders against a stale
+    // render/direct call.
+    async _createCustomerFromQuery() {
+        const name = (this.state.customerQuery || "").trim();
+        if (!name || !this.state.customerCreateAllowed) return;
+        this.state.pickerLoading = true;
+        try {
+            const id = await rpc("/web/dataset/call_kw", {
+                model:  "res.partner",
+                method: "create",
+                args:   [{ name }],
+                kwargs: {},
+            });
+            const pid = parseInt(id, 10);
+            if (Number.isFinite(pid) && pid > 0) {
+                await this._setCustomer({ id: pid, name });
+            }
+        } catch (e) {
+            this._toast(
+                "Couldn't create customer: " + (e.message || e),
+                { type: "danger", sticky: true }
+            );
+        } finally {
+            this.state.pickerLoading = false;
+        }
+    }
+
     async _useWalkInCustomer() {
         this.state.pickerLoading = true;
         try {
-            const partnerId = await rpc("/web/dataset/call_kw", {
+            // SBK-031 — get_or_create_walkin_partner now returns
+            // {id, name} (was a bare id): the resolved partner's REAL
+            // name (server-side it may resolve to the legacy "Walk-in
+            // Customer" record on an older DB, or the canonical
+            // "Walk-in Retail" one) is what the chip shows. P3 retires
+            // the old hardcoded "Walk-in Customer" label this call site
+            // used to pass regardless of which record actually got
+            // resolved — that mismatch WAS the "magic-string prefill"
+            // bug. `|| "Walk-in Customer"` below is only a defensive
+            // fallback for a still-bare-id response shape; it's never
+            // what production returns.
+            const resp = await rpc("/web/dataset/call_kw", {
                 model:  "southbrook.kitchen.design",
                 method: "get_or_create_walkin_partner",
                 args:   [],
                 kwargs: {},
             });
-            const pid = parseInt(partnerId, 10);
+            const pid = parseInt(resp && resp.id !== undefined ? resp.id : resp, 10);
             if (Number.isFinite(pid) && pid > 0) {
-                await this._setCustomer({ id: pid, name: "Walk-in Customer" });
+                const name = (resp && typeof resp === "object" && resp.name)
+                    || "Walk-in Customer";
+                await this._setCustomer({ id: pid, name });
             }
         } catch (e) {
             this._toast(
@@ -1867,6 +2100,19 @@ class SouthbrookKitchenConfigurator extends Component {
         });
     }
 
+    // P3 removals (2026-08-02) — gates the relocated "Showing X of Y"
+    // line (see the template, under the chip rows): true whenever a
+    // search term or either chip filter is actively narrowing the
+    // catalog, so the line stays silent for the (common) unfiltered
+    // "everything is showing" case.
+    _isInventoryFiltered() {
+        return !!(
+            (this.state.inventorySearch || "").trim()
+            || (this.state.inventoryCategory && this.state.inventoryCategory !== "all")
+            || (this.state.inventoryWidth && this.state.inventoryWidth !== "all")
+        );
+    }
+
     // Grouped/L-R-merged/sorted view of the currently-filtered catalog
     // — what the template actually renders (sticky category headers +
     // rows). Re-grouping the already-filtered list (rather than
@@ -2448,7 +2694,7 @@ class SouthbrookKitchenConfigurator extends Component {
     // save_design's catalog gate ever did.
     //
     // Two-hop plain ORM call via /web/dataset/call_kw — the same
-    // generic-ORM pattern _refreshPicker / _useWalkInCustomer /
+    // generic-ORM pattern _searchCustomers / _useWalkInCustomer /
     // _createAndConfirm already use in this file (see those for the
     // established RPC + toast-on-refusal conventions) — because
     // state.items never carries the design LINE's own DB id: every
@@ -2590,7 +2836,7 @@ class SouthbrookKitchenConfigurator extends Component {
         } catch (e) {
             // The swap already succeeded server-side; a refresh
             // failure just leaves the client's view stale until the
-            // next save/reload — non-fatal, matches _refreshPicker's
+            // next save/reload — non-fatal, matches _searchCustomers'
             // "non-fatal" catch convention elsewhere in this file.
             console.warn(
                 "[SouthbrookKitchenConfigurator] post-swap line refresh "
@@ -3301,10 +3547,23 @@ class SouthbrookKitchenConfigurator extends Component {
                 // Auto-arrange/resize (which reads these fields off the
                 // record, not off this client session) honours the same
                 // choice — previously never persisted at all.
+                // P3 removals (2026-08-02) — counter_thickness_in is
+                // deliberately NOT round-tripped here anymore: the Room
+                // panel's editing surface for it is gone (bebb5b72), so
+                // state.counterThicknessIn never changes after boot —
+                // sending it back on every save was a guaranteed no-op
+                // write. The model field (kitchen_design.py's
+                // counter_thickness_in, default 1.5) keeps whatever
+                // value it already has; save_design's controller-side
+                // `if counter_thickness_in is not None` guard leaves it
+                // untouched when the key is absent. It still feeds the
+                // SBK-026 math via `_refreshLayout()`'s /layout call
+                // below (unchanged) and the server's own
+                // _wall_cab_top_geometry — only this redundant write-
+                // back is gone.
                 filler_strategy:         this.state.fillerStrategy || "split",
                 wall_cab_top_alignment:  this.state.wallCabTopAlignment || "fixed_gap",
                 soffit_height_in:        this.state.soffitHeightIn || 0.0,
-                counter_thickness_in:    this.state.counterThicknessIn || 1.5,
             });
             // Fix-round — a structured rejection (see _saveErrorMessage)
             // must never fall through to the success path below.
@@ -3495,10 +3754,13 @@ class SouthbrookKitchenConfigurator extends Component {
                 // SBK-026 — same round-trip as the manual _saveDesign
                 // path above; auto-save must not silently drop the
                 // Wall Cabinet Top selection on its next debounce.
+                // P3 removals (2026-08-02) — counter_thickness_in
+                // dropped from this payload too; see _saveDesign's
+                // comment for why (dead editing surface, guaranteed
+                // no-op write, model field keeps its existing value).
                 filler_strategy:         this.state.fillerStrategy || "split",
                 wall_cab_top_alignment:  this.state.wallCabTopAlignment || "fixed_gap",
                 soffit_height_in:        this.state.soffitHeightIn || 0.0,
-                counter_thickness_in:    this.state.counterThicknessIn || 1.5,
             });
             // Fix-round (coordinator review) — a structured rejection
             // (see _saveErrorMessage) used to fall straight through to
@@ -3767,46 +4029,79 @@ SouthbrookKitchenConfigurator.template = xml`
               title="Start from a prebuilt sample kitchen"
               t-on-click="_openTemplatePicker">Start Custom</button>
     </div>
-    <!-- Task #48 — Customer picker (top-bar).
+    <!-- Task #48 / P3 — Customer picker (top-bar).
          Hidden entirely for portal users — Agent A's default_get
          autofills partner_id from user.partner_id so the customer
          doesn't need to pick themselves. In that case we show a
-         subtle reassurance pill instead. -->
+         subtle reassurance pill instead (t-elif below).
+         P3 (2026-08-02) — two mutually-exclusive states once a
+         partner assignment is possible:
+           - assigned (state.partnerId): a CHIP — the customer's real
+             name (never a hardcoded label — see _useWalkInCustomer),
+             opens the contact form on click, (x) unassigns.
+           - unassigned: a search combobox (name/email/phone/ref,
+             ~250ms debounce, limit 8) plus the "+ Walk-in Customer"
+             quick action and, when the typed text has no exact match
+             and the rep can create contacts, "Create '<text>'". -->
     <div t-if="!state.portalUser" class="o_sbk_customer_picker">
-      <input type="text" class="o_sbk_customer_input"
-             placeholder="Customer…"
-             autocomplete="off"
-             role="combobox"
-             aria-haspopup="listbox"
-             t-att-aria-expanded="state.pickerOpen ? 'true' : 'false'"
-             t-att-value="state.partnerName"
-             t-on-focus="_openCustomerPicker"
-             t-on-blur="_closeCustomerPicker"
-             t-on-input="_onCustomerTyped"
-             t-on-keydown="_onCustomerInputKeydown"
-             aria-label="Assign customer to this design"/>
-      <div t-if="state.pickerOpen" class="o_sbk_customer_dropdown" role="listbox">
-        <div t-if="state.pickerLoading" class="o_sbk_customer_hint">Loading recent customers…</div>
-        <div t-if="!state.pickerLoading &amp;&amp; !state.pickerResults.length"
-             class="o_sbk_customer_hint">No recent customers</div>
-        <button t-foreach="state.pickerResults" t-as="picked" t-key="picked.id"
-                class="o_sbk_customer_option"
-                type="button"
-                role="option"
-                t-att-aria-selected="state.partnerId === picked.id ? 'true' : 'false'"
-                t-on-mousedown="() => this._setCustomer(picked)">
-          <span class="o_sbk_customer_name" t-esc="picked.name"/>
-          <span t-if="picked.channel" class="o_sbk_customer_channel"
-                t-att-class="'o_sbk_customer_channel o_sbk_ch_' + picked.channel"
-                t-esc="picked.channel"/>
+      <div t-if="state.partnerId" class="o_sbk_customer_chip">
+        <button type="button" class="o_sbk_customer_chip_name"
+                t-on-click="_openCustomerForm"
+                t-att-title="'Open contact: ' + state.partnerName">
+          <t t-esc="state.partnerName"/>
         </button>
-        <div class="o_sbk_customer_sep"/>
-        <button class="o_sbk_customer_walkin"
-                type="button"
-                t-on-mousedown="_useWalkInCustomer">
-          + Walk-in Customer
-        </button>
+        <button type="button" class="o_sbk_customer_chip_remove"
+                t-on-click="_unassignCustomer"
+                aria-label="Unassign customer">×</button>
       </div>
+      <t t-else="">
+        <input type="text" class="o_sbk_customer_input"
+               placeholder="No customer assigned — search contacts…"
+               autocomplete="off"
+               role="combobox"
+               aria-autocomplete="list"
+               aria-haspopup="listbox"
+               aria-controls="sbkCustomerListbox"
+               aria-label="Search customers"
+               t-att-aria-expanded="state.pickerOpen ? 'true' : 'false'"
+               t-att-aria-activedescendant="_customerActiveOptionId()"
+               t-att-value="state.customerQuery"
+               t-on-focus="_openCustomerPicker"
+               t-on-blur="_closeCustomerPicker"
+               t-on-input="_onCustomerTyped"
+               t-on-keydown="_onCustomerInputKeydown"/>
+        <div t-if="state.pickerOpen" id="sbkCustomerListbox"
+             class="o_sbk_customer_dropdown" role="listbox"
+             aria-label="Customer search results">
+          <div t-if="state.pickerLoading" class="o_sbk_customer_hint">Searching…</div>
+          <div t-if="!state.pickerLoading &amp;&amp; !state.pickerResults.length &amp;&amp; state.customerQuery"
+               class="o_sbk_customer_hint">No contacts match "<t t-esc="state.customerQuery"/>"</div>
+          <div t-if="!state.pickerLoading &amp;&amp; !state.pickerResults.length &amp;&amp; !state.customerQuery"
+               class="o_sbk_customer_hint">Type to search contacts</div>
+          <button t-foreach="state.pickerResults" t-as="picked" t-key="picked.id"
+                  t-attf-id="sbkCustomerOpt{{picked.id}}"
+                  t-att-class="'o_sbk_customer_option' + (_customerActiveOptionId() === ('sbkCustomerOpt' + picked.id) ? ' is-active' : '')"
+                  type="button"
+                  role="option"
+                  t-att-aria-selected="_customerActiveOptionId() === ('sbkCustomerOpt' + picked.id) ? 'true' : 'false'"
+                  t-on-mousedown="() => this._setCustomer(picked)">
+            <span class="o_sbk_customer_name" t-esc="picked.name"/>
+            <span t-if="picked.secondary" class="o_sbk_customer_secondary" t-esc="picked.secondary"/>
+          </button>
+          <button t-if="state.customerQuery &amp;&amp; state.customerCreateAllowed &amp;&amp; !_customerExactMatch()"
+                  class="o_sbk_customer_create"
+                  type="button"
+                  t-on-mousedown="_createCustomerFromQuery">
+            Create "<t t-esc="state.customerQuery"/>"
+          </button>
+          <div class="o_sbk_customer_sep"/>
+          <button class="o_sbk_customer_walkin"
+                  type="button"
+                  t-on-mousedown="_useWalkInCustomer">
+            + Walk-in Customer
+          </button>
+        </div>
+      </t>
     </div>
     <!-- Portal user reassurance pill. Only rendered when we actually
          know the partner's name (partnerName may be blank if the
@@ -4376,14 +4671,33 @@ SouthbrookKitchenConfigurator.template = xml`
       </div>
     </main>
 
-    <!-- Right inventory + detail panel -->
-    <aside class="o_sbk_inventory">
+    <!-- Right inventory + detail panel.
+         P3 removals (2026-08-02) — the o_sbk_inv_head block (h3
+         "Cabinet Inventory" + the N/M count span) and the made-to-order
+         note are gone. The panel lost its only heading, so the aside
+         itself now carries aria-label="Cabinet inventory" for
+         assistive tech. The filtered-vs-total readout isn't deleted,
+         just relocated — see o_sbk_inv_filtered_count below the chip
+         rows, silent unless a search/filter is actually narrowing the
+         list. The search input moves up to be this panel's FIRST
+         element (fixes the top spacing a removed heading left behind). -->
+    <aside class="o_sbk_inventory" aria-label="Cabinet inventory">
 
-      <div class="o_sbk_inv_head">
-        <h3>Cabinet Inventory</h3>
-        <span class="o_sbk_inv_count">
-          <t t-esc="_filteredProducts().length"/> / <t t-esc="state.products.length"/>
-        </span>
+      <!-- D13 — Searchable inventory. Matches via searchText()
+           (catalog_list.esm.js) against parsed title + attrs + sku +
+           material — attrs covers the attribute boilerplate (handing,
+           finish, etc.) that parseProductName() strips off the row's
+           now-plain title, so a search for e.g. "Right Hand" or
+           "maple" still finds the right row even though that text no
+           longer renders anywhere in the row. Empty = full catalog. -->
+      <div class="o_sbk_inv_search">
+        <input type="search" class="o_sbk_inv_search_input"
+               placeholder="Search by name, SKU, type, material…"
+               t-att-value="state.inventorySearch"
+               t-on-input="_onSearchInput"
+               aria-label="Search cabinet inventory"/>
+        <button t-if="state.inventorySearch" class="o_sbk_inv_search_clear"
+                t-on-click="_clearSearch" aria-label="Clear search">×</button>
       </div>
 
       <!-- P2 icons-everywhere — catalog preview/detail. Row clicks only
@@ -4422,32 +4736,6 @@ SouthbrookKitchenConfigurator.template = xml`
         </div>
       </div>
 
-      <!-- Panel P2 (catalog redesign) follow-up to Task 23 (SBK-037) —
-           every one of the ~48 rows in this panel carries the SAME
-           "Made to order" value (southbrook_is_cabinet=True is the
-           server-side filter for the whole route), so repeating it as
-           a per-row column was zero discriminating information. One
-           static line under the header says it once for the whole
-           list instead. -->
-      <p class="o_sbk_inv_madetoorder_note">All Southbrook cabinets are made to order.</p>
-
-      <!-- D13 — Searchable inventory. Matches via searchText()
-           (catalog_list.esm.js) against parsed title + attrs + sku +
-           material — attrs covers the attribute boilerplate (handing,
-           finish, etc.) that parseProductName() strips off the row's
-           now-plain title, so a search for e.g. "Right Hand" or
-           "maple" still finds the right row even though that text no
-           longer renders anywhere in the row. Empty = full catalog. -->
-      <div class="o_sbk_inv_search">
-        <input type="search" class="o_sbk_inv_search_input"
-               placeholder="Search by name, SKU, type, material…"
-               t-att-value="state.inventorySearch"
-               t-on-input="_onSearchInput"
-               aria-label="Search cabinet inventory"/>
-        <button t-if="state.inventorySearch" class="o_sbk_inv_search_clear"
-                t-on-click="_clearSearch" aria-label="Clear search">×</button>
-      </div>
-
       <!-- Panel P2 — category chips replace the old "Filter by type"
            <select> (and the F1 fix's per-option corner/tall split,
            which now lives permanently in groupCatalog()'s fixed
@@ -4484,6 +4772,15 @@ SouthbrookKitchenConfigurator.template = xml`
                 t-att-aria-pressed="state.inventoryWidth === w"
                 t-on-click="() => this._setInventoryWidth(w)"
                 t-esc="_fmtWidthIn(w)"/>
+      </div>
+
+      <!-- P3 removals (2026-08-02) — relocated from the removed
+           o_sbk_inv_head count span. Silent unless a search/filter is
+           actually narrowing the list (_isInventoryFiltered) — the
+           unfiltered "48 of 48" case said nothing useful, so it says
+           nothing at all. -->
+      <div t-if="_isInventoryFiltered()" class="o_sbk_inv_filtered_count">
+        Showing <t t-esc="_filteredProducts().length"/> of <t t-esc="state.products.length"/>
       </div>
 
       <!-- D13 — Drag hint pill. Only shown when search has results so it

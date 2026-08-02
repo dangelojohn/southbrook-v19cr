@@ -197,6 +197,55 @@ class TestSaveDesignRoundTripsWallCabTopSettings(TransactionCase):
         self.assertEqual(design.soffit_height_in, 84.0)
         self.assertEqual(design.counter_thickness_in, 2.25)
 
+    # P3 removals (2026-08-02, client-approved ticket) -- the Room
+    # panel's "Counter thickness (in)" input (and its onChange/state
+    # plumbing) is gone client-side, on top of bebb5b72's earlier
+    # removal of the sidebar helper line itself. This decision goes one
+    # step further and drops counter_thickness_in from BOTH /save
+    # payloads (kitchen_configurator.js's _saveDesign/_autoSave no
+    # longer send the key at all) -- see 27_wall_cab_top_selector.
+    # test.mjs for the client-side half of that pin. The model field
+    # keeps its own value (default 1.5, or whatever a backend edit last
+    # set) and still feeds the SBK-026 math unchanged. This is the
+    # server-side proof: a save that omits the key must leave
+    # wall_cab_bottom_helper -- the exact sentence the (now-removed)
+    # Room-panel helper line used to mirror client-side -- byte-
+    # identical before and after.
+    def test_omitted_counter_thickness_leaves_the_helper_text_byte_identical(self):
+        design = self.env["southbrook.kitchen.design"].create({
+            "name": "P3 helper-line regression",
+            "room_width_in": 96.0, "room_depth_in": 96.0, "room_height_in": 96.0,
+            "counter_thickness_in": 2.25,
+        })
+        before = design.wall_cab_bottom_helper
+        self.assertIn("54.75", before,
+                      "sanity: 34.5 carcass + 2.25 counter + 18 gap = 54.75")
+
+        controller = self._controller()
+        with _stubbed_request(self.env):
+            result = controller.save_design(
+                name=design.name,
+                room={"width_in": 96, "depth_in": 96, "height_in": 96},
+                items=[],
+                partner_id=False,
+                design_id=design.id,
+                # counter_thickness_in deliberately omitted -- the
+                # real shape of the payload kitchen_configurator.js
+                # now sends.
+            )
+        self.assertNotIn("error", result, result)
+        design.invalidate_recordset()
+
+        self.assertEqual(
+            design.counter_thickness_in, 2.25,
+            "the model field must keep its existing value with the key absent")
+        after = design.wall_cab_bottom_helper
+        self.assertEqual(
+            before, after,
+            "the helper text (SBK-026 item 4) must compute IDENTICAL "
+            "numbers before and after a save that omits "
+            "counter_thickness_in")
+
     def test_unknown_alignment_value_falls_back_to_fixed_gap_not_a_500(self):
         controller = self._controller()
         with _stubbed_request(self.env):
