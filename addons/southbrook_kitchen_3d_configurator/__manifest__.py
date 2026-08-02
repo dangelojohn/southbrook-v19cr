@@ -4,7 +4,7 @@
         "Isometric Three.js kitchen room configurator backed by "
         "live Odoo cabinet inventory — design, save, and quote."
     ),
-    "version": "19.0.5.41.1",
+    "version": "19.0.5.41.2",
     "category": "Manufacturing/Product Configurator",
     "author": "OdooIQ / REAL Partners Ltd.",
     "website": "https://odooiq.com",
@@ -184,6 +184,20 @@
             # so — like every other ES module above — it must load
             # before it.
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/touch_pad.esm.js",
+            # Touch editing Wave 2 (2026-08-02) — gesture reducer +
+            # manipulation visual-state layer, imported by
+            # kitchen_canvas.esm.js. These two entries were LOST in a
+            # manifest merge between the touch-wave branch and the
+            # polish-wave branch (2026-08-02 prod incident: the bundler
+            # omitted them, kitchen_canvas's deps never resolved, the
+            # whole import chain up to kitchen_configurator.js sat
+            # unprocessed, and the "southbrook_kitchen_configurator"
+            # client action never registered — KeyNotFoundError on every
+            # configurator open). Every module imported by a bundled
+            # module MUST have its own asset entry; the loader has no
+            # disk fallback.
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/touch_gestures.esm.js",
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/manipulation_states.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/kitchen_configurator.js",
             # P2 product-icons — Cabinet Products kanban/list icon widget.
             # Imports cabinetThumbSVG from cabinet_thumb.esm.js above, so
