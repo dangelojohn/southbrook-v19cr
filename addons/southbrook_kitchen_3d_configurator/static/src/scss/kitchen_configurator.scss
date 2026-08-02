@@ -1072,9 +1072,18 @@ $sbk-amber:      var(--sb-status-warn-fg);
     border: 1px solid rgba(180, 83, 9, 0.40);
 }
 .o_sbk_metric_unplaced strong { color: #B45309; }
+// Task 38 (client hardening, corner-remediation) — this used to inherit
+// $sbk-amber (#B45309) from `.o_sbk_remainder` and dilute it with
+// `opacity: 0.7`. Against this box's actual background (`.o_sbk_remainder`'s
+// #FEF9EC), that measured 2.87:1 — well under the WCAG AA 4.5:1 text
+// minimum (computed via the standard relative-luminance formula, not
+// eyeballed). Swapped to the canonical --sb-status-late-fg token
+// (southbrook_ui, closest hue/value to the removed amber) at full
+// opacity: #AC5819 on #FEF9EC = 4.80:1 (PASS). De-emphasis now comes
+// from the smaller font-size alone, not from diluting contrast.
 .o_sbk_remainder_strategy {
     font-size: 10px;
-    opacity: 0.7;
+    color: var(--sb-status-late-fg);
     margin-left: 4px;
 }
 .o_sbk_snap_hint {
@@ -1211,12 +1220,22 @@ $sbk-amber:      var(--sb-status-warn-fg);
     width: 18px;
     text-align: center;
 }
+// Task 38 (client hardening, corner-remediation) — this used to inherit
+// .o_sbk_viewbtn's #1a2233 and dilute it with `opacity: 0.55`. Against
+// the viewbar's actual (near-white) background that measured 3.69:1 —
+// under the WCAG AA 4.5:1 text minimum (computed via the standard
+// relative-luminance formula, not eyeballed). Swapped to $sbk-muted
+// (var(--sb-ink-dim)) at full opacity — the same de-emphasized-text
+// token this file's own header note already fixed to ~4.83:1 against
+// white for every other $sbk-muted consumer; measured here specifically
+// at #6B7280 on white = 4.83:1 (PASS). De-emphasis now comes from the
+// smaller font-size alone, not from diluting contrast.
 .o_sbk_viewkey {
     margin-left: auto;
     // Typo-spec item 2 — keyboard-shortcut key label, bare monospace → mono token.
     font-family: var(--sb-font-mono);
     font-size: 10px;
-    opacity: 0.55;
+    color: $sbk-muted;
 }
 .o_sbk_viewsep {
     height: 1px;

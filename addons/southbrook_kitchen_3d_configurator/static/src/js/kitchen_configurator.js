@@ -552,6 +552,16 @@ class SouthbrookKitchenConfigurator extends Component {
         // failure has already been surfaced, reset to false the moment
         // any save (auto or manual) succeeds again.
         this._autoSaveErrorShown = false;
+        // Task 38 (client hardening) — a follow-up auto-save requested
+        // while one is already in flight (see _autoSave()'s own comment)
+        // instead of being silently dropped.
+        this._autoSavePending = false;
+        // Task 38 (client hardening) — monotonic request id for
+        // _refreshValidation()'s five fire-and-forget call sites
+        // (hydrate/save/autosave/arrange/walk-in fix). Under real
+        // latency those RPCs can resolve out of order; this guards
+        // against a stale response overwriting a fresher one.
+        this._validationReqSeq = 0;
 
         // Touch editing v1 — boot-time device-capability probe (same
         // "AtBoot" pattern as isNarrowViewportAtBoot above: evaluated
@@ -1254,6 +1264,16 @@ class SouthbrookKitchenConfigurator extends Component {
         // and any per-item price fields also update.
         await this._loadProducts();
         await this._refreshLayout();
+        // Task 38 (client hardening) — _queueAutoSave() no-ops until
+        // _userActed is true (the T7 gate). On a reopened, not-yet-
+        // edited design, assigning a customer (walk-in or from the
+        // picker — both routes land here, the guard above already
+        // guarantees a real partner is being set) was silently
+        // swallowed by that gate: the partner never got persisted and
+        // the validation panel kept showing MISSING_CUSTOMER until some
+        // later, unrelated edit opened the gate. Assigning a customer
+        // IS a deliberate user action — open the gate before queueing.
+        this._markUserAction();
         // Persist server-side so the design carries the new partner
         // into the next session even if the browser refreshes before
         // the debounced auto-save fires.
@@ -1929,10 +1949,25 @@ class SouthbrookKitchenConfigurator extends Component {
     async _refreshValidation() {
         if (!this.state.designId) return;
         this.state.validation.loading = true;
+        // Task 38 (client hardening) — this method is fired-and-forgotten
+        // from five call sites (hydrate/save/autosave/arrange/walk-in
+        // fix); under real-world latency two of those RPCs can resolve
+        // in a different order than they were issued. A monotonic
+        // request id lets a response detect it's been superseded by a
+        // newer request BEFORE it overwrites state.validation with
+        // stale data.
+        const seq = ++this._validationReqSeq;
         try {
             const resp = await rpc("/southbrook_kitchen/configurator/validate", {
                 design_id: this.state.designId,
             });
+            if (seq !== this._validationReqSeq) {
+                // A newer _refreshValidation() call has since been
+                // issued (and may already have landed) — this response
+                // is stale, discard it rather than clobber whatever the
+                // newer request wrote (or is about to write).
+                return;
+            }
             if (!resp || resp.error_code) {
                 // A design that stopped existing/being readable mid-
                 // session (e.g. deleted from another tab) — the
@@ -1949,6 +1984,10 @@ class SouthbrookKitchenConfigurator extends Component {
             console.warn(
                 "[SouthbrookKitchenConfigurator] validate failed:", e);
         } finally {
+            // A stale/superseded response still clears ITS OWN loading
+            // write; the newer, still-in-flight request (if any) owns
+            // setting this back to true and will flip it false again
+            // when IT settles — no lost state either way.
             this.state.validation.loading = false;
         }
     }
@@ -4012,7 +4051,20 @@ class SouthbrookKitchenConfigurator extends Component {
 
     async _autoSave() {
         if (this.state.saving) return;       // manual save in flight - skip
-        if (this.state.autoSaving) return;   // another auto-save in flight
+        if (this.state.autoSaving) {
+            // Task 38 (client hardening) — a save requested while one is
+            // already in flight used to be silently dropped here. The
+            // in-flight request already captured a snapshot of
+            // state.items/room at ITS start, so a mutation that landed
+            // after that snapshot (and fired this call) would never get
+            // persisted until some LATER, unrelated edit happened to
+            // re-queue one. Latest-wins, matching _queueAutoSave's own
+            // debounce semantics: mark one follow-up pending (no queue
+            // depth beyond that) and let the in-flight save's own
+            // `finally` below run it once, after this one settles.
+            this._autoSavePending = true;
+            return;
+        }
         this.state.autoSaving = true;
         // Touch editing v1 (spec §4 item 3) — attach the accumulated
         // gesture health counters to THIS autosave round-trip only
@@ -4107,6 +4159,16 @@ class SouthbrookKitchenConfigurator extends Component {
             console.warn("[SouthbrookKitchenConfigurator] auto-save failed:", e);
         } finally {
             this.state.autoSaving = false;
+            // Task 38 (client hardening) — run the ONE follow-up save a
+            // mid-flight request marked pending above, now that this
+            // save has fully settled (success, rejection, or throw —
+            // any of those leaves state.items possibly newer than what
+            // just got persisted). Fire-and-forget, same as every other
+            // auto-save call site.
+            if (this._autoSavePending) {
+                this._autoSavePending = false;
+                this._autoSave();
+            }
         }
     }
 
