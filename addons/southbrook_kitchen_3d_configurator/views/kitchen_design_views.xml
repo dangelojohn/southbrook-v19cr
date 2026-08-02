@@ -528,7 +528,7 @@
             <form string="Start from Template">
                 <sheet>
                     <div class="oe_title">
-                        <h1>Start from a Sample Kitchen</h1>
+                        <h1>Start a New Kitchen</h1>
                         <p class="text-muted">
                             Pick a kitchen shape, how many cabinets, the
                             cabinet size and your appliance sizes — the

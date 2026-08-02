@@ -298,7 +298,24 @@ fi
 # regeneration, and FAIL LOUDLY if the served CSS is an error stub.
 # CLEAR_ASSETS=0 skips (e.g. data-only deploys with no asset changes).
 CLEAR_ASSETS="${CLEAR_ASSETS:-1}"
-if [[ "$DRY_RUN" != "1" && "$RESTART" == "1" && "$CLEAR_ASSETS" == "1" ]]; then
+# 2026-08-02, fourth incident — this gate had TWO bugs that hid each other.
+# (1) `$RESTART` was referenced with no default while every other site uses
+#     "${RESTART:-0}"; under `set -u` the script ABORTED here. The deploy had
+#     already succeeded (cold upgrade OK, SIGHUP sent, /web/login 200), so it
+#     looked green while dying on its last step.
+# (2) Because the abort came before any asset work, and because the condition
+#     also required RESTART=1 — which we never use, `docker restart` being
+#     banned on this container (postgres fsync-recovery hazard) — the clear
+#     could not run on a normal SIGHUP deploy AT ALL. A kitchen_3d deploy that
+#     shipped new JS *and* SCSS left production serving pre-deploy bundles:
+#     0 rows in ir_attachment regenerated after the upgrade, so the new UI was
+#     on disk and invisible to every user.
+# Fix: default the variable, and gate solely on CLEAR_ASSETS (which already
+# defaults to 1 and whose documented job is exactly this). Stale bundles are a
+# hazard after ANY deploy that touched assets, not only after a restart; the
+# cost of an unnecessary clear is one lazy recompile on the next request.
+RESTART="${RESTART:-0}"
+if [[ "$DRY_RUN" != "1" && "$CLEAR_ASSETS" == "1" ]]; then
   log "clearing compiled asset bundles + verifying regeneration…"
   ssh "$QNAP_HOST" "$QNAP_DOCKER exec southbrook-postgres psql -U odoo -d $DB -t -c \
     \"DELETE FROM ir_attachment WHERE name LIKE 'web.assets%';\"" \

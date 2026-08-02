@@ -321,7 +321,7 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             or module_w)
 
     def parametric_fit(self, cabinet_count=None, module_width_in=None,
-                       appliance_widths=None):
+                       appliance_widths=None, allow_clamp=False):
         """Pure math: bound the count, size every slot, trim/grow modules.
 
         PER-WALL arithmetic (T4): each wall is an independent run — its
@@ -331,7 +331,34 @@ class SouthbrookKitchenTemplateResolve(models.Model):
         Galley/multi-wall templates are impossible to bound with a single
         summed run (two 96" walls are not one 192" wall).
 
+        `cabinet_count` controls ONLY the total number of BASE/TALL floor
+        cabinets placed along the run(s) — every fixed (non-repeat) base/
+        tall slot counts once, plus as many repeat_ok clones as requested
+        (round-robined across walls, never past a wall's own leftover
+        capacity). Wall cabinets, appliance slots, and engine-derived
+        corner cabinets are placed unconditionally by the template/engine
+        and are NOT part of this number — a design's final total line
+        count (`cabinet_line_ids`) is routinely HIGHER than the count a
+        caller passed here or reads back as `count`/`n_max`. Callers
+        surfacing this number to a user (e.g. the picker wizard's "Number
+        of Cabinets" field) must describe it that way, not as "how many
+        cabinets you'll end up with".
+
+        `allow_clamp` (default False, preserving every existing caller's
+        hard-fail contract byte-for-byte — see the `count > cap` branch
+        below): when True, a request that exceeds capacity is HONESTLY
+        reduced to the room's actual max instead of failing outright —
+        "honest" meaning the returned dict always says so: `clamped`
+        (bool) and `requested_count` (the original ask) are always
+        present, and `message` names both numbers and the reason
+        (capacity) whenever a clamp or a leftover run (see below) fired.
+        FINDING 13 (E2E, 2026-08-02) — the picker wizard clamps its own
+        `cabinet_count` field downward via onchange with no explanation,
+        which is exactly the silent-clamp this parameter lets a caller
+        opt out of.
+
         Returns {"ok", "message", "count", "n_max", "module_width_in",
+        "clamped", "requested_count", "leftover_run_in",
         "slots": [(slot, width_in), ...]}. UI-grade bound only — the
         AUTHORITATIVE fit check stays LayoutCapacityExceeded at
         auto-arrange time (single source of truth for geometry).
@@ -422,29 +449,56 @@ class SouthbrookKitchenTemplateResolve(models.Model):
         # Growth happens only inside repeat slots, bounded per wall.
         n_grow = sum(capacity[w] for w in
                      set(repeat_slots.mapped("wall")) & set(capacity))
+        # Numeric-falsy guard: `is not None`, never a bare truthiness
+        # check. A caller passing the literal int 0 means "zero
+        # cabinets" and MUST be honored as a real request (it then fails
+        # the min_count floor below with a validation message, same as
+        # any other too-low count) — `cabinet_count or (...)` would
+        # silently treat 0 as "not given" and substitute the template's
+        # natural default instead, the exact class of bug this guards
+        # against (known live at kitchen_design.py's picker wizard call
+        # sites, outside this file's scope — this method's own contract
+        # has always been, and stays, falsy-safe).
         count = cabinet_count if cabinet_count is not None else (
             n_fixed_modules + len(repeat_slots))
         min_count = max(self.min_cabinet_count or 1, n_fixed_modules)
         cap = n_fixed_modules + n_grow
+        requested_count = count
+        clamped = False
         if count > cap:
-            return {"ok": False, "count": count, "n_max": cap,
-                    "module_width_in": module_w, "slots": [],
-                    "message": (
-                        "%(tpl)s cannot fit %(count)d cabinets of %(w)g\" in "
-                        "this room (max %(cap)d with the chosen appliance "
-                        "sizes). Reduce the count or module width — the room "
-                        "is never grown automatically." % {
-                            "tpl": self.name, "count": count, "w": module_w,
-                            "cap": cap})}
+            # allow_clamp opts IN to an honest downward reduction instead
+            # of the hard failure below — but only when the reduced count
+            # (== cap) can still satisfy min_count; a template config
+            # whose min genuinely exceeds what THIS room/appliance
+            # selection can hold is still a real, unclampable failure.
+            if allow_clamp and cap >= min_count:
+                count = cap
+                clamped = True
+            else:
+                return {"ok": False, "count": count, "n_max": cap,
+                        "module_width_in": module_w, "slots": [],
+                        "clamped": False, "requested_count": requested_count,
+                        "leftover_run_in": 0.0,
+                        "message": (
+                            "%(tpl)s cannot fit %(count)d cabinets of %(w)g\" in "
+                            "this room (max %(cap)d with the chosen appliance "
+                            "sizes). Reduce the count or module width — the room "
+                            "is never grown automatically." % {
+                                "tpl": self.name, "count": count, "w": module_w,
+                                "cap": cap})}
         if count < min_count:
             return {"ok": False, "count": count, "n_max": cap,
                     "module_width_in": module_w, "slots": [],
+                    "clamped": False, "requested_count": requested_count,
+                    "leftover_run_in": 0.0,
                     "message": "%s needs at least %d cabinets." % (
                         self.name, min_count)}
         n_repeat_needed = count - n_fixed_modules
         if n_repeat_needed > 0 and not repeat_slots:
             return {"ok": False, "count": count, "n_max": cap,
                     "module_width_in": module_w, "slots": [],
+                    "clamped": False, "requested_count": requested_count,
+                    "leftover_run_in": 0.0,
                     "message": "%s has no repeatable slot to grow the run." %
                                self.name}
         # Round-robin the extra modules across repeat slots, never
@@ -465,6 +519,8 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             if not progressed:  # count <= cap makes this unreachable; guard
                 return {"ok": False, "count": count, "n_max": cap,
                         "module_width_in": module_w, "slots": [],
+                        "clamped": False, "requested_count": requested_count,
+                        "leftover_run_in": 0.0,
                         "message": "%s has no repeatable slot capacity left."
                                    % self.name}
         out = []
@@ -477,19 +533,50 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             else:
                 out.append((s, self._slot_fixed_width(
                     s, module_w, appliance_widths)))
-        return {"ok": True, "message": "", "count": count, "n_max": cap,
-                "module_width_in": module_w, "slots": out}
+        # FINDING 13 (E2E) — "84.00in of wall run left empty with no
+        # mention of it": `remaining` (module-width units of per-wall
+        # leftover capacity AFTER the round-robin allocation above) is
+        # the SAME arithmetic that loop already derives — reused, not
+        # re-derived. Restricted to `floor_walls` (walls that actually
+        # carry a floor cabinet run) so an unused wall the template
+        # never touches (e.g. "front" on a straight template) never
+        # reports a bogus multi-foot "remainder" of a run that was
+        # never meant to exist.
+        leftover_run_in = round(
+            sum(v for w, v in remaining.items() if w in floor_walls and v > 0)
+            * module_w, 2)
+        message = ""
+        if clamped:
+            message = (
+                "%(tpl)s: requested %(req)d cabinets but this room only "
+                "fits %(cap)d (capacity limited by the fixed cabinets/"
+                "appliances already claiming the wall run) — using "
+                "%(cap)d." % {
+                    "tpl": self.name, "req": requested_count, "cap": cap})
+        if leftover_run_in > 0.5:
+            note = "%.1fin of wall run left unused." % leftover_run_in
+            message = ("%s %s" % (message, note)).strip()
+        return {"ok": True, "message": message, "count": count, "n_max": cap,
+                "module_width_in": module_w, "slots": out,
+                "clamped": clamped, "requested_count": requested_count,
+                "leftover_run_in": leftover_run_in}
 
     # -- instantiation ---------------------------------------------------
     def action_instantiate(self, partner_id=False, cabinet_count=None,
-                           module_width_in=None, appliance_widths=None):
+                           module_width_in=None, appliance_widths=None,
+                           allow_clamp=False):
         """Create a draft design from this template and let the EXISTING
         auto-arrange engine derive every pose/corner/filler. Savepoint-
         atomic: a failed fit leaves nothing behind (no silent room growth).
+
+        `allow_clamp` — see `parametric_fit`'s own docstring; forwarded
+        as-is. Default False means an over-capacity `cabinet_count`
+        still raises UserError exactly as before (every existing caller
+        of this method keeps that contract byte-for-byte).
         """
         self.ensure_one()
         fit = self.parametric_fit(cabinet_count, module_width_in,
-                                  appliance_widths)
+                                  appliance_widths, allow_clamp=allow_clamp)
         if not fit["ok"]:
             raise UserError(fit["message"])
         Design = self.env["southbrook.kitchen.design"]
@@ -602,16 +689,64 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             absorbed = len(all_slot_lines.filtered(lambda l: not l.active))
             dropped = max(requested - len(all_slot_lines), 0)
             unresolved = len(written.filtered("is_unresolved"))
+            # FINDING 13 (E2E, 2026-08-02) — a clamped count or an
+            # underfilled run used to vanish silently once the design
+            # existed. `fit` (the SAME dict `parametric_fit` returned
+            # above — not re-derived) already carries both honestly:
+            # `clamped`/`requested_count` name what was asked vs what
+            # this room's capacity actually allowed, and
+            # `leftover_run_in` is the wall run this fit never used.
+            # Appended to the existing Task 16 chatter line rather than
+            # a new field — reuses the one place a caller already reads
+            # "what actually happened" from an instantiation.
+            honesty_notes = []
+            if fit.get("clamped"):
+                honesty_notes.append(
+                    "requested cabinet count %d was reduced to %d to fit "
+                    "this room's capacity" % (
+                        fit["requested_count"], fit["count"]))
+            leftover_run_in = fit.get("leftover_run_in", 0.0)
+            if leftover_run_in > 0.5:
+                honesty_notes.append(
+                    "%.1fin of wall run left unused" % leftover_run_in)
+            note_suffix = (
+                " (%s)" % "; ".join(honesty_notes) if honesty_notes else "")
             design.message_post(body=(
                 "Instantiated from template %s (%s): %d slot(s) requested, "
                 "%d line(s) written, %d absorbed into corner geometry, "
-                "%d dropped, %d unresolved%s." % (
+                "%d dropped, %d unresolved%s%s." % (
                     self.name, self.code, requested, len(written), absorbed,
                     dropped, unresolved,
                     "; corner preference expressed by %d template slot(s) — "
                     "corner geometry is engine-derived" % len(corner_slots)
-                    if corner_slots else "")))
+                    if corner_slots else "",
+                    note_suffix)))
         return design
+
+    def action_open_in_configurator(self):
+        """Instantiate this template and OPEN the result in the 3D tool.
+
+        E2E finding 12 — six fully-authored templates existed (the U-shape
+        carries 18 slots) with no way to launch any of them from the record.
+        A showroom user browsing Kitchen Templates could see exactly the
+        kitchen they wanted and had no button to build it.
+
+        This exists as a separate method rather than wiring a button straight
+        at `action_instantiate` because that one returns a bare RECORDSET.
+        Odoo's object-button handler only navigates when it receives an action
+        dict, so a button on `action_instantiate` would quietly create a real
+        design — cabinet lines, auto-arrange, chatter — and leave the user
+        staring at the unchanged template form, with no hint that anything had
+        happened and no link to what was built. That is worse than no button.
+
+        `allow_clamp` is deliberately left at its default: a template's own
+        cabinet count is authored to fit its own room, so a capacity failure
+        here means the template data is wrong and should surface as an error
+        rather than silently shipping a smaller kitchen than the record shows.
+        """
+        self.ensure_one()
+        design = self.action_instantiate()
+        return design.action_open_configurator()
 
 
 class SouthbrookKitchenTemplateThumbnail(models.Model):

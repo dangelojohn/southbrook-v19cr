@@ -1313,12 +1313,26 @@ $sbk-amber:      var(--sb-status-warn-fg);
     position: absolute;
     left: 14px;
     bottom: 12px;
-    z-index: 40;
+    z-index: 40;   // stays well under the validation/customer dropdowns (1000,
+                    // below) and far under any core Odoo modal/dialog layer —
+                    // unchanged; toasts must never contest those.
     display: flex;
     flex-direction: column;
     gap: 8px;
     width: 320px;
     max-width: calc(100% - 28px);
+    // Fix 17 (E2E P2) — the JS-side cap (state.toastView.visible, already
+    // limited to 3 + an overflow rollup — see the comment above this rule)
+    // bounds toast COUNT, not toast HEIGHT: three long-wrapped messages
+    // (each with an actions row) can still add up to more vertical space
+    // than a short canvas has. This caps the STACK itself so it can never
+    // grow to cover the whole scene panel; individual toasts keep
+    // pointer-events:auto below, so hovering one and scrolling still
+    // reaches this container's own scrollbar via normal event bubbling
+    // even though the stack wrapper itself is pointer-events:none.
+    max-height: 70%;
+    overflow-y: auto;
+    overflow-x: hidden;
     pointer-events: none;   // gaps between toasts let canvas drags through
 
     // Typo-spec conventions: display font for prose, existing radius /
@@ -1360,6 +1374,15 @@ $sbk-amber:      var(--sb-status-warn-fg);
 }
 .o_sbk_toast_message {
     display: block;
+    // Fix 17 (E2E P2) — the message text (JS-generated, out of scope here)
+    // can be a long unbroken product string (up to ~20 attributes). `word-
+    // break: break-word` alone only breaks at OVERFLOW time and doesn't
+    // feed into the box's min-content width, so a long token could still
+    // widen this flex chain before wrapping kicked in. `overflow-wrap:
+    // anywhere` is the modern, min-content-aware property for exactly
+    // this case; kept alongside break-word as a belt-and-suspenders
+    // fallback for older engines.
+    overflow-wrap: anywhere;
     word-break: break-word;
 }
 .o_sbk_toast_count {
@@ -1701,7 +1724,15 @@ $sbk-amber:      var(--sb-status-warn-fg);
     font-size: 11px;
     font-weight: 600;
     cursor: pointer;
-    opacity: 0;
+    // E2E finding 20 — this was opacity:0, revealed only on row hover or
+    // focus-within, while the panel's own hint text instructs the user to
+    // "use + Add". An affordance you are told to use and cannot see is not
+    // discoverable, and on a touch device there is no hover at all, so the
+    // control was effectively absent. The row already reserves 52px on the
+    // right for it (see .o_sbk_prod_meta's padding-right), so showing it at
+    // rest costs no layout. Quiet at rest, full strength on hover/focus, so
+    // a long product list still reads calmly.
+    opacity: 0.72;
     transition: var(--sb-transition);
 
     .o_sbk_product_row:hover &,
@@ -2068,6 +2099,20 @@ $sbk-amber:      var(--sb-status-warn-fg);
 .o_sbk_inventory {
     height: 100% !important;
     max-height: 100% !important;
+    // Fix 21 (E2E P2, "unreachable") — this grid item was the one sibling
+    // in the .o_sbk_workspace row missing the min-height:0 guard its two
+    // neighbours already carry (see .o_sbk_scene_panel just above, and
+    // .o_sbk_root/.o_content further up this same block). Without it, at
+    // short viewport heights this column's content-based auto min-height
+    // (h3 + search/chip rows + .o_sbk_product_list's own 160px floor +
+    // .o_sbk_detail's full unshrunk content) could exceed the 100% cap,
+    // and because THIS container's own overflow is hidden (not auto —
+    // intentional, so the search/chip rows stay pinned while the list
+    // beneath scrolls), any such overflow was silently clipped with no
+    // scrollbar to reach it — the Selected Cabinet panel (.o_sbk_detail,
+    // last child, so first to fall off the bottom) went unreachable,
+    // taking the Placement block's wall picker/nudge buttons with it.
+    min-height: 0 !important;
     overflow: hidden !important;
     display: flex !important;
     flex-direction: column !important;
@@ -2084,6 +2129,15 @@ $sbk-amber:      var(--sb-status-warn-fg);
     overflow-x: hidden !important;
     max-height: 35% !important;     // was 45% — detail was starving product list at short heights
     flex-shrink: 1 !important;      // was 0 — allow detail to shrink when product list has more items visible
+    // Fix 21 (E2E P2) — this flex item's own automatic min-height (content
+    // height, e.g. head + card + BOM warning + both edit grids incl. the
+    // Placement block's wall/offset/nudge controls + spec grid) is what the
+    // .o_sbk_inventory fix above guards against upstream; this local
+    // min-height:0 is the second half of the same fix, applied directly
+    // to the shrinking item itself so it reliably yields to max-height:35%
+    // and hands off to its own overflow-y:auto instead of ever depending
+    // on an ancestor's overflow:hidden to happen to exempt it.
+    min-height: 0 !important;
 }
 
 // Thin styled scrollbars so gutters don't eat layout width in the aside +

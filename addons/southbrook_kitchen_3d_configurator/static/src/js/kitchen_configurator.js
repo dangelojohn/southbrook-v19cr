@@ -3037,6 +3037,14 @@ class SouthbrookKitchenConfigurator extends Component {
         // Task 12 — same reasoning as _selectCabinet: don't carry a
         // stale width error onto whichever cabinet becomes selected next.
         this.state.selectedWidthError = "";
+        // Item 18 (E2E fix) — F14 parity with _selectCabinet: a real
+        // selection change (including "selection cleared/moved by a
+        // delete") must also drop any stale catalog-preview highlight
+        // (_selectCabinet already does this on every ordinary click; the
+        // delete path never did) so a preview row from a DIFFERENT
+        // product can never visually linger where the removed cabinet's
+        // panel/highlight used to be.
+        this.state.catalogPreview = null;
         this._recomputeLayoutFromItems();
         // v19.0.4.24.0 P0#1 Stage 1 — sync delete server-side so
         // pinned-line rows don't resurrect on next load. Fire-and-
@@ -3048,6 +3056,15 @@ class SouthbrookKitchenConfigurator extends Component {
                 layout_key: sel.layout_key,
             }).catch(() => { /* non-fatal — auto-save reconciles */ });
         }
+        // Item 18 (E2E fix) — refresh the production-readiness badge
+        // NOW instead of waiting on the 3s auto-save debounce + that
+        // save's own round trip (the only place this used to happen —
+        // _autoSave()'s success path). Same fire-and-forget call every
+        // other mutation in this Placement block already uses
+        // (_setSelectedAlongWallOffset/_nudgeSelectedFine above);
+        // _refreshValidation() itself no-ops safely without a
+        // state.designId (see its own guard).
+        this._refreshValidation();
         this._queueAutoSave();    // D5
     }
 
@@ -3300,6 +3317,22 @@ class SouthbrookKitchenConfigurator extends Component {
     _setView(key) {
         this.state.view = key;
         if (this._canvasApi) this._canvasApi.setView(key);
+    }
+
+    // Item 15 (E2E fix) — the view-switcher toolbar's ONE-and-only
+    // source of truth for "which view button is active" (state.view —
+    // written here in _setView and, redundantly-but-harmlessly, by
+    // _onCanvasViewChange's ack and _cameraToSelectedElevation).
+    // Previously each of the 6 buttons repeated its own inline
+    // `state.view === '<key>'` ternary — functionally equivalent, but
+    // impossible to eyeball for a copy/paste mismatch across 6 near-
+    // identical lines. Centralising it here also keeps the template
+    // binding a simple no-arg-shape call (this repo's OWL-expression-
+    // linter convention — see _selectedCanSendToWall/_selectedCanNudge
+    // Placement above for the same pattern) rather than 6 separate
+    // inline comparisons.
+    _isActiveView(key) {
+        return this.state.view === key;
     }
 
     // Task 22 (SBK-036) — front/left/right are flat orthographic
@@ -4185,6 +4218,25 @@ class SouthbrookKitchenConfigurator extends Component {
             // Save failed — _saveDesign already surfaced the reason.
             return;
         }
+        // Item 19 (E2E fix) — surface a KNOWN blocking issue instead of
+        // firing the quotation RPC blindly. state.validation is the
+        // SAME {counts, issues} the persistent chip/panel (Task 19)
+        // already polls via /validate — reused here, no extra fetch.
+        // This can go stale between an edit and the next debounced
+        // /validate refresh (same staleness window the chip itself
+        // already accepts — see that Task's own doc comment), so it's
+        // a UX shortcut, not the enforcement point: action_create_
+        // quotation still runs its own server-side checks regardless.
+        if (this.state.validation.counts.blocking > 0) {
+            this.state.validation.panelOpen = true;
+            const n = this.state.validation.counts.blocking;
+            this._toast(
+                `Resolve ${n} blocking issue${n === 1 ? "" : "s"} first — `
+                + "see Production check.",
+                { type: "warning", sticky: true }
+            );
+            return;
+        }
         this.state.saving = true;
         try {
             const action = await rpc("/web/dataset/call_kw", {
@@ -4228,6 +4280,106 @@ class SouthbrookKitchenConfigurator extends Component {
             } else {
                 this._toast(msg, { type: "danger", sticky: true });
             }
+        } finally {
+            this.state.saving = false;
+        }
+    }
+
+    // ─── Item 19 (E2E fix) — form-parity toolbar actions ────────────────────────
+    // "Plan PDF, Validate, Duplicate as New Version, and Create Quotation
+    // exist only on the Odoo form, not in the configurator toolbar" — a
+    // rep had to leave the 3D tool to finish a quote. Create Quotation
+    // was already covered by _createAndConfirm above (same server
+    // method, action_create_quotation, just under the "Create &
+    // Confirm" label) — now also guarded against known blocking issues
+    // (see the guard just added above). The three below wire the
+    // REMAINING form-only actions to their EXACT existing object-button
+    // methods (views/kitchen_design_views.xml's header) via the same
+    // call_kw + this.action.doAction pattern _createAndConfirm already
+    // established — no new routes. All three require an already-saved
+    // design (each server method is `self.ensure_one()` against a real
+    // record) and are gated on state.loading like every other topbar
+    // mutation this fix round added (see the room-dim inputs' own P0
+    // comment above).
+
+    // action_report_kitchen_plan (reports/kitchen_plan_report.xml) —
+    // the SAME ir.actions.report the form's "Plan PDF" header button
+    // triggers (type="action" against %(action_report_kitchen_plan)d).
+    // additionalContext.active_ids is the standard Odoo web-client
+    // mechanism for telling a report action which record(s) to render
+    // (action_service.js's _preprocessAction merges it into the loaded
+    // action's own context; the report engine reads active_ids from
+    // there) — no bespoke report route.
+    async _printPlanPdf() {
+        if (!this.state.designId || this.state.loading) return;
+        return this.action.doAction(
+            "southbrook_kitchen_3d_configurator.action_report_kitchen_plan",
+            {
+                additionalContext: {
+                    active_id:  this.state.designId,
+                    active_ids: [this.state.designId],
+                },
+            }
+        );
+    }
+
+    // action_validate_production (models/kitchen_design.py) — the SAME
+    // object-button method the form's "Validate" header button calls.
+    // Returns a display_notification client-action dict (sticky if any
+    // blocking issue), dispatched via the existing this.action.doAction
+    // helper. Distinct from the persistent validation chip/panel above
+    // (Task 19's own /validate polling, already in the toolbar) — this
+    // is the one-shot form-parity action the E2E report specifically
+    // asked for.
+    async _runValidateAction() {
+        if (!this.state.designId || this.state.loading) return;
+        try {
+            const result = await rpc("/web/dataset/call_kw", {
+                model:  "southbrook.kitchen.design",
+                method: "action_validate_production",
+                args:   [[this.state.designId]],
+                kwargs: {},
+            });
+            if (result && result.type) {
+                return this.action.doAction(result);
+            }
+        } catch (e) {
+            this._toast(
+                "Validate failed: " + (e && (e.message || String(e)) || "unknown error"),
+                { type: "danger", sticky: true }
+            );
+        }
+    }
+
+    // action_duplicate_and_open (models/kitchen_design.py) — the SAME
+    // method the form's "Duplicate as New Version" header button calls.
+    // It copies the design server-side and returns action_open_
+    // configurator()'s client-action dict — tag "southbrook_kitchen_
+    // configurator", THIS component's own registry tag (see the bottom
+    // of this file). Dispatching it through this.action.doAction (the
+    // same helper _openDesigns/_openTemplatePicker/_createAndConfirm
+    // already use) remounts a fresh instance of this component on the
+    // new copy, exactly like navigating here from the Kitchen Designs
+    // list does — see _resetForNewSession's own doc comment on that
+    // "destroys and recreates" behaviour.
+    async _duplicateAsNewVersion() {
+        if (!this.state.designId || this.state.loading || this.state.saving) return;
+        this.state.saving = true;
+        try {
+            const result = await rpc("/web/dataset/call_kw", {
+                model:  "southbrook.kitchen.design",
+                method: "action_duplicate_and_open",
+                args:   [[this.state.designId]],
+                kwargs: {},
+            });
+            if (result && result.type && result.type.startsWith("ir.actions.")) {
+                return this.action.doAction(result);
+            }
+        } catch (e) {
+            this._toast(
+                "Duplicate failed: " + (e && (e.message || String(e)) || "unknown error"),
+                { type: "danger", sticky: true }
+            );
         } finally {
             this.state.saving = false;
         }
@@ -4433,9 +4585,22 @@ class SouthbrookKitchenConfigurator extends Component {
         }
     }
 
+    // Item 25 (E2E fix) — this used to doAction() with no options, which
+    // (target defaulting to "current" for an act_window) replaced the
+    // running configurator's own controller outright — no breadcrumb
+    // survives that swap (this action is normally reached straight from
+    // a menu click, so there's nothing to "back" into either), so a rep
+    // who wasn't done with the current design had no way back to it
+    // short of re-finding it in the list. `newWindow: true` is the
+    // action service's own existing option for exactly this ("open in
+    // a new context" — see action_service.js's `_openActionInNewWindow`)
+    // — the current tab's configurator instance (and state.designId)
+    // is left completely untouched; Kitchen Designs opens in a new tab
+    // alongside it. No new mechanism invented.
     async _openDesigns() {
         return this.action.doAction(
-            "southbrook_kitchen_3d_configurator.action_sbk_kitchen_designs"
+            "southbrook_kitchen_3d_configurator.action_sbk_kitchen_designs",
+            { newWindow: true }
         );
     }
 
@@ -4506,6 +4671,32 @@ class SouthbrookKitchenConfigurator extends Component {
     // shape above.
     _wallLabel(wall) {
         return { back: "Back", left: "Left", right: "Right", front: "Front" }[wall] || "None";
+    }
+
+    // Item 16 (E2E fix) — "Active Wall" used to read state.activeWall
+    // ONLY, which is real, load-bearing state (F7 precedence just above
+    // in _addCabinetFromProduct: it decides which wall a NEW cabinet
+    // drops onto) — but its ONLY setter is a direct click on a bare
+    // wall SURFACE in the 3D scene (_onWallSelect, "PR1" comment
+    // above), an easy-to-miss gesture most reps never discover. The
+    // indicator read "None" for an entire session as a result —
+    // "permanent, unexplained, unsettable" per the E2E report.
+    //
+    // Decision: keep state.activeWall exactly as-is (removing it would
+    // regress the F7 add-flow precedence it drives) but make the
+    // DISPLAYED value fall back to the SELECTED cabinet's own wall —
+    // now that the Placement block's wall picker (_setSelectedWall)
+    // makes a placed cabinet's wall a first-class, visible/settable
+    // thing — whenever no wall has been explicitly clicked yet. A
+    // deliberate wall click still wins once made (same F7 ordering).
+    // This is the far more common case in a real session (a rep has
+    // almost always selected SOME cabinet), so the row is only ever
+    // "None" for a genuinely empty, nothing-selected canvas — where
+    // "None" is honest, not confusing.
+    _displayActiveWall() {
+        return this.state.activeWall
+            || (this.state.selected && this.state.selected.wall)
+            || null;
     }
 }
 
@@ -4608,8 +4799,15 @@ SouthbrookKitchenConfigurator.template = xml`
          inputs. margin-right:auto (in SCSS) keeps this group flush
          against the brand block; actions stay right-aligned. -->
     <div class="o_sbk_room_dims">
+      <!-- Item 14 (E2E fix) — "(in)" on every label makes the unit
+           explicit (there was no indication anywhere that these are
+           inches, not cm/ft); Depth and Height now get the SAME
+           o_sbk_room_dim_input_row + o_sbk_room_dim_ft feet-helper
+           markup Width already had (both classes are generic — see
+           the SCSS, neither is Width-specific — so this is a template-
+           only mirror, no new styling needed). -->
       <label class="o_sbk_room_dim">
-        <span class="o_sbk_room_dim_label">Width</span>
+        <span class="o_sbk_room_dim_label">Width (in)</span>
         <div class="o_sbk_room_dim_input_row">
           <!-- P0 (E2E fix) — disabled while state.loading: these were
                live during the 5-10s boot/hydrate window, sitting
@@ -4632,20 +4830,26 @@ SouthbrookKitchenConfigurator.template = xml`
               t-esc="state.roomDimErrors.width_in"/>
       </label>
       <label class="o_sbk_room_dim">
-        <span class="o_sbk_room_dim_label">Depth</span>
-        <input type="number" min="12" max="480" step="6"
-               t-att-value="state.room.depth_in"
-               t-att-disabled="state.loading"
-               t-on-change="(ev) => this._changeRoom('depth_in', ev.target.value)"/>
+        <span class="o_sbk_room_dim_label">Depth (in)</span>
+        <div class="o_sbk_room_dim_input_row">
+          <input type="number" min="12" max="480" step="6"
+                 t-att-value="state.room.depth_in"
+                 t-att-disabled="state.loading"
+                 t-on-change="(ev) => this._changeRoom('depth_in', ev.target.value)"/>
+          <span class="o_sbk_room_dim_ft"><t t-esc="(state.room.depth_in / 12).toFixed(1)"/>′</span>
+        </div>
         <span t-if="state.roomDimErrors.depth_in" class="o_sbk_field_error"
               t-esc="state.roomDimErrors.depth_in"/>
       </label>
       <label class="o_sbk_room_dim">
-        <span class="o_sbk_room_dim_label">Height</span>
-        <input type="number" min="84" max="144" step="6"
-               t-att-value="state.room.height_in"
-               t-att-disabled="state.loading"
-               t-on-change="(ev) => this._changeRoom('height_in', ev.target.value)"/>
+        <span class="o_sbk_room_dim_label">Height (in)</span>
+        <div class="o_sbk_room_dim_input_row">
+          <input type="number" min="84" max="144" step="6"
+                 t-att-value="state.room.height_in"
+                 t-att-disabled="state.loading"
+                 t-on-change="(ev) => this._changeRoom('height_in', ev.target.value)"/>
+          <span class="o_sbk_room_dim_ft"><t t-esc="(state.room.height_in / 12).toFixed(1)"/>′</span>
+        </div>
         <span t-if="state.roomDimErrors.height_in" class="o_sbk_field_error"
               t-esc="state.roomDimErrors.height_in"/>
       </label>
@@ -4832,6 +5036,30 @@ SouthbrookKitchenConfigurator.template = xml`
               t-on-click="_openDesigns">
         Kitchen Designs
       </button>
+      <!-- Item 19 (E2E fix) — form-parity actions (Plan PDF / Validate /
+           Duplicate as New Version); see _printPlanPdf/_runValidateAction/
+           _duplicateAsNewVersion's own doc comments for exactly which
+           existing server method each wires to. All three need an
+           already-saved design (server-side ensure_one()) and are
+           gated on state.loading like the rest of this fix round. -->
+      <button type="button" class="o_sbk_btn o_sbk_btn_outline"
+              t-att-disabled="!state.designId || state.loading"
+              title="Print the dimensioned Plan PDF for this design"
+              t-on-click="_printPlanPdf">
+        Plan PDF
+      </button>
+      <button type="button" class="o_sbk_btn o_sbk_btn_outline"
+              t-att-disabled="!state.designId || state.loading"
+              title="Run the production-readiness checks (collision, BOM, width, soffit)"
+              t-on-click="_runValidateAction">
+        Validate
+      </button>
+      <button type="button" class="o_sbk_btn o_sbk_btn_outline"
+              t-att-disabled="!state.designId || state.loading"
+              title="Copy this design as a new draft version and open it"
+              t-on-click="_duplicateAsNewVersion">
+        Duplicate as New Version
+      </button>
       <!-- Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) —
            persistent production-readiness status chip. Same toolbar-
            button lineage as the panel toggles (Task 34) and undo/redo
@@ -4932,14 +5160,20 @@ SouthbrookKitchenConfigurator.template = xml`
         <t t-elif="state.portalUser">Save Draft</t>
         <t t-else="">Save Design</t>
       </button>
-      <!-- Task #48 — Create &amp; Confirm. Only surfaces for internal
-           users (portal customers don't create quotes directly; they
-           submit the design and the assigned rep confirms). Disabled
-           until the design has at least one cabinet, or a save is
-           already in flight. -->
+      <!-- Task #48 — Create &amp; Confirm (item 19's "Create Quotation" —
+           same action_create_quotation server method the form's header
+           buttons call). Only surfaces for internal users (portal
+           customers don't create quotes directly; they submit the
+           design and the assigned rep confirms). Disabled until the
+           design has at least one cabinet, a save is already in
+           flight, or (P0 E2E fix) a boot/load is in flight. Firing
+           against a KNOWN blocking issue is refused inside
+           _createAndConfirm itself (see that guard) rather than here,
+           so the click still surfaces a toast pointing at Production
+           check instead of just staying inert. -->
       <button t-if="!state.portalUser"
               class="o_sbk_btn o_sbk_btn_confirm"
-              t-att-disabled="state.saving || !state.items.length"
+              t-att-disabled="state.saving || state.loading || !state.items.length"
               t-on-click="_createAndConfirm"
               title="Save the design and create a draft Sale Order for this customer">
         <t t-if="state.saving">Working…</t>
@@ -5196,12 +5430,16 @@ SouthbrookKitchenConfigurator.template = xml`
         <!-- PR1 — active-wall indicator. The room itself is the selector
              (hover glow + click-to-select are handled inside
              <KitchenCanvas>); this mirrors the picked wall as text so the
-             active target is obvious even away from the 3D outline. Reads
-             "None" until a wall is clicked. -->
+             active target is obvious even away from the 3D outline.
+             Item 16 (E2E fix) — falls back to the SELECTED cabinet's
+             wall (_displayActiveWall) rather than reading state.
+             activeWall alone, so this only shows "None" when nothing
+             has been wall-clicked AND nothing is selected — see
+             _displayActiveWall's own comment for the full rationale. -->
         <span class="o_sbk_count_sep">•</span>
         <span class="o_sbk_count_item" role="status" aria-live="polite">
           <span class="o_sbk_count_label">Active Wall: </span>
-          <strong t-esc="_wallLabel(state.activeWall)"/>
+          <strong t-esc="_wallLabel(_displayActiveWall())"/>
         </span>
         <t t-if="state.summary.price &gt; 0">
           <span class="o_sbk_count_sep">•</span>
@@ -5223,44 +5461,48 @@ SouthbrookKitchenConfigurator.template = xml`
 
       <!-- View label -->
       <!-- D1 — View switcher toolbar. 6 cameras + reset + zoom. -->
+      <!-- Item 15 (E2E fix) — every button's highlight + aria-pressed
+           reads _isActiveView('<key>'), the single method wrapping
+           state.view (see that getter's own comment on _setView above)
+           instead of 6 separately-typed inline ternaries. -->
       <div class="o_sbk_viewbar" role="toolbar" aria-label="Camera view">
-        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (state.view === 'iso' ? ' is-active' : '')"
-                t-att-aria-pressed="state.view === 'iso'"
+        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (_isActiveView('iso') ? ' is-active' : '')"
+                t-att-aria-pressed="_isActiveView('iso')"
                 aria-label="Isometric view (1)"
                 title="Isometric (1)"
                 t-on-click="() => this._setView('iso')">
           <span class="o_sbk_viewicon">⬡</span><span class="o_sbk_viewkey">1</span>
         </button>
-        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (state.view === 'top' ? ' is-active' : '')"
-                t-att-aria-pressed="state.view === 'top'"
+        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (_isActiveView('top') ? ' is-active' : '')"
+                t-att-aria-pressed="_isActiveView('top')"
                 aria-label="Top / Plan view (2)"
                 title="Top / Plan (2)"
                 t-on-click="() => this._setView('top')">
           <span class="o_sbk_viewicon">▦</span><span class="o_sbk_viewkey">2</span>
         </button>
-        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (state.view === 'front' ? ' is-active' : '')"
-                t-att-aria-pressed="state.view === 'front'"
+        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (_isActiveView('front') ? ' is-active' : '')"
+                t-att-aria-pressed="_isActiveView('front')"
                 aria-label="Front view (3)"
                 title="Front (3)"
                 t-on-click="() => this._setView('front')">
           <span class="o_sbk_viewicon">▮</span><span class="o_sbk_viewkey">3</span>
         </button>
-        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (state.view === 'left' ? ' is-active' : '')"
-                t-att-aria-pressed="state.view === 'left'"
+        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (_isActiveView('left') ? ' is-active' : '')"
+                t-att-aria-pressed="_isActiveView('left')"
                 aria-label="Left view (4)"
                 title="Left side (4)"
                 t-on-click="() => this._setView('left')">
           <span class="o_sbk_viewicon">◧</span><span class="o_sbk_viewkey">4</span>
         </button>
-        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (state.view === 'right' ? ' is-active' : '')"
-                t-att-aria-pressed="state.view === 'right'"
+        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (_isActiveView('right') ? ' is-active' : '')"
+                t-att-aria-pressed="_isActiveView('right')"
                 aria-label="Right view (5)"
                 title="Right side (5)"
                 t-on-click="() => this._setView('right')">
           <span class="o_sbk_viewicon">◨</span><span class="o_sbk_viewkey">5</span>
         </button>
-        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (state.view === 'persp' ? ' is-active' : '')"
-                t-att-aria-pressed="state.view === 'persp'"
+        <button class="o_sbk_viewbtn" t-att-class="'o_sbk_viewbtn' + (_isActiveView('persp') ? ' is-active' : '')"
+                t-att-aria-pressed="_isActiveView('persp')"
                 aria-label="Perspective / free orbit (6)"
                 title="Perspective / orbit (6)"
                 t-on-click="() => this._setView('persp')">

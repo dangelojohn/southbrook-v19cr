@@ -5390,11 +5390,21 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
              "_COMPAT_PRESET_CODES. New UI uses template_id.",
     )
     cabinet_count = fields.Integer(
-        string="Number of Cabinets", default=0,
-        help="How many repeating cabinets to place. Picking a shape "
-             "sets this to that shape's own maximum — lower it for a "
-             "smaller run. Changing Cabinet Size or an appliance only "
-             "shrinks it if your number no longer fits; picking a "
+        # E2E finding 13 — this was labelled "Number of Cabinets", so a user
+        # who typed 14, saw it clamp to 8, and then counted 14 lines in the
+        # result concluded the field was broken. It is not: it only ever
+        # governed BASE and TALL floor cabinets. Wall cabinets, appliance
+        # openings and engine-derived corners are placed unconditionally and
+        # were never counted here, so the finished design legitimately holds
+        # more lines than this number. Renamed to say what it actually bounds.
+        string="Base Cabinets", default=0,
+        help="How many floor cabinets (base and tall) to place. Wall "
+             "cabinets, appliance openings and corner units are added "
+             "automatically on top of this number, so the finished kitchen "
+             "will usually contain more pieces than you enter here. "
+             "Picking a shape sets this to that shape's own maximum — lower "
+             "it for a smaller run. Changing Cabinet Size or an appliance "
+             "only shrinks it if your number no longer fits; picking a "
              "different shape resets it again.")
     module_width_in = fields.Selection(
         [("18", '18"'), ("21", '21"'), ("24", '24"'), ("30", '30"')],
@@ -5491,6 +5501,10 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
     def _onchange_parametrics(self):
         # Selection widgets can't grey options in a transient — clamping +
         # fit_summary IS the spec's "constrain or flag" (never grow room).
+        # `clamp_notice` carries (shape, requested, allowed) out of the loop so
+        # a downward clamp can announce itself instead of silently rewriting
+        # the user's number (E2E finding 13).
+        clamp_notice = None
         for rec in self:
             # Task 24 (SBK-038) — Number of Cabinets is AUTHORITATIVE: the
             # created design's line count must match whatever this field
@@ -5522,7 +5536,16 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
                 rec.cabinet_count = rec.count_max
             elif rec.template_id and rec.cabinet_count and \
                     rec.count_max and rec.cabinet_count > rec.count_max:
+                # E2E finding 13 — this clamp was SILENT. A user typed 14,
+                # watched the field snap to 8, and was told nothing: no
+                # message, no reason, no mention of capacity. A number that
+                # rewrites itself with no explanation reads as a broken
+                # input, not as a constraint. Capture it and warn below —
+                # the clamp itself is correct and stays.
+                clamped_from = rec.cabinet_count
                 rec.cabinet_count = rec.count_max
+                clamp_notice = (
+                    rec.template_id.display_name, clamped_from, rec.count_max)
             # 2026-07-31 — the field only ever clamped DOWNWARD, so it
             # sat at 0 in the UI while the helper text alongside it
             # announced "N cabinet(s) ... (max N)". The 0 was never a
@@ -5534,6 +5557,16 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
             elif rec.template_id and not rec.cabinet_count and rec.count_max:
                 rec.cabinet_count = rec.count_max
             rec.last_seen_template_id = rec.template_id
+        if clamp_notice:
+            shape, requested, allowed = clamp_notice
+            return {"warning": {
+                "title": _("Not enough wall for that many"),
+                "message": _(
+                    "%(shape)s fits %(allowed)s cabinets at this size, so your "
+                    "%(requested)s was reduced to %(allowed)s. To get more, "
+                    "choose a narrower Cabinet Size or a larger room.",
+                    shape=shape, requested=requested, allowed=allowed),
+            }}
 
     def action_create(self):
         """Instantiate the chosen template (or a plain empty design) and

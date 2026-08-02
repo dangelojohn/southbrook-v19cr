@@ -350,3 +350,17 @@ from . import test_save_preserves_positions
 # success, so a caller can tell "resolved" from "already arranged"
 # from "didn't fully resolve it".
 from . import test_manual_arrange_resolves
+
+# FINDING 13 E2E P0 remediation (2026-08-02, "Wizard problems") —
+# southbrook.kitchen.template.parametric_fit/action_instantiate gain an
+# opt-in allow_clamp kwarg (default False = every existing caller's
+# hard-fail contract is untouched) that turns an over-capacity cabinet
+# count into an honest reduction (fit["clamped"]/["requested_count"],
+# named in the Task 16 instantiation chatter) instead of a silent one,
+# plus leftover_run_in (reusing the round-robin allocator's own
+# `remaining` arithmetic) surfaces wall run a fit never claimed. Also
+# pins that a literal cabinet_count=0 is never conflated with "not
+# given" (this file's own `is not None` contract, distinct from the
+# picker wizard's `cabinet_count or None` call sites in
+# models/kitchen_design.py, out of this task's scope).
+from . import test_wizard_coherence

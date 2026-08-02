@@ -20,6 +20,15 @@
                 <field name="code"/>
                 <field name="layout_shape"/>
                 <field name="default_module_width_in" string="Module Width (in)"/>
+                <!-- Launch straight from the browse list, so picking a shape
+                     does not require opening each record first. Same method
+                     as the form header — see its docstring for why this does
+                     not point at action_instantiate. -->
+                <button name="action_open_in_configurator"
+                        type="object"
+                        icon="fa-cube"
+                        title="Open in Configurator"
+                        invisible="not active"/>
             </list>
         </field>
     </record>
@@ -30,6 +39,21 @@
         <field name="model">southbrook.kitchen.template</field>
         <field name="arch" type="xml">
             <form>
+                <!-- E2E finding 12 — the templates were browsable but not
+                     usable: a showroom user could read the whole U-shape
+                     spec here and had no way to build it. This button
+                     instantiates the template and navigates straight into
+                     the 3D tool. It targets action_open_in_configurator,
+                     NOT action_instantiate: the latter returns a bare
+                     recordset, so it would create the design and leave the
+                     user on this form with no feedback. -->
+                <header>
+                    <button name="action_open_in_configurator"
+                            type="object"
+                            string="Open in Configurator"
+                            class="btn-primary"
+                            invisible="not active"/>
+                </header>
                 <sheet>
                     <widget name="web_ribbon"
                             title="Archived"
