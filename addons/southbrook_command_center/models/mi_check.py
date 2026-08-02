@@ -79,8 +79,11 @@ class SouthbrookMiCheck(models.Model):
             ),
             "why_text": why_text,
         }
+        key = Exception._dedupe_key_for(
+            exception_type, "southbrook.mi.check", self.id, self)
         exc = Exception._upsert_exception(
-            exception_type, "southbrook.mi.check", self.id, vals
+            exception_type, "southbrook.mi.check", self.id, vals,
+            dedupe_key=key
         )
         exc._publish(
             "sb_cc_exceptions",

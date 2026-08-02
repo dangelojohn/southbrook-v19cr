@@ -54,33 +54,54 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
         return admin.id if admin else self.env.uid
 
     # ------------------------------------------------------------------
-    # Idempotent upsert keyed on the unique 3-tuple.
+    # Idempotent upsert keyed on the stable business identity.
     # ------------------------------------------------------------------
     def _upsert_exception(self, exception_type, source_model, source_res_id, vals,
-                          reactivate=False):
-        """Idempotent create-or-update keyed on the unique 3-tuple.
+                          reactivate=False, dedupe_key=None):
+        """Idempotent create-or-update keyed on the stable business identity.
 
         On an EXISTING OPEN row only the narrative (severity/rank/impact/
-        action/why) is refreshed — owner and workflow state set by a human
-        are preserved. A resolved/dismissed row is reactivated ONLY when
+        action/why) is refreshed — owner and workflow state set by a human are
+        preserved. A resolved/dismissed row is reactivated ONLY when
         ``reactivate=True`` (event hooks: the source defect genuinely
-        re-fired). The cron scan passes ``reactivate=False`` (the default) so
-        it never undoes a human's resolution of a still-present blocker.
-        (Unified materializer — single source of ``_upsert_exception``; the
-        Phase-2 hooks call this same method.)"""
+        re-fired). The cron scan passes ``reactivate=False`` so it never undoes
+        a human's resolution of a still-present blocker.
+
+        ``source_res_id`` is refreshed to the live source row on every upsert,
+        so click-through always opens a record that still exists — before this,
+        18,240 rows pointed at deleted mi.check ids.
+
+        ``occurrence_count`` / ``last_seen`` are maintained here too, on every
+        upsert: a matched row gets its count incremented and its last_seen
+        stamped to now (this IS a fresh observation of the condition,
+        regardless of whether the row's workflow state is touched); a
+        brand-new row starts at count=1 / last_seen=now.
+        """
         Exc = self.sudo().with_context(active_test=False)
-        existing = Exc.search([
-            ("source_model", "=", source_model),
-            ("source_res_id", "=", source_res_id),
-            ("exception_type", "=", exception_type),
-        ], limit=1)
+        key = dedupe_key or self._dedupe_key_for(
+            exception_type, source_model, source_res_id)
+        existing = Exc.search([("dedupe_key", "=", key)], limit=1)
+        if not existing:
+            # Pre-migration rows have no key yet; fall back to the legacy triple
+            # so an upgrade mid-flight never duplicates.
+            existing = Exc.search([
+                ("source_model", "=", source_model),
+                ("source_res_id", "=", source_res_id),
+                ("exception_type", "=", exception_type),
+                ("dedupe_key", "=", False),
+            ], limit=1)
         narrative = {k: vals[k] for k in
                      ("severity", "severity_rank", "impact_summary",
                       "recommended_action", "why_text") if k in vals}
+        now = fields.Datetime.now()
         if existing:
+            narrative["dedupe_key"] = key
+            narrative["source_res_id"] = source_res_id
+            narrative["occurrence_count"] = existing.occurrence_count + 1
+            narrative["last_seen"] = now
             if not existing.active and reactivate:
                 existing.write({**narrative, "active": True, "state": "new"})
-            elif narrative:
+            else:
                 existing.write(narrative)
             return existing
         create_vals = dict(vals)
@@ -88,6 +109,9 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
             "exception_type": exception_type,
             "source_model": source_model,
             "source_res_id": source_res_id,
+            "dedupe_key": key,
+            "occurrence_count": 1,
+            "last_seen": now,
         })
         return Exc.create(create_vals)
 
@@ -151,6 +175,8 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
                 is_cut = getattr(c, "category", False) in ("cut", "cutlist")
                 etype = "cutlist_divergence" if is_cut else "mi_blocker"
                 mo = getattr(c, "production_id", False)
+                key = self._dedupe_key_for(
+                    etype, "southbrook.mi.check", c.id, c)
                 self._upsert_exception(etype, "southbrook.mi.check", c.id, {
                     "exception_type": etype,
                     "source_model": "southbrook.mi.check",
@@ -163,7 +189,7 @@ class SouthbrookCommandExceptionMaterialize(models.Model):
                         "Review the MI check and clear the blocker.",
                     "why_text": getattr(c, "message", False) or c.name or "",
                     "company_id": self.env.company.id,
-                })
+                }, dedupe_key=key)
                 n += 1
         except Exception:  # noqa: BLE001
             _logger.exception("command_center: mi_blocker scan failed")

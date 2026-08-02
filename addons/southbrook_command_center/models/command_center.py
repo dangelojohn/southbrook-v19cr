@@ -24,7 +24,7 @@ Return shape for all four public methods (frozen contract):
         "explanation": str,
     }
 """
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from odoo import models
 
@@ -59,9 +59,17 @@ class SouthbrookCommandCenter(models.AbstractModel):
     _description = "Central Command — read-time scoring functions (no ORM state)"
 
     # ------------------------------------------------------------------
-    # 1. Factory Health Score (0-100)
+    # 1. Factory Health Score (out of available points)
     # ------------------------------------------------------------------
     def factory_health_score(self):
+        """Score out of AVAILABLE points.
+
+        A component with no observations behind it is marked "no data" and
+        excluded from the denominator. Scoring absent data as zero deflates
+        (visible); scoring it as perfect inflates (invisible). On 2026-07-30
+        this screen did both at once: OEE banked 0 of 30 with no snapshots,
+        on-time delivery banked 25 of 25 with zero completed shipments.
+        """
         env = self.env
         get = lambda key, default: _get_param(env, f"factory_health.{key}", default)
 
@@ -73,119 +81,193 @@ class SouthbrookCommandCenter(models.AbstractModel):
         pts_per_blocker = get("blocker_penalty_per_blocker", 15.0)
         band_green_min = get("band_green_min", 80)
         band_amber_min = get("band_amber_min", 60)
+        min_coverage_points = get("min_coverage_points", 50)
 
-        # --- OEE / bottleneck tiles (REUSES southbrook.mes_mps.mi_tiles) ---
-        avg_oee_last_7d = 0.0
-        workcenters_overloaded_count = 0
-        try:
-            tiles = env["southbrook.mes_mps.mi_tiles"].new({})
-            avg_oee_last_7d = tiles.avg_oee_last_7d or 0.0
-            workcenters_overloaded_count = tiles.workcenters_overloaded_count or 0
-        except Exception:
-            # Defensive: mi_tiles is a verified model/field set at design
-            # time, but never let a scoring panel 500 the whole screen.
-            pass
+        payload, provenance = env["southbrook.command.explorer_bridge"].fetch()
 
-        # --- Exec dashboard KPIs (REUSES southbrook.exec_dashboard.snapshot) ---
-        otd_pct_30d = 0.0
-        fpy_pct_7d = 0.0
-        try:
-            snapshot = env["southbrook.exec_dashboard.snapshot"].get_or_create_today()
-            otd_pct_30d = snapshot.otd_pct_30d or 0.0
-            fpy_pct_7d = snapshot.fpy_pct_7d or 0.0
-        except Exception:
-            pass
+        factors = []
 
-        # --- Open MI blockers (REUSES southbrook.mi.check.severity) ---
+        def _factor(label, of, value, component, source,
+                    no_data_reason=None):
+            live = no_data_reason is None
+            factors.append({
+                "label": label,
+                "value": value if live else None,
+                "points": round(of / 100.0 * component, 1) if live else None,
+                "of": of,
+                "source": source,
+                "data_state": "live" if live else "no_data",
+                "no_data_reason": no_data_reason,
+            })
+
+        # --- OEE: no data unless a snapshot exists within the 7d window ---
+        oee_reason = None
+        oee_component = 0.0
+        Snap = env.get("southbrook.mes_mps.oee_snapshot")
+        if Snap is None:
+            oee_reason = "no OEE snapshots recorded"
+        else:
+            # Guard must match the 7d window that avg_oee_last_7d reads
+            last_week = datetime.now().date() - timedelta(days=7)
+            if Snap.sudo().search_count([("shift_date", ">=", last_week)]) == 0:
+                oee_reason = "no OEE snapshots in the last 7 days"
+            else:
+                try:
+                    tiles = env["southbrook.mes_mps.mi_tiles"].new({})
+                    oee_component = _clamp((tiles.avg_oee_last_7d or 0.0) * 100)
+                except Exception:  # noqa: BLE001
+                    oee_reason = "OEE tiles unavailable"
+        _factor("OEE (7d avg)", w_oee * 100,
+                f"{oee_component:.0f}%", oee_component,
+                "southbrook.mes_mps.oee_snapshot", oee_reason)
+
+        # --- On-time delivery: read Process Explorer's own measure ---
+        ontime = (payload.get("ontime") or {}) if payload else {}
+        otd_reason = None
+        otd_component = 0.0
+        if not payload:
+            otd_reason = "Process Explorer payload unavailable"
+        elif not ontime.get("total"):
+            otd_reason = "no closed orders in the window to measure"
+        else:
+            otd_component = _clamp(ontime.get("pct") or 0.0)
+        _factor("On-Time Delivery", w_otd * 100,
+                f"{otd_component:.0f}% of {ontime.get('total') or 0} closed orders",
+                otd_component, "mrp.process.explorer.get_data().ontime",
+                otd_reason)
+
+        # --- First-pass yield: needs closed orders in the 7d window ---
+        fpy_reason = None
+        fpy_component = 0.0
+        # Guard must match the 7d window and company scope that fpy_pct_7d reads
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        closed_in_window = env["mrp.production"].search_count([
+            ("state", "=", "done"),
+            ("date_finished", ">=", seven_days_ago),
+            ("company_id", "=", env.company.id),
+        ])
+        if closed_in_window == 0:
+            fpy_reason = "no closed manufacturing orders in the last 7 days"
+        else:
+            try:
+                snapshot = env["southbrook.exec_dashboard.snapshot"].get_or_create_today()
+                fpy_component = _clamp(snapshot.fpy_pct_7d or 0.0)
+            except Exception:  # noqa: BLE001
+                fpy_reason = "exec dashboard snapshot unavailable"
+        _factor("First-Pass Yield (7d)", w_fpy * 100,
+                f"{fpy_component:.0f}%", fpy_component,
+                "southbrook.exec_dashboard.snapshot.fpy_pct_7d", fpy_reason)
+
+        # --- Open MI blockers: always measurable ---
         open_blocker_count = env["southbrook.mi.check"].search_count(
-            [("severity", "=", "blocker")]
-        )
+            [("severity", "=", "blocker")])
+        _factor("Open MI blockers", w_blocker * 100,
+                open_blocker_count,
+                _clamp(100 - pts_per_blocker * open_blocker_count),
+                "southbrook.mi.check (severity=blocker)")
 
-        # --- Capacity denominator (native mrp.workcenter) ---
-        total_active_workcenters = env["mrp.workcenter"].search_count(
-            [("active", "=", True)]
-        )
-
-        oee_component = _clamp(avg_oee_last_7d * 100)
-        otd_component = _clamp(otd_pct_30d)
-        fpy_component = _clamp(fpy_pct_7d)
-        blocker_component = _clamp(100 - pts_per_blocker * open_blocker_count)
-        if total_active_workcenters == 0:
-            capacity_component = 100.0
-            overloaded_ratio = 0.0
+        # --- Capacity: work centers CARRYING WORK, matching Process Explorer.
+        # The old denominator was every active work center (14); Process
+        # Explorer counts those with open work (8). Same query now.
+        stations = (payload.get("workcenters") or []) if payload else []
+        cap_reason = None
+        cap_component = 0.0
+        cap_value = None
+        if not payload:
+            cap_reason = "Process Explorer payload unavailable"
+        elif not stations:
+            cap_reason = "no work centers carrying open work"
         else:
-            overloaded_ratio = workcenters_overloaded_count / total_active_workcenters
-            capacity_component = _clamp(100 * (1 - overloaded_ratio))
+            over_days = _get_param(env, "chips.capacity_over_days", 1.0)
+            overloaded = sum(1 for s in stations
+                             if (s.get("queued_days") or 0) > over_days)
+            cap_component = _clamp(100 * (1 - overloaded / len(stations)))
+            cap_value = f"{overloaded}/{len(stations)} carrying work"
+        _factor("Work centers overloaded", w_capacity * 100,
+                cap_value, cap_component,
+                "mrp.process.explorer.get_data().workcenters", cap_reason)
 
-        oee_pts = w_oee * oee_component
-        otd_pts = w_otd * otd_component
-        fpy_pts = w_fpy * fpy_component
-        blocker_pts = w_blocker * blocker_component
-        capacity_pts = w_capacity * capacity_component
+        score = round(sum(f["points"] for f in factors if f["points"] is not None))
+        available = round(sum(f["of"] for f in factors
+                              if f["data_state"] == "live"))
+        no_data_points = round(sum(f["of"] for f in factors
+                                   if f["data_state"] == "no_data"))
 
-        score = round(oee_pts + otd_pts + fpy_pts + blocker_pts + capacity_pts)
-
-        if score >= band_green_min:
-            band = "green"
-        elif score >= band_amber_min:
-            band = "amber"
+        if not available or available < min_coverage_points:
+            band = "insufficient"
+            coverage_pct = round(available) if available else 0
         else:
-            band = "red"
+            pct = score / available * 100
+            coverage_pct = round(available)
+            band = ("green" if pct >= band_green_min
+                    else "amber" if pct >= band_amber_min else "red")
 
-        factors = [
-            {
-                "label": "OEE (7d avg)",
-                "value": f"{oee_component:.0f}%",
-                "points": round(oee_pts, 1),
-                "of": w_oee * 100,
-                "source": "southbrook.mes_mps.oee_snapshot (via mi_tiles)",
-            },
-            {
-                "label": "On-Time Delivery (30d)",
-                "value": f"{otd_component:.0f}%",
-                "points": round(otd_pts, 1),
-                "of": w_otd * 100,
-                "source": "southbrook.exec_dashboard.snapshot.otd_pct_30d",
-            },
-            {
-                "label": "First-Pass Yield (7d)",
-                "value": f"{fpy_component:.0f}%",
-                "points": round(fpy_pts, 1),
-                "of": w_fpy * 100,
-                "source": "southbrook.exec_dashboard.snapshot.fpy_pct_7d",
-            },
-            {
-                "label": "Open MI blockers",
-                "value": open_blocker_count,
-                "points": round(blocker_pts, 1),
-                "of": w_blocker * 100,
-                "source": "southbrook.mi.check (severity=blocker)",
-            },
-            {
-                "label": "Workcenters overloaded",
-                "value": f"{workcenters_overloaded_count}/{total_active_workcenters}",
-                "points": round(capacity_pts, 1),
-                "of": w_capacity * 100,
-                "source": "southbrook.mes_mps.workcenter_capacity.is_overloaded",
-            },
-        ]
-
+        missing = ", ".join(f["label"] for f in factors
+                            if f["data_state"] == "no_data") or "none"
         explanation = (
-            f"Factory Health {score}/100 ({band})\n"
-            f" - OEE {oee_component:.0f}% (7d avg) - {oee_pts:.1f} of {w_oee*100:.0f} pts\n"
-            f" - On-Time Delivery {otd_component:.0f}% (30d) - {otd_pts:.1f} of {w_otd*100:.0f} pts\n"
-            f" - First-Pass Yield {fpy_component:.0f}% (7d) - {fpy_pts:.1f} of {w_fpy*100:.0f} pts\n"
-            f" - {open_blocker_count} open MI blocker(s) - {blocker_pts:.1f} of {w_blocker*100:.0f} pts\n"
-            f" - {workcenters_overloaded_count}/{total_active_workcenters} workcenters "
-            f"overloaded - {capacity_pts:.1f} of {w_capacity*100:.0f} pts\n"
-            "Click any line to open its source view (MES/MPS Bottleneck Report, "
-            "Exec Dashboard, MI Manager queue)."
+            f"Factory Health {score} of {available} available points ({band}).\n"
+            f" {no_data_points} points are unscored — no data for: {missing}.\n"
+            " A component with no observations is never scored 0 and never "
+            "scored full marks.\n"
+            " Click any line to open the records that produced it."
         )
 
-        return {"score": score, "band": band, "factors": factors, "explanation": explanation}
+        return {
+            "score": score,
+            "available": available,
+            "coverage_pct": coverage_pct,
+            "band": band,
+            "factors": factors,
+            "explanation": explanation,
+            "provenance": provenance,
+        }
 
     # ------------------------------------------------------------------
-    # 2. schedule_confidence (per project.task)
+    # 2. Truth chips — the pinned context bar
+    # ------------------------------------------------------------------
+    def truth_chips(self, payload=None):
+        """The eight click-to-filter counts, read from Process Explorer.
+
+        Units are explicit: ``orders`` counts manufacturing orders while
+        ``running``/``ready``/``blocked`` count work orders. Rendered in one
+        row without units they imply a total that does not exist.
+
+        A chip with no payload behind it is ``None``, never 0 — zero is a
+        claim about the factory, and we would not have grounds for it.
+        """
+        if payload is None:
+            payload, _prov = self.env["southbrook.command.explorer_bridge"].fetch()
+        workload = (payload or {}).get("workload") or {}
+        rows = (payload or {}).get("rows") or []
+        stations = (payload or {}).get("workcenters") or []
+        have = bool(payload)
+        over_days = _get_param(self.env, "chips.capacity_over_days", 1.0)
+
+        def _v(value):
+            return value if have else None
+
+        return [
+            {"key": "orders", "label": "orders", "unit": "orders",
+             "value": _v(workload.get("orders", 0))},
+            {"key": "running", "label": "running", "unit": "steps",
+             "value": _v(workload.get("progress", 0))},
+            {"key": "ready", "label": "ready", "unit": "steps",
+             "value": _v(workload.get("ready", 0))},
+            {"key": "blocked", "label": "blocked", "unit": "steps",
+             "value": _v(workload.get("blocked", 0))},
+            {"key": "late", "label": "late", "unit": "orders",
+             "value": _v(workload.get("late", 0))},
+            {"key": "at_risk", "label": "at-risk", "unit": "orders",
+             "value": _v(workload.get("at_risk", 0))},
+            {"key": "material_short", "label": "material-short", "unit": "orders",
+             "value": _v(sum(1 for r in rows if r.get("mat_short")))},
+            {"key": "capacity_over", "label": "capacity-over", "unit": "stations",
+             "value": _v(sum(1 for s in stations
+                             if (s.get("queued_days") or 0) > over_days))},
+        ]
+
+    # ------------------------------------------------------------------
+    # 3. schedule_confidence (per project.task)
     # ------------------------------------------------------------------
     def schedule_confidence(self, task):
         env = self.env
@@ -291,7 +373,7 @@ class SouthbrookCommandCenter(models.AbstractModel):
         return {"score": score, "band": band, "factors": factors, "explanation": explanation}
 
     # ------------------------------------------------------------------
-    # 3. Job margin (per project.task)
+    # 4. Job margin (per project.task)
     # ------------------------------------------------------------------
     def job_margin(self, task):
         env = self.env
@@ -332,6 +414,43 @@ class SouthbrookCommandCenter(models.AbstractModel):
             cost_basis = "estimated"
             cost = estimated_cost
 
+        # Provenance guard (2026-07-27).
+        #
+        # A missing cost and a cost of zero are the same float by the time
+        # they arrive here, and the arithmetic below cannot tell them apart:
+        # (revenue - 0)/revenue is 100%, which bands green. Measured on
+        # production that day, 319 of 321 active variants had a NULL
+        # standard_price — the only two carrying a cost were "Mileage" and
+        # "Event Registration" — so essentially every job was being reported
+        # as near-perfect margin on a cost side nobody had entered.
+        #
+        # A dashboard that says "unknown" is useful. One that says "green"
+        # because it has no data is worse than no dashboard, because it is
+        # acted upon. Refuse to score rather than score a fiction.
+        coverage = getattr(task, "job_cost_coverage", None)
+        missing = getattr(task, "job_cost_missing_count", 0) or 0
+        if cost <= 0:
+            return {
+                "score": None, "band": "unknown",
+                "factors": [
+                    {"label": "Revenue", "value": revenue, "points": None,
+                     "of": None,
+                     "source": f"sale.order.{revenue_field} on {source_order.name}"},
+                    {"label": "Cost", "value": None, "points": None, "of": None,
+                     "source": "project.task.job_industrial_cost / "
+                               "job_estimated_cost — both zero"},
+                ],
+                "explanation": (
+                    "Margin unavailable - cost_not_loaded\n"
+                    f" Revenue {revenue:,.0f} is known, but no cost basis "
+                    "exists for this job.\n"
+                    f" {missing} of this job's manufacturing orders have "
+                    "neither a planned cost nor a product standard cost.\n"
+                    " This is NOT a 100% margin. Load product costs "
+                    "(standard_price) or run costing on the MOs."
+                ),
+            }
+
         margin_amount = revenue - cost
         margin_pct = (margin_amount / revenue) * 100
 
@@ -342,6 +461,13 @@ class SouthbrookCommandCenter(models.AbstractModel):
         else:
             band = "green"
 
+        # Partial coverage understates cost, which inflates margin. Report
+        # the number, but never let an incomplete cost basis show green —
+        # a green banded on half the costs is the same error in miniature.
+        partial = coverage is not None and 0 < coverage < 1.0
+        if partial and band == "green":
+            band = "amber"
+
         factors = [
             {"label": "Revenue", "value": revenue, "points": None, "of": None,
              "source": f"sale.order.{revenue_field} on {source_order.name}"},
@@ -349,10 +475,23 @@ class SouthbrookCommandCenter(models.AbstractModel):
              "of": None,
              "source": "project.task.job_industrial_cost / job_estimated_cost"},
         ]
+        if coverage is not None:
+            factors.append(
+                {"label": "Cost coverage", "value": round(coverage * 100, 0),
+                 "points": None, "of": 100,
+                 "source": "project.task.job_cost_coverage"})
+
+        partial_note = ""
+        if partial:
+            partial_note = (
+                f" WARNING: only {coverage * 100:.0f}% of this job's MOs carry "
+                f"a cost ({missing} missing). Cost is understated, so the true "
+                "margin is LOWER than shown. Band held at amber.\n")
 
         explanation = (
             f"Job margin: {margin_amount:,.0f} ({margin_pct:.1f}%) - "
             f"{cost_basis} cost basis\n"
+            + partial_note +
             f" Revenue {revenue:,.0f} (sale.order.{revenue_field} on "
             f"{source_order.name})\n"
             f" - Cost {cost:,.0f} (project.task.job_industrial_cost / "
@@ -369,7 +508,7 @@ class SouthbrookCommandCenter(models.AbstractModel):
         }
 
     # ------------------------------------------------------------------
-    # 4. PO delivery-risk (rule-based, NOT a forecast)
+    # 5. PO delivery-risk (rule-based, NOT a forecast)
     # ------------------------------------------------------------------
     def po_delivery_risk(self, purchase_order, task=None):
         env = self.env

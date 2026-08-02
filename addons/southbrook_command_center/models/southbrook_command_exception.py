@@ -31,10 +31,22 @@ is provided as a documented starting point for whoever implements that
 method next, so the mapping table doesn't have to be re-derived.
 """
 import logging
+from datetime import timedelta
 
 from odoo import _, api, fields, models
 
 _logger = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------
+# Chronic threshold (2026-07-31). A condition is "chronic" once it has
+# been open this many days — see days_persisting on the model below for
+# why days-open replaced occurrence_count (sweep-count) as the signal.
+# NOTE: XML views cannot import this constant — the `chronic` search
+# filter and its decoration-danger expression in command_center_views.xml
+# hardcode the same number (7). Keep them in sync if this changes.
+# ------------------------------------------------------------------
+CHRONIC_DAYS_THRESHOLD = 7
 
 
 # Per-source severity vocabularies harmonized onto this model's own
@@ -228,10 +240,136 @@ class SouthbrookCommandException(models.Model):
     alert_notified = fields.Boolean(default=False, copy=False, index=True)
     alert_notified_date = fields.Datetime(readonly=True, copy=False)
 
-    _source_uniq = models.Constraint(
-        "unique(source_model, source_res_id, exception_type)",
-        "An exception of this type already exists for this source record.",
+    # ------------------------------------------------------------------
+    # Stable business identity (2026-07-30).
+    #
+    # The original uniqueness rule keyed on (source_model, source_res_id,
+    # exception_type). source_res_id is a southbrook.mi.check row id, and the
+    # MI sweep cron DELETES AND RECREATES those rows every 15 minutes — so the
+    # ids churn, the key never matches twice, and every sweep minted a fresh
+    # exception. Measured 2026-07-30: 38,910 open rows tracing to 9 MOs and 17
+    # live checks, growing ~2,600/day.
+    #
+    # dedupe_key holds what is actually stable about the condition (which MO,
+    # which category, which check), so a re-fire updates one row. Archived
+    # historical duplicates carry NULL, and Postgres does not collide NULLs in
+    # a unique index — which is what lets them stay in the table for audit.
+    # ------------------------------------------------------------------
+    dedupe_key = fields.Char(
+        index=True,
+        copy=False,
+        help="Stable identity of the underlying business condition. One open "
+             "exception per key. NULL on archived historical duplicates.",
     )
+
+    _dedupe_key_uniq = models.Constraint(
+        "unique(dedupe_key)",
+        "An exception already exists for this business condition.",
+    )
+
+    # ------------------------------------------------------------------
+    # Recurrence signal (2026-07-30, alongside dedupe_key).
+    #
+    # Collapsing the keying-bug backlog to one survivor per condition throws
+    # away "this has re-fired 2,000 times since 5 July" unless something
+    # captures it explicitly. Written IMPERATIVELY by _upsert_exception() in
+    # command_center_materialize.py (never @api.depends against a foreign
+    # model — see the module docstring's design invariants) and backfilled
+    # once, on the collapsed bucket, by the 19.0.3.0.0 migration.
+    #
+    # Deliberately NOT mail.thread-tracked, even though this model inherits
+    # mail.thread. A live blocker re-fires every ~15 minutes forever — that
+    # churn is exactly why dedupe_key exists — so a tracked field here would
+    # write a mail.message tracking row every 15 minutes for the entire life
+    # of the condition. That is the same flood the migration's archive write
+    # (untracked fields only, 2000-row slices) was built to avoid at
+    # collapse time; tracking these fields would just reintroduce it going
+    # forward instead of once at migration time. Plain stored fields:
+    # severity/state changes are still tracked and remain the audit trail.
+    # ------------------------------------------------------------------
+    occurrence_count = fields.Integer(
+        default=1,
+        copy=False,
+        help="Number of times this business condition has been observed. "
+             "A re-fire of the same dedupe_key increments this instead of "
+             "minting a new row.",
+    )
+    last_seen = fields.Datetime(
+        copy=False,
+        help="When this business condition was most recently observed.",
+    )
+
+    # ------------------------------------------------------------------
+    # Days persisting (2026-07-31) — replaces occurrence_count as the
+    # "how bad is this" signal driving the `chronic` search filter and
+    # the list's decoration-danger.
+    #
+    # Why: the MI sweep cron runs every 15 minutes and increments
+    # occurrence_count each time it re-observes a still-open condition,
+    # so occurrence_count counts SWEEPS, not distinct incidents. Measured
+    # production 2026-07-31: cutlist_divergence occurrence_count=2486
+    # across 9 rows, mi_blocker=2380 across 8 rows, quality_ncr=90,
+    # breakdown_alert=90 — every one persisting ~26.5-26.7 days. At one
+    # sweep per 15 minutes, ~2,500 is just what a MONTH-OLD open row
+    # looks like; the number says nothing about severity or duration.
+    # days_persisting is the actual signal: how long the underlying
+    # condition has gone unresolved.
+    #
+    # store=False (deliberately): this value advances continuously with
+    # wall-clock time — it is not the product of a discrete write event
+    # the way occurrence_count/last_seen are. A stored copy would be
+    # correct only at the instant it was last computed and would grow
+    # permanently stale in between (worse: stale in the specific
+    # direction that makes a truly chronic row look fresher than it is).
+    # So it is computed on read, and made filterable via
+    # `_search_days_persisting` below rather than a stored value.
+    # ------------------------------------------------------------------
+    days_persisting = fields.Float(
+        compute="_compute_days_persisting",
+        search="_search_days_persisting",
+        store=False,
+        digits=(16, 1),
+        string="Days Persisting",
+        help="How long this condition has been open: "
+             "(last_seen - create_date) in days. 0.0 while last_seen is unset.",
+    )
+
+    @api.depends("create_date", "last_seen")
+    def _compute_days_persisting(self):
+        for rec in self:
+            if not rec.last_seen or not rec.create_date:
+                rec.days_persisting = 0.0
+            else:
+                delta = rec.last_seen - rec.create_date
+                rec.days_persisting = delta.total_seconds() / 86400.0
+
+    def _search_days_persisting(self, operator, value):
+        """Make the unstored ``days_persisting`` filterable (e.g. by the
+        `chronic` search filter) by translating a days threshold into a
+        ``create_date`` cutoff — SQL-side, so it works at any row count.
+
+        days_persisting is (last_seen - create_date) in days, and a
+        condition still being re-observed by the sweep has last_seen
+        pinned near "now", so filtering on days_persisting is
+        equivalent to filtering on the age of create_date. MORE days
+        persisting means an OLDER create_date, so the comparison
+        direction inverts across the translation:
+
+            days_persisting >= value  <=>  create_date <= now - value days
+            days_persisting >  value  <=>  create_date <  now - value days
+            days_persisting <= value  <=>  create_date >= now - value days
+            days_persisting <  value  <=>  create_date >  now - value days
+
+        Any other operator (e.g. '=', '!=') isn't meaningful against a
+        continuously-advancing float, so it returns a domain matching
+        nothing rather than raising.
+        """
+        inverted = {">=": "<=", ">": "<", "<=": ">=", "<": ">"}
+        sql_operator = inverted.get(operator)
+        if sql_operator is None:
+            return [(0, "=", 1)]
+        cutoff = fields.Datetime.now() - timedelta(days=value)
+        return [("create_date", sql_operator, cutoff)]
 
     # ------------------------------------------------------------------
     # Create: sequence-backed name (falls back gracefully if no
@@ -250,6 +388,27 @@ class SouthbrookCommandException(models.Model):
             if rec.name in (_("New"), False):
                 rec.name = f"CC-{rec.id:06d}"
         return records
+
+    # ------------------------------------------------------------------
+    # Stable key helper — maps business conditions to identity tokens.
+    # ------------------------------------------------------------------
+    @api.model
+    def _dedupe_key_for(self, exception_type, source_model, source_res_id,
+                        source_record=None):
+        """Stable identity for the condition this exception describes.
+
+        For southbrook.mi.check the row id is worthless as an identity (the
+        sweep recreates rows), so the key is built from what survives a sweep:
+        the manufacturing order, the check category, and the check name.
+        Every other source has stable ids and keeps the legacy triple.
+        """
+        if source_model == "southbrook.mi.check" and source_record is not None:
+            mo = getattr(source_record, "production_id", False)
+            mo_part = str(mo.id) if mo else "0"
+            category = (getattr(source_record, "category", "") or "").strip().lower()
+            name = (getattr(source_record, "name", "") or "").strip().lower()[:120]
+            return "mi:%s:%s:%s:%s" % (mo_part, category, name, exception_type)
+        return "%s:%s:%s" % (source_model, source_res_id, exception_type)
 
     # ------------------------------------------------------------------
     # Own-workflow action methods — the only fields this model may ever

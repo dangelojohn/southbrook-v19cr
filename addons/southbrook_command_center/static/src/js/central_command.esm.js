@@ -44,7 +44,7 @@ export class CentralCommand extends Component {
             alerts: [],
             filterSeverities: [],
             filterType: "",
-            groupBy: "",
+            groupBy: "exception_type",
             confirmingId: null,
             confirmingAction: null,
             helpDismissed: this._readHelpDismissed(),
@@ -325,6 +325,27 @@ export class CentralCommand extends Component {
             .then(() => {
                 this._loadAll(true);
                 this.notification.add("Acknowledged.", { type: "success" });
+            });
+    }
+
+    // Bulk workflow over a whole group — the issue list was 20k rows of the
+    // same condition, and acknowledging them one at a time was never viable.
+    bulkAction(group, action) {
+        const ids = group.items.map((e) => e.id);
+        if (!ids.length) {
+            return;
+        }
+        const method = action === "resolve" ? "action_resolve" : "action_acknowledge";
+        const verb = action === "resolve" ? "resolved" : "acknowledged";
+        this.orm.call("southbrook.command.exception", method, [ids])
+            .then(() => {
+                this._loadAll(true);
+                this.notification.add(`${ids.length} exceptions ${verb}.`, {
+                    type: "success",
+                });
+            })
+            .catch(() => {
+                this.notification.add("Bulk action failed.", { type: "warning" });
             });
     }
 

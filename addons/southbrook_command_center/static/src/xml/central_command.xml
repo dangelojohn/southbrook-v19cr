@@ -111,6 +111,16 @@
                     <div t-foreach="groupedExceptions" t-as="grp" t-key="grp.key" class="sb_cc_group">
                         <div t-if="grp.label" class="sb_cc_group_h">
                             <t t-esc="grp.label"/> (<t t-esc="grp.count"/>)
+                            <span class="sb_cc_bulk" t-if="grp.key">
+                                <button class="btn btn-sm btn-secondary"
+                                        t-on-click="() => this.bulkAction(grp, 'acknowledge')">
+                                    Acknowledge all <t t-esc="grp.count"/>
+                                </button>
+                                <button class="btn btn-sm btn-secondary"
+                                        t-on-click="() => this.bulkAction(grp, 'resolve')">
+                                    Resolve all <t t-esc="grp.count"/>
+                                </button>
+                            </span>
                         </div>
                         <div t-foreach="grp.items" t-as="ex" t-key="ex.id" class="sb_cc_issue"
                              t-att-class="'sb_cc_issue_' + (ex.severity || 'low')">
@@ -131,7 +141,10 @@
                             <div t-if="ex.recommended_action" class="sb_cc_action">
                                 <i class="fa fa-arrow-right"/> <t t-esc="ex.recommended_action"/>
                             </div>
-                            <div t-if="ex.why_text" class="sb_cc_why" t-esc="ex.why_text"/>
+                            <details class="sb_cc_tech" t-if="ex.why_text">
+                                <summary>Technical detail</summary>
+                                <span t-esc="ex.why_text"/>
+                            </details>
                             <div class="sb_cc_issue_btns">
                                 <button class="btn btn-sm btn-secondary"
                                         t-on-click="() => this.onNavigate(ex.source_model, ex.source_res_id)">

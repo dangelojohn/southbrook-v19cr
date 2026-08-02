@@ -46,9 +46,34 @@ class TestCommandException(TransactionCase):
 
     @mute_logger("odoo.sql_db")
     def test_source_uniqueness(self):
-        self._make(source_res_id=42)
+        # The uniqueness constraint is now on dedupe_key, not the 3-tuple.
+        # Direct create() calls without a dedupe_key result in NULL, which is
+        # not unique-checked in PostgreSQL. The real enforcement happens in
+        # _upsert_exception, which is tested in test_phase2.py.
+        # This test verifies that two records with the same dedupe_key violate
+        # the constraint.
+        key = "test:42:foo"
+        self.Exc.create({
+            "exception_type": "mi_blocker",
+            "source_model": "southbrook.mi.check",
+            "source_res_id": 42,
+            "severity": "critical",
+            "severity_rank": 0,
+            "owner_id": self.owner.id,
+            "impact_summary": "Test blocker",
+            "dedupe_key": key,
+        })
         with self.assertRaises(IntegrityError):
-            self._make(source_res_id=42)
+            self.Exc.create({
+                "exception_type": "mi_blocker",
+                "source_model": "southbrook.mi.check",
+                "source_res_id": 43,
+                "severity": "critical",
+                "severity_rank": 0,
+                "owner_id": self.owner.id,
+                "impact_summary": "Test blocker",
+                "dedupe_key": key,
+            })
 
     def test_ack_resolve_transitions(self):
         rec = self._make(source_res_id=7)
@@ -103,6 +128,78 @@ class TestCommandException(TransactionCase):
         task = self.env["project.task"].search([], limit=1)
         out = self.Center.job_margin(task)
         self.assertIn("band", out)
+
+    # -- provenance guard: a missing cost must never read as profit -----
+    #
+    # Measured on production 2026-07-27: 319 of 321 active variants had a
+    # NULL standard_price, so job_estimated_cost summed to 0.0 and
+    # (revenue - 0)/revenue banded every job green. These tests pin the
+    # behaviour that stops that.
+
+    class _FakeOrder:
+        name = "SO-TEST"
+        amount_untaxed = 10000.0
+
+    class _FakeTask:
+        """Duck-typed stand-in — job_margin reads via getattr throughout."""
+        def __init__(self, order, industrial=0.0, estimated=0.0,
+                     coverage=None, missing=0):
+            self.source_order_id = order
+            self.job_industrial_cost = industrial
+            self.job_estimated_cost = estimated
+            if coverage is not None:
+                self.job_cost_coverage = coverage
+            self.job_cost_missing_count = missing
+
+    def test_margin_unknown_when_no_cost_loaded(self):
+        task = self._FakeTask(self._FakeOrder(), industrial=0.0,
+                              estimated=0.0, coverage=0.0, missing=6)
+        out = self.Center.job_margin(task)
+        self.assertEqual(
+            out["band"], "unknown",
+            "A job with no cost basis must not be scored — it is unknown, "
+            "not 100% margin.")
+        self.assertIsNone(out["score"])
+        self.assertIn("cost_not_loaded", out["explanation"])
+        self.assertNotEqual(
+            out["band"], "green",
+            "This is the exact failure being guarded: zero cost banding green.")
+
+    def test_margin_scores_normally_with_full_coverage(self):
+        task = self._FakeTask(self._FakeOrder(), industrial=6000.0,
+                              coverage=1.0, missing=0)
+        out = self.Center.job_margin(task)
+        self.assertEqual(out["band"], "green",
+                         "40% margin on fully-costed work is genuinely green.")
+        self.assertAlmostEqual(out["score"], 40.0, places=1)
+
+    def test_partial_coverage_never_bands_green(self):
+        """Half the costs missing inflates margin — hold at amber."""
+        task = self._FakeTask(self._FakeOrder(), industrial=1000.0,
+                              coverage=0.5, missing=3)
+        out = self.Center.job_margin(task)
+        self.assertEqual(
+            out["band"], "amber",
+            "90% margin computed from half the costs must not read green.")
+        self.assertIn("WARNING", out["explanation"])
+        self.assertIn("understated", out["explanation"])
+
+    def test_partial_coverage_still_reports_red_when_bad(self):
+        """The cap only prevents false GREEN; a genuine red stays red."""
+        task = self._FakeTask(self._FakeOrder(), industrial=9500.0,
+                              coverage=0.5, missing=3)
+        out = self.Center.job_margin(task)
+        self.assertEqual(out["band"], "red",
+                         "5% margin is red regardless of coverage.")
+
+    def test_coverage_surfaced_as_a_factor(self):
+        task = self._FakeTask(self._FakeOrder(), industrial=6000.0,
+                              coverage=0.75, missing=1)
+        out = self.Center.job_margin(task)
+        labels = [f["label"] for f in out["factors"]]
+        self.assertIn("Cost coverage", labels,
+                      "Coverage must be visible on the card, not just in "
+                      "the explanation text.")
 
     def test_po_delivery_risk_shape(self):
         po = self.env["purchase.order"].search([], limit=1)

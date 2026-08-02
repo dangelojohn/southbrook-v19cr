@@ -17,6 +17,22 @@
                         domain="[('severity','=','critical')]"/>
                 <filter name="mine" string="Assigned to me"
                         domain="[('owner_id','=',uid)]"/>
+                <!-- Chronic (2026-07-31): re-pointed from occurrence_count to
+                     days_persisting. The MI sweep cron runs every 15 minutes
+                     and increments occurrence_count on every re-observation
+                     of a still-open condition, so occurrence_count counts
+                     SWEEPS, not incidents — measured production 2026-07-31
+                     showed cutlist_divergence at occurrence_count=2486 after
+                     just 26.7 days open, which made the old >=5 threshold
+                     match all 20 open rows and carry zero information.
+                     days_persisting (how long the condition has actually
+                     been unresolved) is the real signal; days_persisting is
+                     unstored (see the field's docstring in
+                     southbrook_command_exception.py) but filterable via
+                     _search_days_persisting. Keep this literal in sync with
+                     CHRONIC_DAYS_THRESHOLD in the model. -->
+                <filter name="chronic" string="Chronic (7+ days unresolved)"
+                        domain="[('days_persisting','>=',7)]"/>
                 <separator/>
                 <!-- Resolved/Dismissed are archived (active=False), so grouping
                      by State hides them by default. This filter reveals them
@@ -44,8 +60,16 @@
         <field name="name">southbrook.command.exception.list</field>
         <field name="model">southbrook.command.exception</field>
         <field name="arch" type="xml">
+            <!-- decoration-danger (2026-07-31): the occurrence_count>=5 term
+                 was re-pointed to days_persisting>=7 for the same reason as
+                 the `chronic` search filter above — occurrence_count counts
+                 15-minute sweeps of a still-open condition (measured
+                 2486 sweeps in 26.7 days on cutlist_divergence, 2026-07-31),
+                 not distinct incidents, so it never actually distinguished
+                 rows. days_persisting>=7 is the real "unresolved a while"
+                 signal. severity=='critical' is unchanged. -->
             <list string="Exceptions" default_order="severity_rank asc, create_date desc"
-                  decoration-danger="severity=='critical'"
+                  decoration-danger="severity=='critical' or days_persisting >= 7"
                   decoration-warning="severity=='high'">
                 <header>
                     <button name="action_refresh_exceptions" type="object"
@@ -58,6 +82,11 @@
                 <field name="owner_id"/>
                 <field name="state"/>
                 <field name="create_date"/>
+                <!-- Relabeled 2026-07-31 ("Seen×" implied incident count; it
+                     is actually sweep passes — see days_persisting above). -->
+                <field name="occurrence_count" string="Sweeps Seen"/>
+                <field name="days_persisting" optional="show"/>
+                <field name="last_seen" optional="show"/>
                 <field name="severity_rank" column_invisible="1"/>
             </list>
         </field>
