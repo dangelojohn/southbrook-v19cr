@@ -119,76 +119,11 @@ backend form. There must not be two configurators.
 
 ## 3 · Architecture & module structure
 
-```
-addons/
-├── product_configurator/                 (from sami-product-configurator-v19, untouched)
-├── product_configurator_mrp/             (from sami-product-configurator-v19, untouched)
-├── product_configurator_sale/            (from sami-product-configurator-v19, untouched)
-├── website_product_configurator/         (from sami-product-configurator-v19, untouched)
-│
-├── southbrook_estimating/                ← NEW — the engine + sales-rep backend
-│   ├── __manifest__.py                   (19.0.1.0.0, depends on the four above + mrp, sale, account)
-│   ├── models/
-│   │   ├── product_template.py           (Signature/Contemporary/Elegance/Contractor series, box material, door style)
-│   │   ├── product_config_session.py     (extends with channel, zone, validation hooks)
-│   │   ├── product_config_line.py        (extends rules: series→door, box→series, width→door, family→soft-close)
-│   │   ├── sale_order.py                 (extends with zone aggregation, channel resolution, stage pipeline)
-│   │   ├── res_partner.py                (channel field: dealer/contractor/kd/bigbox/refacing/retail)
-│   │   └── mrp_bom.py                    (extends to roll up cabinet → carcass parts + door + hardware)
-│   ├── views/
-│   │   ├── order_builder_views.xml       (the multi-zone backend form)
-│   │   ├── config_session_views.xml      (extended attribute drawer)
-│   │   ├── product_template_views.xml    (Southbrook series tabs)
-│   │   └── menu.xml                      (Sales → Order Builder)
-│   ├── data/
-│   │   ├── attributes.xml                (the 11 attributes per Q2 — Mapping §3.3 is canonical:
-│   │   │                                 family, width, series, box_material, door_style, finish,
-│   │   │                                 hinge_side, finished_sides, gables, handle, accessories)
-│   │   ├── attribute_values.xml          (seeded from Southbrook_Consolidated_Dataset.xlsx Price Master)
-│   │   ├── config_rules.xml              (the four hard rules from Southbrook_Excel_to_Odoo_Mapping.md §3.4)
-│   │   ├── pricelists.xml                (the 6 pricelists per Q1 — retail base + 5 channels)
-│   │   └── product_templates.xml         (12 cabinet templates with locked xml_ids per Q8:
-│   │                                     southbrook.wall_1dr, southbrook.wall_2dr,
-│   │                                     southbrook.base_1dr, southbrook.base_2dr,
-│   │                                     southbrook.drawer_bank, southbrook.sink_base,
-│   │                                     southbrook.tall_pantry, southbrook.tall_oven,
-│   │                                     southbrook.corner, southbrook.vanity,
-│   │                                     southbrook.accessory (with accessory_type sub-attribute:
-│   │                                     end_panel/filler/cornice/pelmet/plinth), southbrook.worktop)
-│   ├── reports/
-│   │   ├── signature_spec_sheet.xml      (the customer-facing PDF, Signature Series styled)
-│   │   ├── shop_copy.xml                 (the MO-companion document)
-│   │   └── door_order.xml                (per-order door schedule)
-│   ├── security/
-│   │   ├── ir.model.access.csv
-│   │   └── groups.xml                    (Estimator, Sales Manager, Dealer Portal)
-│   ├── static/src/
-│   │   ├── js/order_builder.esm.js       (OWL components for the backend grid + drawer)
-│   │   ├── js/zone_aggregator.esm.js
-│   │   └── scss/order_builder.scss
-│   └── demo/
-│       └── southbrook_demo.xml           (Demo Tradesperson Tier 3 [smoke-test target per Q7];
-│                                         Richwood, Image Floor, Pro Finish, Amazing Window
-│                                         as res.partner; 5–10 demo configured orders from
-│                                         the case study)
-│
-└── southbrook_estimating_website/        ← NEW — the customer one-page experience
-    ├── __manifest__.py                   (depends on southbrook_estimating + website_product_configurator)
-    ├── controllers/
-    │   └── main.py                       (route: /kitchen-planner — extends WebsiteSale)
-    ├── views/
-    │   ├── kitchen_planner_template.xml  (the three-pane SPA-feeling page)
-    │   └── portal_my_estimates.xml       (customer's saved sessions on /my)
-    ├── static/src/
-    │   ├── js/planner.esm.js             (the WebGL/3D layer — Three.js)
-    │   ├── js/parametric_carcass.esm.js  (procedural BufferGeometry from W/H/D + attributes)
-    │   ├── js/dimensioning.esm.js        (auto-snap dimension lines per Prodboard manifest §5.1)
-    │   ├── js/catalog_tile.esm.js        (296×94 tile component)
-    │   ├── scss/planner.scss             (Sky/Walnut/Linen, Roboto Flex, exact token set from the prior site)
-    │   └── img/                          (placeholder cabinet icons — no blobs.prodboard.com URLs, ever)
-    └── data/
-        └── menu.xml                      (public "Design Your Kitchen" entry)
-```
+<!-- Doctor trim 2026-08-02: an 88-line directory tree stood here. It had
+     drifted (the repo now holds ~59 addons, not 2) and `ls addons/` is the
+     living answer. Restore from git history if ever wanted. -->
+The four OCA `product_configurator*` modules plus the Southbrook addons live
+under `addons/` — enumerate with `ls addons/`.
 
 ### Why two addons, not one
 - `southbrook_estimating` is the data + backend + rules — it can run *without*
@@ -369,52 +304,14 @@ This is **co‑development**, not autonomous build. The contract:
 
 ---
 
-## 8 · Phasing — what to build, in order
+## 8 · Phasing — COMPLETE
 
-### Phase 1 · Engine & sales‑rep Order Builder *(weeks 1‑3)*
-- Scaffold both addons, manifests, security, menus.
-- Seed the 11 attributes, all attribute values from #5, the four config rules,
-  the **six pricelists** (per Q1), and the **12 locked cabinet templates** (per Q8).
-- Build the backend Order Builder form: multi‑zone grid, inline config drawer,
-  BoM preview tab, validation tab, stage pipeline.
-- Wire `res.partner.channel` → pricelist resolution.
-- **Gate:** John can build the 9‑line smoke-test order against the
-  **Demo Tradesperson (Tier 3)** partner (`channel=tradesperson`,
-  `tradesperson_tier=3` → −35% auto-resolved), see the BoM preview with
-  the maple `+10%` price and `+2 weeks` lead time correctly applied, hit
-  Confirm, and watch the MO appear in Manufacturing. A separate Richwood
-  (`channel=dealer`) partner is also seeded for the parallel dealer-pricelist
-  smoke test. (Q7 locked.)
-
-### Phase 2 · Customer one‑page configurator, 2D first *(weeks 4‑5)*
-- The `/kitchen-planner` route, three‑pane layout, catalog tiles, attribute
-  selection, live pricing, Tier‑3 SVG cabinet renders.
-- Spec‑sheet PDF generation (Signature Series styled).
-- Portal "My Estimates" page.
-- **Gate:** John can complete a kitchen end‑to‑end as a portal user on
-  desktop and tablet, get the PDF, and see the draft `sale.order` reach the
-  assigned salesperson.
-
-### Phase 3 · 3D parametric carcass layer *(weeks 6‑9)*
-- Three.js scene, procedural `BufferGeometry`, the 18 element types, ACES
-  Filmic tone mapping, KTX2 textures, MeshBVH picking.
-- Automatic dimensioning, solid↔blueline toggle.
-- Tier‑2 runtime‑baked thumbnails replacing Tier‑3 SVGs progressively.
-- Collision detection between adjacent cabinets in a run.
-- **Gate:** the customer flow visually matches the Prodboard reference
-  artifacts John supplied, on Chrome/Edge/Safari desktop. (Mobile stays 2D.)
-
-### Phase 4 · MRP polish & cut‑list bridge *(weeks 10‑12)*
-- BoM rollup completeness — every configurator selection produces the right
-  panel/door/hardware lines.
-- Accucutt hand‑off: export the panel list as the agreed JSON envelope; ingest
-  the nest result.
-- Shop Copy + Door Order QWeb reports.
-- Demo seed data: replay 5‑10 real orders from the case study (#6) through the
-  full chain, screenshot each stage for the SAMI investment committee.
-
-After Phase 4, the AI layer (forecast, nest analytics, quote win‑rate, lead‑time
-predictor) becomes the natural next workstream — but that's a separate brief.
+<!-- Doctor trim 2026-08-02: the dated week-by-week Phase 1-4 roadmap stood
+     here; all four phases shipped long ago (git history is the record).
+     The per-phase gate discipline lives on in §7. -->
+All four build phases (engine/Order Builder, 2D customer flow, 3D parametric
+layer, MRP + cut-list bridge) are shipped and live. The AI layer remains a
+separate brief.
 
 ---
 
@@ -447,36 +344,12 @@ Phase‑independent quality gates the whole module must clear:
 
 ---
 
-## 10 · The first thing to do
+## 10 · Session zero — EXECUTED
 
-When you start, do this in order:
-
-1. `ls -la addons/`. Confirm the four ported OCA modules are present and at
-   version 19.0.1.0.0 (`product_configurator`, `product_configurator_mrp`,
-   `product_configurator_sale`, `website_product_configurator`). If not,
-   surface the gap to John before any other action.
-2. Read `docs/PRODBOARD_MANIFEST.md` end‑to‑end. Specifically internalise §5
-   (recipe grammar), §4.3 (Module/DimensionEnvelope schema), §6
-   (classification), §8 (layout tokens), §11 (image cascade), and §15
-   (reproducibility checklist).
-3. Read `docs/Southbrook_Excel_to_Odoo_Mapping.md` §3.1‑3.5 for the data model
-   and the four declarative rules in §3.4.
-4. Read `docs/SAMI_Southbrook_Odoo19_Build_Spec.md` end‑to‑end. The locked
-   architecture (§0), the custom register (§4 — 7 routines, no more), and the
-   phased plan (§7) are the load‑bearing sections.
-5. Read `PUNCHLIST.md` § "2026-05-29 · Locked decisions" — the 21 Q-numbered
-   decisions are the canonical answers to ambiguities this brief and the
-   other artifacts surfaced. Cite Q-numbers in commit messages where decisions
-   are exercised.
-6. Skim `docs/Southbrook_Consolidated_Dataset.xlsx` tabs Price Master, Channel
-   Economics, KD Component Pricing — enough to seed attribute values and
-   pricelists later.
-7. Scaffold `addons/southbrook_estimating/__manifest__.py` with the dependency
-   list and post a short "ready to start Phase 1, here's the plan" message
-   to John, listing the first 5 commits you intend to make. **Wait for ack
-   before continuing.**
-
-That's the brief. Build deliberately, ask early, and keep the receipts.
+<!-- Doctor trim 2026-08-02: the 7-step first-session bootstrap checklist
+     stood here; it ran in May 2026. The canonical-artifact reading list in
+     §1 still names every document it pointed to. -->
+Build deliberately, ask early, and keep the receipts.
 
 <!-- HISTORICAL: §11 was removed per the user's explicit revert. The wider
      platform-expansion canon now lives in:
