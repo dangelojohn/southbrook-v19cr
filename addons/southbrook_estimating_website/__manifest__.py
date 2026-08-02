@@ -3,7 +3,7 @@
     "name": "Southbrook Estimating — Website",
     "summary": "The customer-facing one-page kitchen configurator on "
                "southbrookcabinetry.space (Phase 2 + Phase 3 deliverable).",
-    "version": "19.0.31.15.2",
+    "version": "19.0.31.16.0",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "website": "https://southbrookcabinetry.space",
@@ -124,6 +124,14 @@
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/camera_controller.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/pointer_pipeline.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/canvas/kitchen_canvas.esm.js",
+            # Touch editing v1 (2026-08-02 spec) — the shared control-pad
+            # SCSS (T3, Wave 1) + component/pure-helpers module (Wave 2).
+            # Same file, same order-relative-to-kitchen_canvas.esm.js
+            # rule as the backend bundle (southbrook_kitchen_3d_
+            # configurator/__manifest__.py) — design_tab.esm.js (below)
+            # imports <TouchPad>, so this must load before it.
+            "southbrook_kitchen_3d_configurator/static/src/scss/touch_pad.scss",
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/touch_pad.esm.js",
             # 2026-06-22 — Tier-1 cabinet GLB pipeline (see
             # static/lib/cabinets/README.md). The GLTFLoader entry is
             # COMMENTED until the vendor lib is dropped at

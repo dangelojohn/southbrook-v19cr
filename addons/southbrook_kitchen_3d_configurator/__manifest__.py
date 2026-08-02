@@ -4,7 +4,7 @@
         "Isometric Three.js kitchen room configurator backed by "
         "live Odoo cabinet inventory — design, save, and quote."
     ),
-    "version": "19.0.5.40.0",
+    "version": "19.0.5.41.0",
     "category": "Manufacturing/Product Configurator",
     "author": "OdooIQ / REAL Partners Ltd.",
     "website": "https://odooiq.com",
@@ -107,6 +107,14 @@
             # free-camera mode and zoom dolly.
             "southbrook_estimating/static/lib/three/OrbitControls.js",
             "southbrook_kitchen_3d_configurator/static/src/scss/kitchen_configurator.scss",
+            # Touch editing v1 (2026-08-02 spec §3, Wave 1 T3) — control-
+            # pad styling (.o_sbk_touchpad / --floating). Wave 1 built
+            # this file but deliberately left it out of every bundle;
+            # this is that wiring. Order relative to
+            # kitchen_configurator.scss doesn't matter (disjoint class
+            # names, no cascade dependency) — placed here to sit next to
+            # it per T3's own handoff note.
+            "southbrook_kitchen_3d_configurator/static/src/scss/touch_pad.scss",
             # P2 product-icons — Cabinet Products kanban/list thumb widget
             # layout only; palette lives entirely in cabinet_thumb.esm.js.
             "southbrook_kitchen_3d_configurator/static/src/scss/product_kanban_thumb.scss",
@@ -170,6 +178,12 @@
             # undo_store above: imported by kitchen_configurator.js, so
             # it must load before it.
             "southbrook_kitchen_3d_configurator/static/src/js/validation/validation_store.esm.js",
+            # Touch editing v1 (2026-08-02 spec) — Wave 2 pad component +
+            # its pure family/visibility, wall-cycle/elevation, and
+            # touch-stats helpers. Imported by kitchen_configurator.js,
+            # so — like every other ES module above — it must load
+            # before it.
+            "southbrook_kitchen_3d_configurator/static/src/js/canvas/touch_pad.esm.js",
             "southbrook_kitchen_3d_configurator/static/src/js/kitchen_configurator.js",
             # P2 product-icons — Cabinet Products kanban/list icon widget.
             # Imports cabinetThumbSVG from cabinet_thumb.esm.js above, so

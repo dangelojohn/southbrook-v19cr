@@ -309,6 +309,15 @@ test("rotate (_rotateSelected, Q/E): pushes one pre-op snapshot per keypress; un
     c._addCabinetFromProduct(BASE24);
     clearAutoSave(h);
     c.state.selected = c.state.items[0];
+    // Touch editing v1 (2026-08-02 spec §5 "riding along") — Q/E now
+    // refuses on wall-run cabinets (getPadAffordances' scoped-rotation
+    // gate; see kitchen_configurator.js's _rotateSelected). A plain
+    // BASE24 add has no zone override and is therefore "wallRun", not
+    // rotatable — tag it "island" here so this test keeps exercising
+    // the SAME undo-snapshot-per-keypress mechanics the review fast-
+    // follow this test is named for actually covers, unaffected by the
+    // separate scoped-rotation change.
+    c.state.selected.zone = "island";
     // A freshly added item carries no rotation_deg field at all (see
     // _addCabinetFromProduct — it's never in the spread); _rotateSelected
     // is the first thing that ever introduces it, via `|| 0`. The

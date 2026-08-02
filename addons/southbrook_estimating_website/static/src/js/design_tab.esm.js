@@ -64,6 +64,18 @@ import {
     Component, onMounted, onWillUnmount, onWillUpdateProps, useRef, useState, xml,
 } from "@odoo/owl";
 import { KitchenCanvas } from "@southbrook_kitchen_3d_configurator/js/canvas/kitchen_canvas.esm";
+// Touch editing v1 (2026-08-02 spec) — the shared control-pad component
+// + its pure family/visibility, wall-cycle/elevation, and touch-
+// capability helpers. See touch_pad.esm.js's own header for the full
+// contract shared with the backend (kitchen_configurator.js); this
+// file owns the portal-specific gating (phone dock vs tablet floating,
+// and which mutations this addon's own /design-3d/* routes can
+// actually persist — see _flipSelectedHand/_showTouchPad's comments
+// for the two capability gaps the portal has that the backend doesn't).
+import {
+    TouchPad, getPadAffordances, elevationViewForWall,
+    NUDGE_STEP_IN, isTouchCapableAtBoot, touchPadModeForViewport,
+} from "@southbrook_kitchen_3d_configurator/js/canvas/touch_pad.esm";
 
 // Plain JSON-RPC fetch — no @web service dependency, matching the portal
 // context pattern used by kitchen_viewport.esm.js / portal_boot.esm.js.
@@ -165,7 +177,7 @@ function friendlyDesignError(raw) {
 }
 
 export class KitchenDesignTab extends Component {
-    static components = { KitchenCanvas };
+    static components = { KitchenCanvas, TouchPad };
     static template = xml`
         <div class="o_owl_design3d">
             <div class="o_owl_design3d_toolbar">
@@ -247,7 +259,28 @@ export class KitchenDesignTab extends Component {
                                        onViewChange.bind="_onViewChange"
                                        onWallSelect.bind="_onWallSelect"
                                        activeWall="state.activeWall"
+                                       touchEnabled="_showTouchPad()"
+                                       onGestureRollback="() => this._recordTouchEvent('rollback')"
+                                       onGestureAbandon="() => this._recordTouchEvent('abandon')"
                                        onReady.bind="_onCanvasReady"/>
+                        <!-- Touch editing v1 (2026-08-02 spec §1 decision
+                             4) — "Portal 3D tab: full touch on phones +
+                             tablets." Bottom-dock on phones, floating on
+                             tablets (touchPadMode tracks viewport width
+                             live — see the resize listener in setup()).
+                             Gated on BOTH the server kill-switch and a
+                             runtime touch-capability probe. -->
+                        <TouchPad t-if="_showTouchPad()"
+                                  mode="state.touchPadMode"
+                                  selection="state.selected"
+                                  currentView="state.view"
+                                  capabilities="_touchPadCapabilities()"
+                                  onNudge="(dir) => this._nudgeSelected(dir)"
+                                  onRotate="(deg) => this._rotateSelected(deg)"
+                                  onFlipHand="() => this._flipSelectedHand()"
+                                  onCameraToElevation="() => this._cameraToSelectedElevation()"
+                                  onRemove="() => this._removeSelectedCabinet()"
+                                  onUndo="() => this._undo()"/>
                         <div class="o_owl_design3d_viewbar" role="toolbar" aria-label="Camera view">
                             <button t-foreach="viewButtons" t-as="vb" t-key="vb.key"
                                     type="button"
@@ -482,6 +515,16 @@ export class KitchenDesignTab extends Component {
             // wrapper for a quick fade-out/in cue. Skipped entirely
             // under prefers-reduced-motion (toast still fires).
             cornerFlash: false,
+            // Touch editing v1 — server kill-switch (T2's wiring, this
+            // task's one-line addition to _southbrook_design_payload)
+            // and pad anatomy (phone bottom-dock vs tablet floating,
+            // spec §1 decision 4). touchPadMode starts "floating" and
+            // is corrected synchronously in onMounted below, before
+            // first paint reads it, then kept live by the resize
+            // listener — the portal has no CSS-only width gate like the
+            // backend's 767px one, so this can't be a boot-only probe.
+            touchEnabledServer: false,
+            touchPadMode: "floating",
         });
         this.viewButtons = VIEW_BUTTONS;
         this.categoryLabels = CATEGORY_LABELS;
@@ -499,11 +542,34 @@ export class KitchenDesignTab extends Component {
         this._onKeyDown = this._onKeyDown.bind(this);
         this._onTouchMove = this._onTouchMove.bind(this);
         this._onTouchEnd = this._onTouchEnd.bind(this);
+        // Touch editing v1 — boot-time device-capability probe (same
+        // "AtBoot" pattern kitchen_configurator.js's own
+        // isNarrowViewportAtBoot uses); pad mode below IS reactive to
+        // resize (the portal, unlike the backend, has no width floor
+        // below which it simply doesn't render at all).
+        this._touchCapable = isTouchCapableAtBoot(
+            typeof window !== "undefined" ? window : null,
+            typeof navigator !== "undefined" ? navigator : null,
+        );
+        this._onTouchPadResize = () => {
+            this.state.touchPadMode = touchPadModeForViewport(window);
+        };
+        // Touch editing v1 — single-level "restore last committed
+        // state" undo fallback (spec build brief's explicit sanctioned
+        // fallback for a surface with no undo stack — grepped this
+        // file for "undo"/"Undo"/"UNDO" and confirmed none exists).
+        // Scoped to nudge/rotate only; see _flipSelectedHand's own
+        // comment for why remove/swap aren't covered by this minimal
+        // path. Set by _snapshotForUndo just before each covered
+        // mutation, consumed (and cleared) by _undo().
+        this._lastPortalSnapshot = null;
 
         onMounted(() => {
             this._load();
             this._loadCatalog();
             window.addEventListener("keydown", this._onKeyDown);
+            this._onTouchPadResize();
+            window.addEventListener("resize", this._onTouchPadResize);
         });
         // Audit A8 — honor the payloadVersion contract: OrderBuilder bumps
         // it after autosaves; a change while this tab stays mounted must
@@ -520,6 +586,7 @@ export class KitchenDesignTab extends Component {
         });
         onWillUnmount(() => {
             window.removeEventListener("keydown", this._onKeyDown);
+            window.removeEventListener("resize", this._onTouchPadResize);
             this._detachTouchListeners();
             for (const t of this._toastTimers) clearTimeout(t);
             this._toastTimers.clear();
@@ -688,6 +755,8 @@ export class KitchenDesignTab extends Component {
             this.state.room = payload.room || this.state.room;
             this.state.items = payload.items || [];
             this.state.channel = payload.channel || null;
+            // Touch editing v1 — server kill-switch (T2's contract).
+            this.state.touchEnabledServer = !!payload.touch_enabled;
         } catch (e) {
             this.state.error = friendlyDesignError(e?.message);
         } finally {
@@ -947,6 +1016,241 @@ export class KitchenDesignTab extends Component {
             const msg = friendlyDesignError(e?.message);
             this.state.error = msg;
             this._pushToast(`Couldn't swap product: ${msg}`, "error");
+        } finally {
+            this.state.saving = false;
+        }
+    }
+
+    // ─── Touch editing v1 — control pad ─────────────────────────────────
+    // Phone = bottom-dock, tablet = floating (spec §1 decision 4); the
+    // backend has a hard 767px CSS gate that keeps its own pad always
+    // "floating", but the portal must support phones fully, so mode is
+    // tracked live off resize (see the constructor's _onTouchPadResize).
+    _showTouchPad() {
+        return this.state.touchEnabledServer && this._touchCapable;
+    }
+
+    // Seam fix (2026-08-02, coordinator) — the canvas now emits
+    // onGestureRollback/onGestureAbandon (the health-counter producers
+    // that were missing end-to-end). The portal counts them locally; the
+    // counters ride the next save the same way the backend's do. If this
+    // surface's save path never grows touch_stats plumbing, the counts
+    // are simply dropped at save time — count anyway, never throw.
+    _recordTouchEvent(kind) {
+        this._touchStats = this._touchStats || {
+            gesture_rollbacks: 0, gesture_abandons: 0,
+        };
+        if (kind === "rollback") this._touchStats.gesture_rollbacks += 1;
+        if (kind === "abandon") this._touchStats.gesture_abandons += 1;
+    }
+
+    // KNOWN GAPS vs. the backend pad (both flagged for the coordinator's
+    // reconciliation pass — see this task's build note):
+    //   - sendToWallSupported: false — this addon's /design-3d/* routes
+    //     have NO wall-reassignment endpoint at all (only x/y/z/rotation/
+    //     width via /move); the backend's send-to-wall calls the
+    //     Odoo-ORM-only action_move via /web/dataset/call_kw, which
+    //     portal customers have no ACL path to (every other portal
+    //     mutation route exists specifically BECAUSE that ORM path isn't
+    //     available to them). getPadAffordances still marks wallRun
+    //     items sendToWall-eligible; this capability flag is what
+    //     actually hides the button on this surface.
+    //   - canUndo reflects the single-snapshot fallback (see
+    //     _snapshotForUndo/_undo below), not a real stack.
+    _touchPadCapabilities() {
+        return {
+            canUndo:             !!this._lastPortalSnapshot,
+            canSendToWall:       false,
+            sendToWallSupported: false,
+            cameraReady:         !!this._canvasApi,
+        };
+    }
+
+    // Nudge left/right — same per-wall axis convention as the backend's
+    // _nudgeSelected (z_position_in on left/right walls, x_position_in
+    // on back/front), persisted via the existing /design-3d/move route
+    // (accepts x/y/z_position_in already, for drag-move + the Width
+    // input's sibling fields).
+    async _nudgeSelected(dir) {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).nudge) return;
+        if (!item.layout_key || !this.props.orderId) return;
+        this._snapshotForUndo(item);
+        const alongZ = item.wall === "left" || item.wall === "right";
+        const axisField = alongZ ? "z_position_in" : "x_position_in";
+        const roomBoundIn = alongZ ? this.state.room.depth_in : this.state.room.width_in;
+        const maxPos = Math.max(0, roomBoundIn - (item.width_in || 0));
+        const next = Math.min(Math.max((item[axisField] || 0) + dir * NUDGE_STEP_IN, 0), maxPos);
+        this.state.saving = true;
+        try {
+            const res = await rpcCall(
+                `/southbrook/api/order/${encodeURIComponent(this.props.orderId)}/design-3d/move`,
+                { layout_key: item.layout_key, [axisField]: next },
+            );
+            if (res && res.error) {
+                this.state.error = friendlyDesignError(res.error);
+                return;
+            }
+            this.state.items = this.state.items.map((it) =>
+                it.layout_key === item.layout_key ? { ...it, [axisField]: next } : it,
+            );
+            this.state.selected = { ...item, [axisField]: next };
+        } catch (e) {
+            this.state.error = friendlyDesignError(e?.message);
+        } finally {
+            this.state.saving = false;
+        }
+    }
+
+    // Rotate 45° (island/freestanding only) — the /design-3d/move route
+    // already accepts rotation_deg (mod-360'd server-side); no route
+    // change needed. Never wired to a keyboard shortcut here — rotation
+    // was deliberately not ported to the portal's keydown handler before
+    // touch v1 (see this file's own 2026-07-06 header note on what was/
+    // wasn't ported), so the pad is the FIRST rotation affordance on
+    // this surface, not a touch mirror of an existing one.
+    async _rotateSelected(deltaDeg) {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).rotate) return;
+        if (!item.layout_key || !this.props.orderId) return;
+        this._snapshotForUndo(item);
+        const next = (((item.rotation_deg || 0) + deltaDeg) % 360 + 360) % 360;
+        this.state.saving = true;
+        try {
+            const res = await rpcCall(
+                `/southbrook/api/order/${encodeURIComponent(this.props.orderId)}/design-3d/move`,
+                { layout_key: item.layout_key, rotation_deg: next },
+            );
+            if (res && res.error) {
+                this.state.error = friendlyDesignError(res.error);
+                return;
+            }
+            this.state.items = this.state.items.map((it) =>
+                it.layout_key === item.layout_key ? { ...it, rotation_deg: next } : it,
+            );
+            this.state.selected = { ...item, rotation_deg: next };
+            this._pushToast(`Rotated ${item.product_name} to ${next}°`, "success");
+        } catch (e) {
+            this.state.error = friendlyDesignError(e?.message);
+        } finally {
+            this.state.saving = false;
+        }
+    }
+
+    // Camera-to-elevation — purely client-side, no persistence. Prefers
+    // T4's purpose-built `api.cameraToElevation(wall)` (see build-t4-
+    // canvas.md), falling back to `_setView`/`elevationViewForWall` —
+    // same reconciliation as the backend's own version. KNOWN GAP:
+    // `item.wall` is always undefined on the portal — this addon's own
+    // `_southbrook_design_payload()` line-dict never serializes `wall`
+    // (unlike the backend's `_serialize_configurator_lines()`, which
+    // does) — so `elevationViewForWall(undefined)` always falls back to
+    // "front", regardless of the cabinet's real wall. Flagged for the
+    // coordinator; fixing it is a one-line serializer addition outside
+    // this task's authorized one-line scope (T2's touch_enabled line).
+    _cameraToSelectedElevation() {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).cameraToElevation) return;
+        const wall = item.wall || "back";
+        if (this._canvasApi && typeof this._canvasApi.cameraToElevation === "function") {
+            this._canvasApi.cameraToElevation(wall);
+            this.state.view = elevationViewForWall(wall);
+            return;
+        }
+        this._setView(elevationViewForWall(wall));
+    }
+
+    // Flip-hand (corners only) — reuses the EXISTING _swapSelectedProduct
+    // verbatim, resolving the mirrored-hand twin from the catalog by the
+    // same "{base, base + '-R'}" family convention the backend's
+    // _sb_resolve_corner_variant documents server-side.
+    //
+    // GAP flagged for the coordinator's reconciliation pass: unlike the
+    // backend's action_swap_product (which enforces corner-only /
+    // footprint-fit / hand-match governance server-side), this addon's
+    // own /design-3d/swap route (controllers/main.py
+    // southbrook_api_design_3d_swap) is a PLAIN product_id write with
+    // only a same-cabinet_type check — no hand-awareness, no refusal.
+    // Safe in practice here because siblingCode is always drawn from the
+    // SAME template family (a genuine LH/RH pair), but there is no
+    // server-side safety net if the catalog data is ever wrong, unlike
+    // the backend path.
+    async _flipSelectedHand() {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).flipHand) return;
+        const code = item.sku || item.default_code || "";
+        if (!code) {
+            this._pushToast(
+                "This corner cabinet has no catalog code — can't find its mirrored-hand twin.",
+                "error",
+            );
+            return;
+        }
+        const base = code.endsWith("-R") ? code.slice(0, -2) : code;
+        const siblingCode = code === base ? base + "-R" : base;
+        const sibling = (this.state.products || []).find(
+            (p) => p.cabinet_type === "corner" && (p.sku || "") === siblingCode,
+        );
+        if (!sibling) {
+            this._pushToast(
+                "No mirrored-hand twin found in the catalog for this corner.",
+                "error",
+            );
+            return;
+        }
+        await this._swapSelectedProduct(sibling.product_id);
+    }
+
+    // ─── Undo fallback (spec build brief: "if none exists client-side,
+    // wire undo=restore-last-committed-state ... and SAY so in the
+    // note") — this file has no undo/redo stack (grepped, confirmed).
+    // Single-level, scoped ONLY to the pad's own nudge/rotate (both
+    // plain field writes on an EXISTING line, trivially reversible
+    // through the SAME /move route). Remove and flip-hand are NOT
+    // covered: a removed line can't be re-added with its original
+    // identity through /design-3d/add (new layout_key), and re-swapping
+    // would just re-run the same ungoverned swap route again for no
+    // real safety gain — both are acceptable exclusions for this
+    // minimal fallback, not oversights.
+    _snapshotForUndo(item) {
+        this._lastPortalSnapshot = {
+            layout_key:     item.layout_key,
+            x_position_in:  item.x_position_in,
+            y_position_in:  item.y_position_in,
+            z_position_in:  item.z_position_in,
+            rotation_deg:   item.rotation_deg,
+        };
+    }
+
+    async _undo() {
+        const snap = this._lastPortalSnapshot;
+        if (!snap || !this.props.orderId) return;
+        this._lastPortalSnapshot = null;
+        this.state.saving = true;
+        try {
+            const res = await rpcCall(
+                `/southbrook/api/order/${encodeURIComponent(this.props.orderId)}/design-3d/move`,
+                {
+                    layout_key:     snap.layout_key,
+                    x_position_in:  snap.x_position_in,
+                    y_position_in:  snap.y_position_in,
+                    z_position_in:  snap.z_position_in,
+                    rotation_deg:   snap.rotation_deg,
+                },
+            );
+            if (res && res.error) {
+                this.state.error = friendlyDesignError(res.error);
+                return;
+            }
+            this.state.items = this.state.items.map((it) =>
+                it.layout_key === snap.layout_key ? { ...it, ...snap } : it,
+            );
+            if (this.state.selected && this.state.selected.layout_key === snap.layout_key) {
+                this.state.selected = { ...this.state.selected, ...snap };
+            }
+            this._pushToast("Undid last change", "success");
+        } catch (e) {
+            this.state.error = friendlyDesignError(e?.message);
         } finally {
             this.state.saving = false;
         }

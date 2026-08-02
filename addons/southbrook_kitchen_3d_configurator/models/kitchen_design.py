@@ -1417,6 +1417,12 @@ class SouthbrookKitchenDesign(models.Model):
                 "price":          line.price_unit,
                 "quantity":       line.quantity,
                 "wall":           line.wall or "back",
+                # Touch v1 seam fix (2026-08-02) — the pad's family
+                # classifier scopes rotation to islands via `zone`, but
+                # zone never reached the client, deadening island
+                # rotation everywhere (and Q/E with it). Additive key;
+                # existing consumers ignore it.
+                "zone":           line.zone or "base_run",
                 "appliance_type": line.appliance_type or False,
                 "is_unresolved":  line.is_unresolved,
             })

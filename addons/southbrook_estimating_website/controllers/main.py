@@ -2563,6 +2563,12 @@ class SouthbrookOrderBuilderPortal(_SouthbrookOrderAccessMixin, CustomerPortal):
                 "pinned":        line.pinned,
                 "price":         line.price_unit,
                 "quantity":      line.quantity,
+                # Touch v1 seam fix (2026-08-02) — the portal is the
+                # PRIMARY phone surface, but its items carried no
+                # wall/zone, degrading the pad's nudge, camera-to-
+                # elevation, and family scoping there. Additive keys.
+                "wall":          line.wall or "back",
+                "zone":          line.zone or "base_run",
             })
         return {
             "design_id": design.id,
@@ -2573,6 +2579,10 @@ class SouthbrookOrderBuilderPortal(_SouthbrookOrderAccessMixin, CustomerPortal):
             },
             "channel": self._southbrook_design_channel(design.sale_order_id),
             "items": items,
+            # Touch editing v1 (2026-08-02 spec §4 item 2) — portal kill-
+            # switch, per T2's handoff note (Wave 1): the one line the
+            # backend controller couldn't add on this addon's behalf.
+            "touch_enabled": design._sb_touch_enabled("portal"),
         }
 
     @http.route(

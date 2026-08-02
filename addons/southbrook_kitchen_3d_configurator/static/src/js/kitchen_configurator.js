@@ -71,6 +71,16 @@ import {
     parseProductName, liftWidth, groupCatalog, searchText,
 } from "@southbrook_kitchen_3d_configurator/js/canvas/catalog_list.esm";
 import { cabinetThumbSVG } from "@southbrook_kitchen_3d_configurator/js/canvas/cabinet_thumb.esm";
+// Touch editing v1 (2026-08-02 spec) — the shared control-pad component
+// + its pure family/visibility, wall-cycle/elevation, and touch-stats
+// helpers. See touch_pad.esm.js's own header for the full contract;
+// this file owns WHEN to mount it, WHAT gates it, and WHICH parent
+// method each callback prop drives.
+import {
+    TouchPad, getPadAffordances, nextWall, elevationViewForWall,
+    NUDGE_STEP_IN, isTouchCapableAtBoot, makeEmptyTouchStats,
+    accumulateTouchStats, hasTouchStats,
+} from "@southbrook_kitchen_3d_configurator/js/canvas/touch_pad.esm";
 
 const actionRegistry = registry.category("actions");
 
@@ -521,6 +531,11 @@ class SouthbrookKitchenConfigurator extends Component {
                 ready:     true,
                 panelOpen: false,
             },
+            // Touch editing v1 — server kill-switch (spec §4 item 2),
+            // read from /configurator/products' `touch_enabled` key
+            // (T2's wiring — see _loadProducts). Defaults false so the
+            // pad never flashes on before the boot RPC resolves.
+            touchEnabledServer: false,
         });
         // Auto-save debounce timer (not reactive; managed imperatively).
         this._autoSaveTimer = null;
@@ -537,6 +552,25 @@ class SouthbrookKitchenConfigurator extends Component {
         // failure has already been surfaced, reset to false the moment
         // any save (auto or manual) succeeds again.
         this._autoSaveErrorShown = false;
+
+        // Touch editing v1 — boot-time device-capability probe (same
+        // "AtBoot" pattern as isNarrowViewportAtBoot above: evaluated
+        // once, not reactively, since pointer capability doesn't
+        // change mid-session on this surface). Plain instance field —
+        // nothing renders it directly, only the derived
+        // `_showTouchPad()` getter below does.
+        this._touchCapable = isTouchCapableAtBoot(
+            typeof window !== "undefined" ? window : null,
+            typeof navigator !== "undefined" ? navigator : null,
+        );
+        // Touch editing v1 (spec §4 item 3) — accumulated gesture
+        // health counters, flushed onto the next successful auto-save
+        // (see _autoSave). NOT YET incremented anywhere: kitchen_canvas
+        // .esm.js (sibling-owned; out of this task's edit scope) has no
+        // gesture-rollback/abandon callback prop yet. `_recordTouchEvent`
+        // below is the ready-to-call receiving end for whoever wires
+        // that in — see this task's build note for the exact contract.
+        this._touchStats = makeEmptyTouchStats();
 
         // Task #48 — Portal-user detection. v19's `@web/core/user`
         // singleton exposes `isInternalUser` (server-side maps from
@@ -1000,6 +1034,11 @@ class SouthbrookKitchenConfigurator extends Component {
             } else {
                 this.state.products = resp.products || [];
                 if (resp.channel) this.state.channel = resp.channel;
+                // Touch editing v1 — server kill-switch (T2's wiring;
+                // see this route's own comment). `resp.touch_enabled`
+                // is only absent on the legacy bare-array shape above,
+                // which this `else` branch never takes.
+                this.state.touchEnabledServer = !!resp.touch_enabled;
             }
         } catch (_) {
             this.state.products = [];
@@ -3378,10 +3417,28 @@ class SouthbrookKitchenConfigurator extends Component {
     // meshes at their un-rotated pose. Wrapping cabinet meshes in
     // THREE.Groups is what broke the WebClient at 4.20.0; that
     // refactor is staged separately (see audit §P0#1 recovery plan).
+    // Touch editing v1 (2026-08-02 spec §5 "riding along") — Q/E used to
+    // rotate ANY non-filler/panel cabinet ungoverned. The spec's scoped-
+    // rotation decision (§1 decision 3) restricts free rotation to
+    // freestanding/island items; wall-run cabinets (and corners, which
+    // get their own flip-hand affordance instead) must refuse with an
+    // actionable toast rather than silently writing a rotation_deg the
+    // 3D scene never rendered anyway. Shares the exact same family
+    // classification the touch pad's own rotate button visibility uses
+    // (getPadAffordances) — the keyboard and the pad can never disagree
+    // about which cabinets are rotatable.
     _rotateSelected(deltaDeg) {
         const item = this.state.selected;
         if (!item) return;
         if (item.cabinet_type === "filler" || item.cabinet_type === "panel") {
+            return;
+        }
+        if (!getPadAffordances(item).rotate) {
+            this._toast(
+                "Wall cabinets follow their wall — use Send to wall or "
+                + "the corner's flip arrow",
+                { type: "info" }
+            );
             return;
         }
         // Task 35 review fast-follow (Important 1) — this is a design-
@@ -3405,6 +3462,219 @@ class SouthbrookKitchenConfigurator extends Component {
             { type: "success" }
         );
         this._queueAutoSave();
+    }
+
+    // ─── Touch editing v1 — control pad ─────────────────────────────────────────
+    // Backend is tablet-only (the 767px CSS gate in kitchen_configurator
+    // .scss means anything below that width never reaches this
+    // component at all), so the pad is always "floating" mode here —
+    // dock mode exists only for the portal's phone case
+    // (design_tab.esm.js).
+    _showTouchPad() {
+        return this.state.touchEnabledServer && this._touchCapable;
+    }
+
+    _touchPadCapabilities() {
+        return {
+            canUndo:              this.state.undoCount > 0,
+            canSendToWall:        !!this.state.designId,
+            sendToWallSupported:  true,
+            cameraReady:          !!this._canvasApi,
+        };
+    }
+
+    // Health counters (spec §4 item 3) — receiving end only; see the
+    // instance-field comment in setup() and this task's build note for
+    // the still-missing canvas-side call site.
+    _recordTouchEvent(kind) {
+        this._touchStats = accumulateTouchStats(this._touchStats, kind);
+    }
+
+    // Nudge left/right — drives the SAME position-commit pipeline the
+    // mouse drag path uses (_savePinnedPosition + _recomputeLayoutFromItems
+    // + _queueAutoSave; see _onCanvasMove), just with a fixed-step delta
+    // instead of a raycasted pointer position. Per-wall axis convention
+    // matches _cycleSelection's `alongRunIn` (z_position_in on the
+    // left/right walls, x_position_in on back/front) and is clamped to
+    // the room bounds minus the cabinet's own width so a nudge can never
+    // push a cabinet off the visible run.
+    _nudgeSelected(dir) {
+        const item = this.state.selected;
+        if (!item) return;
+        if (!getPadAffordances(item).nudge) return;
+        this._markUserAction();
+        this._pushUndoSnapshot();
+        this._placementsDirty = true;
+        const alongZ = item.wall === WALLS.LEFT || item.wall === WALLS.RIGHT;
+        const axisField = alongZ ? "z_position_in" : "x_position_in";
+        const roomBoundIn = alongZ
+            ? this.state.room.depth_in : this.state.room.width_in;
+        const maxPos = Math.max(0, roomBoundIn - (item.width_in || 0));
+        const next = (item[axisField] || 0) + dir * NUDGE_STEP_IN;
+        item[axisField] = Math.min(Math.max(next, 0), maxPos);
+        item.pinned = true;
+        this._savePinnedPosition(item);
+        this._recomputeLayoutFromItems();
+        this._toast(
+            `Nudged ${item.product_name || item.name || "cabinet"} to `
+            + `${Math.round(item[axisField])}″`,
+            { type: "success" }
+        );
+        this._queueAutoSave();
+    }
+
+    // Camera-to-elevation — wall-run cabinets' rotation substitute (spec
+    // §1 decision 3). Purely client-side, no persistence. Reconciled
+    // against T4's canvas-integration note (build-t4-canvas.md):
+    // <KitchenCanvas> exposes a purpose-built `api.cameraToElevation
+    // (wall)` via onReady (lerps the camera, "front" wall falls back to
+    // "persp" internally — no dedicated elevation for that low kick-
+    // strip wall) — preferred when available. Falls back to the pre-
+    // existing `_setView`/`elevationViewForWall` path (used by the
+    // view-switcher toolbar already) so this never regresses if
+    // `_canvasApi` isn't ready yet for any reason.
+    _cameraToSelectedElevation() {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).cameraToElevation) return;
+        const wall = item.wall || WALLS.BACK;
+        if (this._canvasApi && typeof this._canvasApi.cameraToElevation === "function") {
+            this._canvasApi.cameraToElevation(wall);
+            // Keep the pad's aria-pressed (isElevationActive) accurate
+            // regardless of whether T4's imperative method itself fires
+            // onViewChange internally — redundant-but-harmless if it
+            // already does.
+            this.state.view = elevationViewForWall(wall);
+            return;
+        }
+        this._setView(elevationViewForWall(wall));
+    }
+
+    // Flip-hand (corners only) — reuses the EXISTING hand-aware swap
+    // action verbatim (_swapSelectedProduct -> _swapCornerProductOnServer
+    // -> action_swap_product's corner-hand governance), never a new
+    // server call. Resolves the mirrored-hand twin from the catalog by
+    // the same "{base, base + '-R'}" family convention
+    // _sb_resolve_corner_variant documents server-side (Task 6). Items
+    // loaded from a saved design key their code as `default_code`;
+    // items freshly placed from the catalog key it as `sku`
+    // (_product_payload) — read both defensively.
+    async _flipSelectedHand() {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).flipHand) return;
+        const code = item.sku || item.default_code || "";
+        if (!code) {
+            this._toast(
+                "This corner cabinet has no catalog code — can't "
+                + "resolve its mirrored-hand twin.",
+                { type: "warning", sticky: true }
+            );
+            return;
+        }
+        const base = code.endsWith("-R") ? code.slice(0, -2) : code;
+        const siblingCode = code === base ? base + "-R" : base;
+        const sibling = (this.state.products || []).find(
+            p => p.cabinet_type === "corner" && (p.sku || "") === siblingCode
+        );
+        if (!sibling) {
+            this._toast(
+                "No mirrored-hand twin found in the catalog for this corner.",
+                { type: "warning", sticky: true }
+            );
+            return;
+        }
+        await this._swapSelectedProduct(sibling.product_id);
+    }
+
+    // Send-to-wall (spec §5) — the touch pad's "cycle icon" affordance.
+    // Calls the T2-verified `action_move(wall, run_seq)` via the SAME
+    // generic /web/dataset/call_kw plumbing _swapCornerProductOnServer
+    // already uses for action_swap_product (search_read the line id by
+    // design_id + layout_key, then call the action on it) — no new
+    // controller route. `run_seq` is computed from the CLIENT's own
+    // state.items (the client never receives the server's true run_seq;
+    // see _serialize_configurator_lines) as "how many cabinets are
+    // already on the target wall" — appends after them in the common
+    // case; the server is authoritative for feasibility regardless
+    // (action_move's _write_then_rearrange rolls back and raises on a
+    // layout that doesn't fit, exactly like every other governed write
+    // on this line model).
+    async _sendSelectedToWall() {
+        const item = this.state.selected;
+        if (!item || !getPadAffordances(item).sendToWall) return;
+        if (!this.state.designId) {
+            this._toast(
+                "Save the design first, then use Send to wall.",
+                { type: "warning", sticky: true }
+            );
+            return;
+        }
+        const targetWall = nextWall(item.wall || WALLS.BACK);
+        // Finding-3 pattern (see _swapCornerProductOnServer) — flush any
+        // pending debounced autosave FIRST so a stale write can never
+        // land after the move and silently revert it.
+        if (this._autoSaveTimer) {
+            clearTimeout(this._autoSaveTimer);
+            this._autoSaveTimer = null;
+            await this._autoSave();
+        }
+        let rows;
+        try {
+            rows = await rpc("/web/dataset/call_kw", {
+                model:  "southbrook.kitchen.design.line",
+                method: "search_read",
+                args: [
+                    [["design_id", "=", this.state.designId],
+                     ["layout_key", "=", item.layout_key]],
+                    ["id"],
+                ],
+                kwargs: { limit: 1 },
+            });
+        } catch (e) {
+            const msg = e && (e.message || String(e))
+                || "Couldn't verify this cabinet with the server — move refused.";
+            this._toast(msg, { type: "danger", sticky: true });
+            return;
+        }
+        const lineId = rows && rows[0] && rows[0].id;
+        if (!lineId) {
+            this._toast(
+                "Save the design first, then use Send to wall.",
+                { type: "warning", sticky: true }
+            );
+            return;
+        }
+        const runSeq = (this.state.items || []).filter(
+            it => it.wall === targetWall && it.layout_key !== item.layout_key
+        ).length;
+        let result;
+        try {
+            result = await rpc("/web/dataset/call_kw", {
+                model:  "southbrook.kitchen.design.line",
+                method: "action_move",
+                args:   [[lineId], targetWall, runSeq],
+                kwargs: {},
+            });
+        } catch (e) {
+            // action_move raises UserError (savepoint-rolled-back) when
+            // the move doesn't fit — the "refused: doesn't fit" path
+            // T2's note calls for, distinct from success below.
+            const msg = e && (e.message || String(e)) || "That move doesn't fit — refused.";
+            this._toast(msg, { type: "danger", sticky: true });
+            return;
+        }
+        // action_move's raw call_kw response has no `relaid` key (that
+        // flag is a controller-only concept — see save_design's
+        // response shape in controllers/main.py); synthesize it so this
+        // can flow through the SAME _applyRelaidResult every other
+        // relayout response uses, rather than hand-rolling a second
+        // lines-application path.
+        this._applyRelaidResult({ ...result, relaid: true });
+        this._toast(
+            `Sent ${item.product_name || item.name || "cabinet"} to the `
+            + `${this._wallLabel(targetWall)} wall`,
+            { type: "success" }
+        );
+        this._refreshValidation();
     }
 
     // ─── Save ─────────────────────────────────────────────────────────────────────
@@ -3744,6 +4014,14 @@ class SouthbrookKitchenConfigurator extends Component {
         if (this.state.saving) return;       // manual save in flight - skip
         if (this.state.autoSaving) return;   // another auto-save in flight
         this.state.autoSaving = true;
+        // Touch editing v1 (spec §4 item 3) — attach the accumulated
+        // gesture health counters to THIS autosave round-trip only
+        // (per the build brief's explicit scope: "attach touch_stats to
+        // the existing autosave payload", not every save path).
+        // Captured before the request so a successful send can net out
+        // exactly what was sent, never a stats event that arrived
+        // during the await (see the success-path comment below).
+        const _sentTouchStats = this._touchStats;
         try {
             const result = await rpc("/southbrook_kitchen/configurator/save", {
                 name:       this.state.designName || "Untitled Kitchen",
@@ -3761,6 +4039,8 @@ class SouthbrookKitchenConfigurator extends Component {
                 filler_strategy:         this.state.fillerStrategy || "split",
                 wall_cab_top_alignment:  this.state.wallCabTopAlignment || "fixed_gap",
                 soffit_height_in:        this.state.soffitHeightIn || 0.0,
+                ...(hasTouchStats(_sentTouchStats)
+                    ? { touch_stats: _sentTouchStats } : {}),
             });
             // Fix-round (coordinator review) — a structured rejection
             // (see _saveErrorMessage) used to fall straight through to
@@ -3795,6 +4075,18 @@ class SouthbrookKitchenConfigurator extends Component {
             this.state.designId       = result.id;
             this.state.designName     = result.name;
             this.state.lastAutoSaveAt = Date.now();
+            // Touch editing v1 — net out exactly the counters this
+            // request sent (never a flat reset-to-zero): a gesture
+            // event that accumulated DURING the await must survive for
+            // the next autosave, not be silently dropped.
+            if (hasTouchStats(_sentTouchStats)) {
+                this._touchStats = {
+                    gesture_rollbacks: Math.max(0,
+                        this._touchStats.gesture_rollbacks - _sentTouchStats.gesture_rollbacks),
+                    gesture_abandons: Math.max(0,
+                        this._touchStats.gesture_abandons - _sentTouchStats.gesture_abandons),
+                };
+            }
             // PR4.1 (2026-07-12) — see _applyServerPlacements() doc
             // comment. This is the fix: a drag-add on a non-back wall
             // routes through _queueAutoSave() -> here, not
@@ -4486,6 +4778,9 @@ SouthbrookKitchenConfigurator.template = xml`
                      dragHover="state.dragHover"
                      activeWall="state.activeWall"
                      designName="state.designName"
+                     touchEnabled="_showTouchPad()"
+                     onGestureRollback="() => this._recordTouchEvent('rollback')"
+                     onGestureAbandon="() => this._recordTouchEvent('abandon')"
                      onWallSelect="(w) => this._onWallSelect(w)"
                      onSelectItem="(item) => this._onCanvasSelect(item)"
                      onMoveItemStart="(item) => this._onCanvasMoveStart(item)"
@@ -4494,6 +4789,25 @@ SouthbrookKitchenConfigurator.template = xml`
                      onResizeRoomDepth="(nd, f) => this._onCanvasResizeDepth(nd, f)"
                      onViewChange="(k) => this._onCanvasViewChange(k)"
                      onReady="(api) => this._onCanvasReady(api)"/>
+
+      <!-- Touch editing v1 (2026-08-02 spec) — tablet-only here (the
+           767px CSS gate above means this component never mounts below
+           that width), so always "floating" mode; the phone bottom-dock
+           mode is the portal's (design_tab.esm.js). Gated on BOTH the
+           server kill-switch and a runtime touch-capability probe —
+           _showTouchPad() checks both. -->
+      <TouchPad t-if="_showTouchPad()"
+                mode="'floating'"
+                selection="state.selected"
+                currentView="state.view"
+                capabilities="_touchPadCapabilities()"
+                onNudge="(dir) => this._nudgeSelected(dir)"
+                onRotate="(deg) => this._rotateSelected(deg)"
+                onFlipHand="() => this._flipSelectedHand()"
+                onCameraToElevation="() => this._cameraToSelectedElevation()"
+                onSendToWall="() => this._sendSelectedToWall()"
+                onRemove="() => this._removeSelectedCabinet()"
+                onUndo="() => this._undo()"/>
 
       <!-- Task 22 (SBK-036) — read-only view marker. front/left/right
            are flat elevations with no move-drag/resize; body text
@@ -4997,7 +5311,7 @@ SouthbrookKitchenConfigurator.props = {
 };
 SouthbrookKitchenConfigurator.defaultProps = {};
 // Rec D · Sprint 2d Step 24c — register <KitchenCanvas> as a child.
-SouthbrookKitchenConfigurator.components = { KitchenCanvas };
+SouthbrookKitchenConfigurator.components = { KitchenCanvas, TouchPad };
 
 // Rec D · Sprint 2d Step 24c bridge — child-to-parent callbacks.
 // Injects fire-and-forget state mutations into the parent lifecycle

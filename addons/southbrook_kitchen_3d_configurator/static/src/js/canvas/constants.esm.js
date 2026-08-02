@@ -69,4 +69,16 @@ export const P = {
     drag:    0x1866D4,
     toekick: 0x8A857E,
     arrow:   0x1866D4,
+    // Touch editing Wave 2 (docs/superpowers/specs/2026-08-02-touch-
+    // editing-design.md §3, manipulation-visual-spec.md state 6 —
+    // Invalid/collision). Value matches manipulation_states.esm.js's
+    // own `COLLISION_RED` (Wave 1) exactly, byte-for-byte — that
+    // module derives its own colours from this `P` object elsewhere
+    // (e.g. `SELECT_BLUE = P.sel`) and its own comment explicitly
+    // instructs Wave 2 to add this entry here; kept as two identical
+    // literals (not re-imported across the two files) only because
+    // manipulation_states.esm.js is Wave-1-owned and out of this
+    // task's edit scope — see kitchen_canvas.esm.js's touch-effects
+    // section for the actual consumer.
+    collision: 0xA6281E,
 };
