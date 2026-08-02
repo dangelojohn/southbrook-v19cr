@@ -45,7 +45,7 @@ runtime-BoM versioning, and commercial/pricing change control.
 This is custom routine #8 in the SAMI register; see PUNCHLIST for the
 boundary-rule justification.
 """,
-    "version": "19.0.3.0.0",
+    "version": "19.0.3.0.1",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "website": "https://southbrookcabinetry.space",
@@ -70,9 +70,13 @@ boundary-rule justification.
         "views/sale_order_views.xml",
         "views/southbrook_plm_menus.xml",
     ],
-    "demo": [
-        "demo/southbrook_plm_demo.xml",
-    ],
+    # Demo data DELIBERATELY not declared (2026-08-02). On the prod DB,
+    # `odoo -u` reloads a module's demo data whenever its dependency
+    # closure carries demo — flipping ir_module_module.demo=false does NOT
+    # stick, and the demo ECOs / cut spec were re-minted into live
+    # change-control history on upgrade. The XML stays in demo/ for
+    # reference; nothing loads it.
+    "demo": [],
     "application": True,
     "installable": True,
     "auto_install": False,

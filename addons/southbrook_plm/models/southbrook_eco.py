@@ -276,6 +276,19 @@ class SouthbrookEco(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
+            # Terminal-state forge guard, create-side. write() already
+            # refuses a direct flip to applied/rejected outside the gated
+            # actions — but a bare RPC create({'state': 'applied'}) would
+            # mint terminal history with no handler run and no approval at
+            # all (spotted 2026-08-02: the old demo XML did exactly this).
+            # Same escape hatch as write(): the plm_lifecycle context.
+            if vals.get("state") in ("applied", "rejected") and not (
+                self.env.context.get("plm_lifecycle")
+            ):
+                raise UserError(_(
+                    "An ECO cannot be CREATED in a terminal state "
+                    "(Applied / Rejected) — terminal states are reached "
+                    "only via the Apply or Reject actions."))
             if not vals.get("name") or vals["name"] == _("New"):
                 vals["name"] = self.env["ir.sequence"].next_by_code(
                     "southbrook.eco"
