@@ -27,6 +27,19 @@ class TestBridge(TransactionCase):
                 cls.env.ref("product_graph_base.group_pg_admin").id,
             ])],
         })
+        # PLM's four-eyes rule (2026-08-01 hardening): an ECO's own
+        # Responsible/creator may not approve or apply it. The fixture ECOs
+        # are created by the test superuser, so approve/apply must run as
+        # an INDEPENDENT PLM Approver. pg_admin is included because the
+        # bridge fires the pg.release as the applying user.
+        cls.plm_approver = cls.env["res.users"].create({
+            "name": "PLM Bridge Approver",
+            "login": "plm_bridge_approver_test",
+            "group_ids": [(6, 0, [
+                cls.env.ref("southbrook_plm.group_southbrook_plm_approver").id,
+                cls.env.ref("product_graph_base.group_pg_admin").id,
+            ])],
+        })
 
         # Build a released cabinet item + its EBOM (root only, no children,
         # to keep the test self-contained — the validator passes because
@@ -100,8 +113,8 @@ class TestBridge(TransactionCase):
 
     def test_bridge_fires_release(self):
         eco = self._make_eco(pg_ebom_id=self.ebom.id)
-        eco.action_approve()
-        eco.action_apply()
+        eco.with_user(self.plm_approver).action_approve()
+        eco.with_user(self.plm_approver).action_apply()
         self.assertEqual(eco.state, "applied")
         self.assertTrue(eco.pg_release_id,
                         "Bridge did not create a pg.release.")
@@ -111,8 +124,8 @@ class TestBridge(TransactionCase):
 
     def test_bridge_skips_without_ebom(self):
         eco = self._make_eco()
-        eco.action_approve()
-        eco.action_apply()
+        eco.with_user(self.plm_approver).action_approve()
+        eco.with_user(self.plm_approver).action_apply()
         self.assertEqual(eco.state, "applied")
         self.assertFalse(eco.pg_release_id,
                          "Bridge fired without an EBOM link.")
@@ -122,16 +135,16 @@ class TestBridge(TransactionCase):
             pg_ebom_id=self.ebom.id,
             pg_auto_release=False,
         )
-        eco.action_approve()
-        eco.action_apply()
+        eco.with_user(self.plm_approver).action_approve()
+        eco.with_user(self.plm_approver).action_apply()
         self.assertEqual(eco.state, "applied")
         self.assertFalse(eco.pg_release_id,
                          "Bridge fired with pg_auto_release=False.")
 
     def test_bridge_idempotent(self):
         eco = self._make_eco(pg_ebom_id=self.ebom.id)
-        eco.action_approve()
-        eco.action_apply()
+        eco.with_user(self.plm_approver).action_approve()
+        eco.with_user(self.plm_approver).action_apply()
         first_release = eco.pg_release_id
         # Force a second apply via the same path; the idempotency check
         # in _should_trigger_pg_release should prevent another release.

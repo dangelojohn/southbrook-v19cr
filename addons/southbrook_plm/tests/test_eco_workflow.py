@@ -92,6 +92,10 @@ class TestSouthbrookPlm(TransactionCase):
                 "cut_spec_id": candidate.id,
             }
         )
+        # M4x hardening: apply now requires a prior action_approve (approver_id
+        # + approval_date stamped, ECO sitting in the is_approved_stage stage)
+        # — it no longer stamps a de-facto approver on a bare apply.
+        eco.with_user(self.approver).action_approve()
         eco.with_user(self.approver).action_apply()
 
         self.assertEqual(eco.state, "applied")
@@ -102,11 +106,14 @@ class TestSouthbrookPlm(TransactionCase):
         self.assertEqual(self.Bom._get_cut_constants()["door_reveal"], 4.0)
 
     def test_cut_spec_eco_requires_candidate(self):
-        eco = self.Eco.create(
-            {"title": "No candidate", "eco_type_id": self.type_cut.id}
-        )
+        # M4x hardening: target-required is now a model @api.constrains
+        # (_check_target_required) enforced at create/write time, not just
+        # inside the apply handler — an RPC caller can no longer even
+        # create a cut-spec-kind ECO with no candidate spec.
         with self.assertRaises(ValidationError):
-            eco.with_user(self.approver).action_apply()
+            self.Eco.create(
+                {"title": "No candidate", "eco_type_id": self.type_cut.id}
+            )
 
     def test_panel_math_follows_active_spec(self):
         # _compute_panel_dimensions must reflect an ECO-applied reveal change.
@@ -125,6 +132,7 @@ class TestSouthbrookPlm(TransactionCase):
                 "cut_spec_id": candidate.id,
             }
         )
+        eco.with_user(self.approver).action_approve()
         eco.with_user(self.approver).action_apply()
         after = self.Bom._compute_panel_dimensions(600, 720, 320, door_count=1)
         # door height = height - 2*reveal -> shrinks by 2*(5-3) = 4mm.
@@ -148,6 +156,7 @@ class TestSouthbrookPlm(TransactionCase):
                 "bom_id": bom.id,
             }
         )
+        eco.with_user(self.approver).action_approve()
         eco.with_user(self.approver).action_apply()
 
         self.assertEqual(eco.state, "applied")
@@ -160,9 +169,14 @@ class TestSouthbrookPlm(TransactionCase):
     # Rule ECO
     # ------------------------------------------------------------------
     def test_rule_eco_requires_git_ref(self):
+        # Rule-kind ECOs deliberately have NO create-time git_ref
+        # requirement (they're raised before the PR exists — premium
+        # orchestration auto-proposes them from shop-floor overrides).
+        # Enforcement is at APPLY time via _apply_rule.
         eco = self.Eco.create(
             {"title": "Change width rule", "eco_type_id": self.type_rule.id}
         )
+        eco.with_user(self.approver).action_approve()
         with self.assertRaises(ValidationError):
             eco.with_user(self.approver).action_apply()
 
@@ -174,6 +188,7 @@ class TestSouthbrookPlm(TransactionCase):
                 "git_ref": "abc1234",
             }
         )
+        eco.with_user(self.approver).action_approve()
         eco.with_user(self.approver).action_apply()
         self.assertEqual(eco.state, "applied")
 
@@ -220,8 +235,11 @@ class TestSouthbrookPlm(TransactionCase):
             eco.with_user(self.plain_user).action_reject()
 
     def test_plain_user_cannot_reset_applied_eco(self):
-        """H2 regression: resetting an applied ECO wipes approval provenance —
-        a plain PLM User must not be able to."""
+        """H2 regression + M4x hardening: resetting an applied ECO wipes
+        approval provenance. A plain PLM User must not be able to — and,
+        post-hardening, NOBODY can: action_reset_draft is now scoped to
+        state == 'rejected' only (an applied ECO is immutable change-control
+        history; action_create_superseding is the sanctioned way forward)."""
         product = self.env["product.product"].create(
             {"name": "Reset Test Cabinet", "type": "consu"})
         bom = self.Bom.create(
@@ -231,13 +249,18 @@ class TestSouthbrookPlm(TransactionCase):
             "eco_type_id": self.type_bom.id,
             "bom_id": bom.id,
         })
+        eco.with_user(self.approver).action_approve()
         eco.with_user(self.approver).action_apply()
         self.assertEqual(eco.state, "applied")
         with self.assertRaises(UserError):
             eco.with_user(self.plain_user).action_reset_draft()
-        # Approver still can (provenance change is an approver decision).
-        eco.with_user(self.approver).action_reset_draft()
-        self.assertEqual(eco.state, "open")
+        # Post-hardening: even the Approver can no longer reset an applied
+        # ECO. Reset is scoped to state == 'rejected' — see
+        # test_eco_governance.TestSouthbrookPlmGovernance for the
+        # reset-of-rejected-works / create-superseding coverage.
+        with self.assertRaises(UserError):
+            eco.with_user(self.approver).action_reset_draft()
+        self.assertEqual(eco.state, "applied")
 
     def test_approval_required_stage_gating(self):
         review = self.env.ref("southbrook_plm.stage_review")
@@ -246,6 +269,7 @@ class TestSouthbrookPlm(TransactionCase):
             {
                 "title": "Gated move",
                 "eco_type_id": self.type_rule.id,
+                "git_ref": "gated1234",
                 "stage_id": review.id,
             }
         )
@@ -258,6 +282,10 @@ class TestSouthbrookPlm(TransactionCase):
 
     def test_eco_sequence_assigned(self):
         eco = self.Eco.create(
-            {"title": "Seq check", "eco_type_id": self.type_rule.id}
+            {
+                "title": "Seq check",
+                "eco_type_id": self.type_rule.id,
+                "git_ref": "seqcheck1",
+            }
         )
         self.assertTrue(eco.name.startswith("ECO/"))

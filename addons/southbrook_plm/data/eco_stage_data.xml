@@ -17,6 +17,7 @@
     <record id="stage_approved" model="southbrook.eco.stage">
         <field name="name">Approved</field>
         <field name="sequence">30</field>
+        <field name="is_approved_stage">1</field>
     </record>
 
     <record id="stage_applied" model="southbrook.eco.stage">

@@ -16,4 +16,34 @@
         <field name="comment">Approve, apply, and reject ECOs; manage stages, types and cut specs.</field>
     </record>
 
+    <!-- Record rules (2026-08-01 hardening): multi-company isolation on the
+         ECO, and owner+state scoping so a PLM User edits only their own
+         open ECOs. The Approver rule ORs in full access (group rules are
+         OR-combined, and Approver implies User). stage/type/cut.spec carry
+         no company_id, so the company rule covers the ECO only. -->
+
+    <record id="rule_southbrook_eco_company" model="ir.rule">
+        <field name="name">Southbrook ECO: multi-company</field>
+        <field name="model_id" ref="model_southbrook_eco"/>
+        <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+    </record>
+
+    <record id="rule_southbrook_eco_user_own_open" model="ir.rule">
+        <field name="name">Southbrook ECO: PLM User writes only own open ECOs</field>
+        <field name="model_id" ref="model_southbrook_eco"/>
+        <field name="groups" eval="[(4, ref('group_southbrook_plm_user'))]"/>
+        <field name="domain_force">[('user_id', '=', user.id), ('state', '=', 'open')]</field>
+        <field name="perm_read" eval="False"/>
+        <field name="perm_write" eval="True"/>
+        <field name="perm_create" eval="True"/>
+        <field name="perm_unlink" eval="True"/>
+    </record>
+
+    <record id="rule_southbrook_eco_approver_all" model="ir.rule">
+        <field name="name">Southbrook ECO: PLM Approver full access</field>
+        <field name="model_id" ref="model_southbrook_eco"/>
+        <field name="groups" eval="[(4, ref('group_southbrook_plm_approver'))]"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+    </record>
+
 </odoo>

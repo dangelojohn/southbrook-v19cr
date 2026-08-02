@@ -18,7 +18,7 @@ target_kind == 'cut_spec' (it calls :meth:`action_activate`), never by
 hand-editing ``state``.
 """
 from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
 
 # Field name -> the _get_cut_constants() dict key it maps to. Single source
 # of truth for both the seam dict and any future migration script. Keeping
@@ -191,6 +191,32 @@ class SouthbrookCutSpec(models.Model):
             if actives > 1:
                 raise ValidationError(
                     _("Only one cut spec may be Active at a time.")
+                )
+
+    # ------------------------------------------------------------------
+    # Delete guard
+    # ------------------------------------------------------------------
+    @api.ondelete(at_uninstall=False)
+    def _unlink_except_draft(self):
+        # Active and superseded specs are geometry history: the asbuilt
+        # record snapshots a spec's version at seal time (see the W079
+        # rationale on the `version` field above) so a warranty claim years
+        # later can answer "what reveal / thickness was this cabinet cut
+        # to?" — deleting the spec that answer depends on defeats that
+        # entirely. Only a draft (never activated, no downstream asbuilt
+        # could possibly reference it) is safe to delete outright; retiring
+        # an active/superseded spec goes through `active = False`
+        # (archive), which keeps the row and its version number intact.
+        for spec in self:
+            if spec.state != "draft":
+                raise UserError(
+                    _(
+                        "Cut spec %s is %s — active/superseded specs are "
+                        "geometry history needed for warranty trace and "
+                        "cannot be deleted. Archive it instead (set "
+                        "Active = False)."
+                    )
+                    % (spec.display_name, spec.state)
                 )
 
     @api.model

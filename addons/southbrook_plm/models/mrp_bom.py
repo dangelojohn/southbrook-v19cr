@@ -17,6 +17,7 @@ Two concerns:
    activated.
 """
 from odoo import _, api, fields, models
+from odoo.exceptions import ValidationError
 
 
 class MrpBom(models.Model):
@@ -101,6 +102,57 @@ class MrpBom(models.Model):
                 "default_eco_type_id": bom_kind_type.id if bom_kind_type else False,
             },
         }
+
+    # ------------------------------------------------------------------
+    # Version collision guard
+    # ------------------------------------------------------------------
+    @api.constrains(
+        "active", "southbrook_version", "product_tmpl_id", "product_id", "type"
+    )
+    def _check_southbrook_version_unique(self):
+        # Backstops the "one active BoM per (template, version)" invariant
+        # that southbrook.eco._apply_bom relies on. _apply_bom's FOR UPDATE
+        # lock already prevents two CONCURRENT applies from racing to the
+        # same version number, and as of the 2026-08-01 hardening pass it
+        # computes the next version from the max across ALL rows (active or
+        # archived) for the template rather than old_version + 1 — but this
+        # constraint is the backstop for every OTHER path that could still
+        # mint a collision: a manual DB fix, a data import, a copy() called
+        # outside _apply_bom, a second module writing southbrook_version
+        # directly.
+        #
+        # Deliberately scoped to southbrook_version > 1: version-1 is the
+        # ordinary, un-ECO'd starting point, and the configurator/catalog
+        # layer (southbrook_kitchen_mrp's mrp_bom_catalog.py) mass-generates
+        # MANY version-1 BoMs per template as auto-seeded variant stubs
+        # (code prefix "CatalogAutoBOM-*") — those are expected to coexist
+        # at version 1 across different product_id variants of the same
+        # template and are NOT what this guard protects against. Only
+        # ECO-versioned heads (v >= 2, i.e. a version an ECO actually
+        # produced via _apply_bom) are constrained here.
+        for bom in self:
+            if not bom.active or bom.southbrook_version <= 1:
+                continue
+            dupes = self.search_count(
+                [
+                    ("id", "!=", bom.id),
+                    ("active", "=", True),
+                    ("product_tmpl_id", "=", bom.product_tmpl_id.id),
+                    ("product_id", "=", bom.product_id.id),
+                    ("type", "=", bom.type),
+                    ("southbrook_version", "=", bom.southbrook_version),
+                ]
+            )
+            if dupes:
+                raise ValidationError(
+                    _(
+                        "BoM %(name)s: Southbrook version %(v)s already "
+                        "exists on another active BoM for the same "
+                        "template / product / type. Versions must be "
+                        "unique among active heads (v >= 2)."
+                    )
+                    % {"name": bom.display_name, "v": bom.southbrook_version}
+                )
 
     @api.model
     def _get_cut_constants(self):

@@ -90,7 +90,7 @@
                             class="btn-primary" invisible="state != 'open'"
                             groups="southbrook_plm.group_southbrook_plm_approver"/>
                     <button name="action_apply" type="object" string="Apply Change"
-                            class="btn-primary" invisible="state != 'open'"
+                            class="btn-primary" invisible="state != 'open' or not stage_is_approved"
                             groups="southbrook_plm.group_southbrook_plm_approver"
                             confirm="Apply this ECO? This commits the change (BoM version bump or cut-spec activation) and cannot be auto-reverted."/>
                     <button name="action_advance" type="object" string="Next Stage"
@@ -99,8 +99,13 @@
                             invisible="state != 'open'"
                             groups="southbrook_plm.group_southbrook_plm_approver"/>
                     <button name="action_reset_draft" type="object" string="Reset to Draft"
-                            invisible="state == 'open'"
+                            invisible="state != 'rejected'"
                             groups="southbrook_plm.group_southbrook_plm_approver"/>
+                    <button name="action_create_superseding" type="object" string="Create Superseding ECO"
+                            invisible="state != 'applied'"
+                            help="An applied change is committed history. Raise a linked successor ECO to change it further."/>
+                    <field name="stage_is_approved" invisible="1"/>
+                    <field name="emergency_bypass" invisible="1"/>
                     <field name="stage_id" widget="statusbar" options="{'clickable': '1'}"/>
                 </header>
                 <sheet>
@@ -125,20 +130,22 @@
                             invisible="state != 'rejected'"/>
                     <div class="oe_title">
                         <label for="title"/>
-                        <h1><field name="title" placeholder="One-line summary of the change"/></h1>
+                        <h1><field name="title" placeholder="One-line summary of the change" readonly="state != 'open'"/></h1>
                         <field name="name" class="text-muted"/>
                     </div>
                     <group>
                         <group>
-                            <field name="eco_type_id"/>
+                            <field name="eco_type_id" readonly="state != 'open'"/>
                             <field name="target_kind" invisible="1"/>
-                            <field name="priority" widget="priority"/>
+                            <field name="priority" widget="priority" readonly="state != 'open'"/>
                         </group>
                         <group>
-                            <field name="user_id"/>
+                            <field name="user_id" readonly="state != 'open'"/>
                             <field name="approver_id" invisible="not approver_id"/>
                             <field name="applied_date" invisible="not applied_date"/>
                             <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="emergency_bypass" groups="southbrook_plm.group_southbrook_plm_approver" readonly="state != 'open'"/>
+                            <field name="bypass_reason" invisible="not emergency_bypass" required="emergency_bypass" groups="southbrook_plm.group_southbrook_plm_approver" readonly="state != 'open'"/>
                         </group>
                     </group>
                     <notebook>
@@ -146,21 +153,34 @@
                             <group>
                                 <field name="bom_id"
                                        invisible="target_kind != 'bom'"
-                                       required="target_kind == 'bom'"/>
+                                       required="target_kind == 'bom'"
+                                       readonly="state != 'open'"/>
                                 <field name="new_bom_id" invisible="not new_bom_id"/>
+                                <field name="supersedes_id" invisible="not supersedes_id"/>
+                                <field name="superseded_by_id" invisible="not superseded_by_id"/>
                                 <field name="cut_spec_id"
                                        invisible="target_kind != 'cut_spec'"
-                                       required="target_kind == 'cut_spec'"/>
+                                       required="target_kind == 'cut_spec'"
+                                       readonly="state != 'open'"/>
+                                <!-- git_ref is NOT required at draft time: rule ECOs are
+                                     raised before the PR exists (premium orchestration
+                                     auto-proposes them from repeated shop-floor overrides).
+                                     _apply_rule enforces it at apply time. A hard required=
+                                     here would trap auto-raised ECOs in an invalid form —
+                                     the same failure mode as ECO/2026/0115. -->
                                 <field name="git_ref"
                                        invisible="target_kind != 'rule'"
-                                       required="target_kind == 'rule'"/>
+                                       placeholder="Commit SHA or PR URL — required before Apply"
+                                       readonly="state != 'open'"/>
                             </group>
                             <field name="document_ids" widget="many2many_binary"
-                                   string="Engineering Documents"/>
+                                   string="Engineering Documents"
+                                   readonly="state != 'open'"/>
                         </page>
                         <page string="Description" name="description">
                             <field name="description"
-                                   placeholder="What is changing, and why."/>
+                                   placeholder="What is changing, and why."
+                                   readonly="state != 'open'"/>
                         </page>
                     </notebook>
                 </sheet>

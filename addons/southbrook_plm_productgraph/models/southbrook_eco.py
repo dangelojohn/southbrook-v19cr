@@ -134,7 +134,12 @@ class SouthbrookEco(models.Model):
                 ebom=self.pg_ebom_id.name,
             ))
             return
-        self.pg_release_id = release.id
+        # plm_lifecycle: super().action_apply() has already moved the ECO to
+        # 'applied', and PLM's terminal-write immutability guard (2026-08-01
+        # hardening) blocks bare writes against applied ECOs. This write IS
+        # part of the sanctioned apply lifecycle — the same flag the apply
+        # action itself uses.
+        self.with_context(plm_lifecycle=True).write({"pg_release_id": release.id})
         self.message_post(body=_(
             "ProductGraph release <b>%(rel)s</b> executed — "
             "mrp.bom <b>%(bom)s</b> created. Frozen open MOs: %(n)d.",

@@ -128,7 +128,11 @@ class CutSpecOverride(models.Model):
                     f'applied <em>{s.actual_applied_value}</em> (reason: {dict(REASON_CODES).get(s.reason_code, s.reason_code)})</li>'
                 )
             description_html += '</ul><p><em>Auto-proposed by southbrook_premium_orchestration.</em></p>'
+            # title is required=True (NOT NULL) on southbrook.eco — without
+            # it this create crashes and the auto-proposal never lands.
             eco = Eco.create({
+                'title': f"Auto-proposed: review rule '{dict(KNOWN_RULE_KEYS).get(rk, rk)}' "
+                         f"({cnt} overrides in {window_days}d)",
                 'eco_type_id': rule_change_type.id,
                 'description': description_html,
                 'state': 'open',
