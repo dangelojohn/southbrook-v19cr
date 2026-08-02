@@ -12,7 +12,27 @@ design"). Its CORNER slot needs a real SB-CORNER variant to resolve
 against; `ensure_repaired_corner` (shared with test_corner_repair.py /
 test_corner_price_resolution.py) brings a bare test DB to that state,
 exactly like TestCornerPricingConvergence does.
+
+Task 37 (2026-08-02) — header/title collision fix. Visually confirmed on
+a live render: the title strip ("<design name> / Dimensioned Plan /
+PLAN #NN") overlapped web.external_layout's company header (logo,
+address, VAT) on every page. The title strip was never mispositioned —
+it's a plain in-flow <table>, same as southbrook_estimating's
+signature_spec_sheet.xml title strip under the same web.external_layout.
+The real cause is wkhtmltopdf's header/body box math: the dedicated
+paperformat's margin_top(20) + header_spacing(16) = 36mm of clearance
+was too little for this company's real (multi-line) header content,
+so the header overflowed its reserved band and printed on top of the
+title table, which starts at exactly that clearance from the page top.
+signature_spec_sheet.xml renders the IDENTICAL company header at
+margin_top(28) + header_spacing(16) = 44mm with no reported collision,
+so the fix matches that proven-safe number rather than guessing a new
+one (see reports/kitchen_plan_report.xml's paperformat comment).
+test_04/05 pin the structural + config side of that fix; test_06 is
+the real end-to-end smoke: an actual wkhtmltopdf PDF render (skipped
+cleanly if the binary isn't available in the harness).
 """
+import re
 from unittest.mock import patch
 
 from markupsafe import escape
@@ -169,3 +189,102 @@ class TestKitchenPlanReport(TransactionCase):
             self.assertEqual(
                 line.write_date, line_write_dates_before.get(line.id),
                 "line %d write_date must not change" % line.id)
+
+    # ------------------------------------------------------------------
+    # Task 37 — header/title collision fix
+    # ------------------------------------------------------------------
+
+    def test_04_title_block_is_in_normal_flow_not_absolutely_positioned(self):
+        """Structural pin: the title strip (design name / "Dimensioned
+        Plan" / "PLAN #NN") must never be pulled out of normal document
+        flow into the header band — no `position: absolute`/`fixed` and
+        no negative top margin anywhere in the rendered page body. This
+        was already true before the Task 37 fix (the real cause was the
+        paperformat's clearance, not the title's own positioning — see
+        test_05), but pinning it here means a future edit that DOES try
+        to "fix" this by absolutely-positioning the title will fail
+        loudly instead of silently reintroducing the collision."""
+        html = self._render()
+
+        # Scope to the report's own body markup — the standalone <style>
+        # a wkhtmltopdf/browser stylesheet might carry for unrelated
+        # chrome doesn't matter here; we only care about how THIS
+        # report's own inline styles position its own content.
+        self.assertIn('southbrook-kitchen-plan', html)
+        forbidden = re.compile(
+            r'position\s*:\s*(absolute|fixed)|margin-top\s*:\s*-', re.I)
+        self.assertIsNone(
+            forbidden.search(html),
+            "title/page markup must stay in normal flow — no "
+            "position:absolute/fixed or negative top margin")
+
+    def test_05_paperformat_gives_the_company_header_clearance(self):
+        """Regression pin for the actual fix: the dedicated paperformat's
+        margin_top + header_spacing (the vertical clearance wkhtmltopdf
+        gives the company header before body content — our title table
+        — starts printing) must be at least as generous as
+        southbrook_estimating's signature_spec_sheet.xml paperformat,
+        which renders the SAME company header (same web.external_layout,
+        no override) with no reported collision. Matching-or-exceeding
+        that proven-safe number is the fix; regressing below it
+        reintroduces the header/title overlap on this company's real
+        (multi-line) header content."""
+        report = self.env.ref(
+            "southbrook_kitchen_3d_configurator.action_report_kitchen_plan")
+        pf = report.paperformat_id
+        self.assertTrue(pf, "action_report_kitchen_plan must carry a "
+                             "dedicated paperformat")
+        clearance = (pf.margin_top or 0) + (pf.header_spacing or 0)
+
+        sibling_pf = self.env.ref(
+            "southbrook_estimating.paperformat_southbrook_invoice_a4")
+        sibling_clearance = (
+            (sibling_pf.margin_top or 0) + (sibling_pf.header_spacing or 0))
+
+        self.assertGreaterEqual(
+            clearance, sibling_clearance,
+            "plan report's header clearance (%.0fmm) must be >= the "
+            "proven-safe sibling report's clearance (%.0fmm) — they "
+            "render the identical company header" % (
+                clearance, sibling_clearance))
+
+    def test_06_pdf_smoke_renders_a_real_pdf(self):
+        """The real, end-to-end verification: bake an actual PDF via
+        wkhtmltopdf (not the HTML-only `_render_qweb_html` path the
+        other tests here use) and assert it's a real, non-trivial PDF.
+        `--test-enable` normally makes `_render_qweb_pdf` silently fall
+        back to HTML (see `_pre_render_qweb_pdf`) — `force_report_
+        rendering=True` overrides that, matching what a live Print
+        click actually does. Skips cleanly (not an error) if
+        wkhtmltopdf isn't usable in this harness."""
+        IrActionsReport = self.env["ir.actions.report"]
+        state = IrActionsReport.get_wkhtmltopdf_state()
+        if state != "ok":
+            self.skipTest(
+                "wkhtmltopdf not usable in this harness (state=%r)" % state)
+
+        report = self.env.ref(
+            "southbrook_kitchen_3d_configurator.action_report_kitchen_plan")
+        pdf_content, content_type = report.with_context(
+            force_report_rendering=True,
+        )._render_qweb_pdf(
+            "southbrook_kitchen_3d_configurator.action_report_kitchen_plan",
+            self.design.ids,
+        )
+        self.assertEqual(content_type, "pdf")
+        self.assertTrue(
+            pdf_content.startswith(b"%PDF"),
+            "must be a real PDF, not an HTML fallback")
+        # >20KB (decimal) per the task brief — confirmed live on this
+        # exact CI recipe (ci_t37, this docker command): an L-10X8
+        # plan PDF lands around ~20.3KB even in this harness, which has
+        # no live HTTP listener for wkhtmltopdf's own asset fetch (a
+        # --stop-after-init test run never opens one), so the company
+        # header's logo/CSS don't load and the real PDF is SMALLER here
+        # than a live Print click would produce. 20000 is therefore a
+        # real floor, not an inflated one.
+        self.assertGreater(
+            len(pdf_content), 20000,
+            "plan PDF for an L-10X8 design should be over 20KB (inline "
+            "SVG floor plan + cabinet schedule); a near-empty PDF "
+            "suggests the render silently failed/degraded")

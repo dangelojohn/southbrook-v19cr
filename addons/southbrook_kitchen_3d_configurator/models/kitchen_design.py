@@ -3386,13 +3386,21 @@ class SouthbrookKitchenDesign(models.Model):
                     # Code/message stay unchanged so a future severity
                     # flip is a one-word change.
                     "severity": "warning",
+                    # Copy fix (Task 37, 2026-08-02) — this warning fires
+                    # on BOTH shipped flagship templates (L-10X8, U-10X8X10)
+                    # on a fresh, untouched instantiation: a short/absent
+                    # upper run over a sink or appliance is a deliberate,
+                    # legitimate design choice, not a defect. The old
+                    # wording ("...before quoting") read as an accusation
+                    # on completely normal output. Rewritten to state the
+                    # fact and name the legitimate reasons, per the
+                    # southbrook-design-system copy standard (informational,
+                    # "fine if intentional", no alarm words).
                     "message":  (
-                        "The base cabinets on the %s wall run %.1f\" "
-                        "long, but the wall cabinets above only run "
-                        "%.1f\". Add wall cabinets (or shorten the base "
-                        "run) so the upper run covers the same length "
-                        "before quoting."
-                    ) % (wall14, base_covered14, wall_covered14)
+                        "Wall cabinets cover %.1f\" of the %.1f\" base "
+                        "run on the %s wall — fine if intentional (open "
+                        "shelving, windows, hoods)."
+                    ) % (wall_covered14, base_covered14, wall14)
                                 + _line_ref(base14, wallcabs14),
                 })
                 continue   # a short run's interior seams aren't the issue
@@ -3433,11 +3441,16 @@ class SouthbrookKitchenDesign(models.Model):
                 issues.append({
                     "code":     "WALL_BASE_JOINT_MISALIGNED",
                     "severity": "warning",
+                    # Copy fix (Task 37, 2026-08-02) — same informational
+                    # framing as WALL_RUN_SHORTER_THAN_BASE above: state
+                    # the fact, note it's fine if deliberate, keep the
+                    # (genuinely useful) suggestion, no alarm words.
                     "message":  (
                         "On the %s wall, %d cabinet seam(s) between the "
-                        "base and wall cabinets don't line up (off by up "
-                        "to %.2f\"). Nudge cabinet widths or positions so "
-                        "the doors read as a continuous line."
+                        "base and wall cabinets don't quite line up (off "
+                        "by up to %.2f\") — fine if intentional, but "
+                        "nudging cabinet widths or positions will line "
+                        "the doors up as one continuous run."
                     ) % (wall14, len(mismatched14), worst14)
                                 + _line_ref(sorted(ref_ids14)),
                 })

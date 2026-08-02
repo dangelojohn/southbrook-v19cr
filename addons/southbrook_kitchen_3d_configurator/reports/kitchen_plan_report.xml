@@ -138,13 +138,41 @@
 
   <!-- Dedicated paperformat — Portrait A4, tighter margins than the
        default so the schedule table doesn't get crowded off a second
-       page for a typical 8-15 line design. -->
+       page for a typical 8-15 line design.
+
+       Task 37 (2026-08-02) — header/title collision fix. The title strip
+       above (design name / "Dimensioned Plan" / "PLAN #NN") was never
+       positioned/floated wrong — it's a plain in-flow <table>, same
+       pattern as southbrook_estimating/reports/signature_spec_sheet.xml's
+       own title strip under the SAME web.external_layout. The actual
+       cause is wkhtmltopdf's header/body box math: web.external_layout's
+       company header (logo + address/VAT block, via
+       web.external_layout_standard) is rendered into the page's reserved
+       top-margin band and is NOT clipped to it — if the company's real
+       address block (name, street, phone, email, website, VAT — several
+       lines) is taller than margin_top, it overflows downward past its
+       box. header_spacing only buys extra clearance if
+       margin_top + header_spacing exceeds that overflow; body content
+       (our title table) starts exactly at margin_top + header_spacing
+       from the top of the page. At margin_top=20/header_spacing=16 the
+       clearance (36mm) was too tight for this company's real header
+       content, so the title table's first line landed on top of the
+       tail of the company address block on every page (the header
+       repeats per page, hence "both pages").
+
+       signature_spec_sheet.xml renders the IDENTICAL company header
+       (same web.external_layout, no override) at margin_top=28/
+       header_spacing=16 (44mm clearance) with no reported collision —
+       proof this clearance is sufficient for this company's actual
+       header content, since it's the same header on the same company
+       record. Matching that number here (rather than guessing a new
+       one) is the fix. -->
   <record id="paperformat_southbrook_kitchen_plan" model="report.paperformat">
     <field name="name">Southbrook Kitchen Plan A4</field>
     <field name="format">A4</field>
     <field name="orientation">Portrait</field>
     <field name="dpi">90</field>
-    <field name="margin_top">20</field>
+    <field name="margin_top">28</field>
     <field name="margin_bottom">16</field>
     <field name="margin_left">10</field>
     <field name="margin_right">10</field>
