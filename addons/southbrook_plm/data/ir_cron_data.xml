@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <!-- Typed effectivity (2026-08-02). Applies Scheduled
+         (effectivity_type == 'date') ECOs whose effective_date has
+         arrived, by calling southbrook.eco._cron_apply_due_ecos() —
+         see that method's docstring in models/southbrook_eco.py for
+         why it replays an already-recorded approval decision on a
+         timer instead of re-running the human-identity checks
+         (PLM Approver group, four-eyes) that action_apply enforces.
+
+         Odoo 19 ir.cron schema note: numbercall / doall are GONE from
+         this model in v19 — do not add them back (see
+         odoo19_ir_cron_schema_change.md). This record intentionally
+         carries only the v19-era fields. -->
+    <record id="ir_cron_apply_due_ecos" model="ir.cron">
+        <field name="name">PLM: Apply scheduled ECOs</field>
+        <field name="model_id" ref="model_southbrook_eco"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_apply_due_ecos()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">hours</field>
+        <field name="active" eval="True"/>
+    </record>
+
+</odoo>

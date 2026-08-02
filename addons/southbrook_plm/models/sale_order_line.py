@@ -12,7 +12,7 @@ model. Estimating's sale.order.action_confirm calls the capture method
 via duck-typing — if PLM is installed, the capture runs; if not, the
 hasattr-guarded extension is silently absent.
 """
-from odoo import _, fields, models
+from odoo import _, api, fields, models
 
 
 class SaleOrderLine(models.Model):
@@ -156,3 +156,65 @@ class SaleOrderLine(models.Model):
                     vals["southbrook_bom_version"] = bom.southbrook_version
             if vals:
                 line.write(vals)
+
+    # ------------------------------------------------------------------
+    # Coverage gap — lines added to an order that is ALREADY confirmed.
+    # ------------------------------------------------------------------
+    # Prod audit: 55.6% of CONFIRMED lines carry a snapshot, 0% of
+    # drafts. The 0% on drafts is CORRECT and must stay that way — see
+    # the help text on southbrook_cut_spec_version_id above: a draft
+    # line is still a quotation, not a commitment, so pinning it to
+    # whatever spec happens to be active on the day the rep typed it
+    # would be meaningless — worse, it would be actively WRONG the
+    # moment the customer takes weeks to accept and an ECO lands in the
+    # meantime. The spec that SHOULD apply to a draft line is whichever
+    # one is live the moment the customer actually accepts — i.e. at
+    # action_confirm, not before. This mirrors SAP's Order-BOM trigger
+    # point: BOM/routing explosion happens at order entry / commitment,
+    # not at quotation time.
+    #
+    # The real gap the 55.6% number exposes: action_confirm (see
+    # sale_order.py in this addon) is the ONLY trigger that ever calls
+    # _capture_southbrook_version_snapshots(), so a line added to an
+    # order AFTER it was already confirmed — a change order, an upsell,
+    # a rep fixing a missed cabinet on a live job — never gets stamped
+    # at all: action_confirm already ran for that order and will never
+    # run again. That line is left permanently unpinned, which silently
+    # reads downstream as "no snapshot," indistinguishable from "this
+    # order predates the feature."
+    #
+    # Fix: also capture at create() time, but ONLY for lines being
+    # created onto an order that is ALREADY in 'sale'/'done'. That
+    # condition is the SAP Order-BOM logic applied at line granularity:
+    # the ORDER is already a commitment, so a line that comes into
+    # existence on it is committed the instant it exists — there is no
+    # draft/quotation phase for that particular line to sit in. A line
+    # created on a still-draft order (state 'draft' or 'sent') is NOT
+    # touched here; it waits for action_confirm exactly like every other
+    # line on that order, for the same reason drafts are deliberately
+    # left unpinned above.
+    #
+    # Kept cheap and defensive:
+    #   - filter BEFORE calling the capture helper, not after, so the
+    #     overwhelmingly common case — building a still-draft quotation,
+    #     where every created line's order is in 'draft'/'sent' — costs
+    #     one Python-level .filtered() and nothing else: no extra query,
+    #     no method call into the capture helper at all.
+    #   - _capture_southbrook_version_snapshots() is already idempotent
+    #     (`if line.southbrook_cut_spec_version_id: continue`, unchanged
+    #     here) and already batches its BoM lookup, so calling it from
+    #     create() is safe even under multi-line create_multi batches.
+    #   - action_confirm's own trigger and its idempotency guard are
+    #     UNCHANGED — a line must never be re-pinned once pinned,
+    #     whichever path (action_confirm or this create()) pinned it
+    #     first.
+    @api.model_create_multi
+    def create(self, vals_list):
+        lines = super().create(vals_list)
+        qualifying = lines.filtered(
+            lambda line: line.order_id.state in ("sale", "done")
+        )
+        if not qualifying:
+            return lines
+        qualifying._capture_southbrook_version_snapshots()
+        return lines

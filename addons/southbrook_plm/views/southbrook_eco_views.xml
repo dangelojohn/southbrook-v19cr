@@ -17,11 +17,14 @@
                 <filter name="open" string="Open" domain="[('state', '=', 'open')]"/>
                 <filter name="applied" string="Applied" domain="[('state', '=', 'applied')]"/>
                 <filter name="rejected" string="Rejected" domain="[('state', '=', 'rejected')]"/>
+                <filter name="scheduled" string="Scheduled" domain="[('effectivity_type', '=', 'date'), ('state', '=', 'open')]"/>
+                <separator/>
                 <group name="group_by">
                     <filter name="grp_stage" string="Stage" context="{'group_by': 'stage_id'}"/>
                     <filter name="grp_type" string="Type" context="{'group_by': 'eco_type_id'}"/>
                     <filter name="grp_kind" string="Target Kind" context="{'group_by': 'target_kind'}"/>
                     <filter name="grp_user" string="Responsible" context="{'group_by': 'user_id'}"/>
+                    <filter name="grp_effectivity" string="Effectivity" context="{'group_by': 'effectivity_type'}"/>
                 </group>
             </search>
         </field>
@@ -71,6 +74,8 @@
                 <field name="eco_type_id"/>
                 <field name="target_kind"/>
                 <field name="stage_id"/>
+                <field name="effectivity_type"/>
+                <field name="effective_date" optional="hide"/>
                 <field name="state" widget="badge"
                        decoration-success="state == 'applied'"
                        decoration-danger="state == 'rejected'"/>
@@ -106,9 +111,14 @@
                             help="An applied change is committed history. Raise a linked successor ECO to change it further."/>
                     <field name="stage_is_approved" invisible="1"/>
                     <field name="emergency_bypass" invisible="1"/>
+                    <field name="effectivity_state" invisible="1"/>
                     <field name="stage_id" widget="statusbar" options="{'clickable': '1'}"/>
                 </header>
                 <sheet>
+                    <div class="alert alert-info" role="status"
+                         invisible="effectivity_type != 'date' or state != 'open' or not approver_id">
+                        <p class="mb-0">Approved and scheduled — this change applies automatically on its effective date. Applying it by hand before then is refused; change the date or switch to Immediate to release it now.</p>
+                    </div>
                     <div class="oe_button_box" name="button_box">
                         <button name="action_open_documents" type="object"
                                 class="oe_stat_button" icon="fa-paperclip">
@@ -144,6 +154,16 @@
                             <field name="approver_id" invisible="not approver_id"/>
                             <field name="applied_date" invisible="not applied_date"/>
                             <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="effectivity_type" readonly="state != 'open'"/>
+                            <field name="effective_date"
+                                   invisible="effectivity_type != 'date'"
+                                   required="effectivity_type == 'date'"
+                                   readonly="state != 'open'"/>
+                            <field name="use_up_note"
+                                   invisible="effectivity_type != 'use_up'"
+                                   required="effectivity_type == 'use_up'"
+                                   placeholder="Which stock must run out first?"
+                                   readonly="state != 'open'"/>
                             <field name="emergency_bypass" groups="southbrook_plm.group_southbrook_plm_approver" readonly="state != 'open'" help="Arming this is logged to chatter. Four-eyes exists so a second person reviews the change — use only when genuinely no other approver is reachable."/>
                             <field name="bypass_reason" invisible="not emergency_bypass" required="emergency_bypass" groups="southbrook_plm.group_southbrook_plm_approver" readonly="state != 'open'" placeholder="Why is no independent approver available?"/>
                         </group>

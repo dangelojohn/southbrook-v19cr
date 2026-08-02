@@ -188,6 +188,63 @@ class SouthbrookCutSpec(models.Model):
                 })
         return result
 
+    # ------------------------------------------------------------------
+    # CUT-SPEC VERSION CHAIN + ACTIVE WINDOWS
+    # ------------------------------------------------------------------
+    # Problem this closes: before this feature, `state` told you WHICH
+    # spec is live NOW, and the chatter told you (in prose, not
+    # queryable) roughly when a supersession happened — but there was no
+    # way to answer "which geometry was in force on <arbitrary past
+    # date>?" Both prod specs sat at version 1 with no predecessor /
+    # successor link and no active-from/active-to window, so that
+    # question could only be answered by forensic chatter archaeology, if
+    # at all. That is exactly the question a warranty claim raises years
+    # after a cabinet was cut — see the `version` field's W079 rationale
+    # above for the same JTBD one level up (spec identity, not spec
+    # timing).
+    #
+    # active_from / active_to form a half-open interval
+    # [active_from, active_to) — active_to is empty (False) while the
+    # spec is still live, and gets stamped the instant a successor
+    # activates. action_activate (below) sets BOTH sides of a
+    # supersession from a single shared `now` value so the two windows
+    # abut EXACTLY: no gap (a warranty-trace lookup landing in a gap
+    # would resolve to nothing) and no overlap (two specs simultaneously
+    # "active" would make resolution ambiguous). See
+    # ``_get_spec_active_at`` below for the query these fields exist to
+    # answer.
+    #
+    # predecessor_id / successor_id are the direct chain links — the
+    # doubly-linked-list companion to the interval fields. They encode
+    # nothing the interval fields don't already imply (you could walk the
+    # chain by re-querying on time), but a direct FK is O(1), needs no
+    # date math, and is immune to any future gap/overlap bug in the
+    # interval fields, so both representations are kept.
+    active_from = fields.Datetime(
+        readonly=True,
+        copy=False,
+        help="When this spec became the live geometry. Set by "
+             "action_activate.",
+    )
+    active_to = fields.Datetime(
+        readonly=True,
+        copy=False,
+        help="When this spec stopped being live (i.e. when its successor "
+             "activated). Empty while active.",
+    )
+    predecessor_id = fields.Many2one(
+        "southbrook.cut.spec",
+        readonly=True,
+        copy=False,
+        string="Supersedes",
+    )
+    successor_id = fields.Many2one(
+        "southbrook.cut.spec",
+        readonly=True,
+        copy=False,
+        string="Superseded By",
+    )
+
     # ---- The promoted NF14 constants (all millimetres). ----
     box_th = fields.Float(
         "Box / Carcass Thickness (mm)", default=15.875, required=True,
@@ -272,6 +329,72 @@ class SouthbrookCutSpec(models.Model):
         """
         return self.search([("state", "=", "active")], limit=1)
 
+    @api.model
+    def _get_spec_active_at(self, when):
+        """Return the spec that was live at datetime ``when``, or empty.
+
+        Used by warranty trace ("what geometry was this cabinet cut to?")
+        and by the version-chain backfill migration (19.0.5.0.0) to
+        resolve each historical order line's spec without guessing.
+
+        Match semantics: ``active_from <= when`` AND (``active_to`` is
+        False OR ``active_to`` > when) — the half-open
+        ``[active_from, active_to)`` window documented on those fields.
+        Searched with ``active_test=False`` so an archived spec
+        (``active=False``) still resolves — the whole point of this
+        method is that history must be reconstructable even after a spec
+        has been archived out of the normal UI lists.
+
+        Like ``_get_active()`` above, this does NOT sudo() internally —
+        cut specs are a PLM-restricted read, and callers outside PLM
+        (e.g. the sale-order-line snapshot capture) are expected to
+        sudo() at the call site, exactly as ``_get_active()`` already
+        requires. This keeps both lookup methods consistent.
+
+        Fallback 1 — ``when`` predates every recorded window (e.g. it is
+        older than the earliest ``active_from`` this database knows
+        about — orders confirmed before this feature existed, resolved
+        against the backfill migration's own create_date-based
+        reconstruction). Best available answer is the OLDEST spec we
+        have a window for: "the earliest thing we can prove was live"
+        beats returning nothing, and this is a documented fallback (not
+        a genuine match) so a caller that cares can tell the difference
+        by re-checking whether ``when`` actually falls inside the
+        returned spec's window.
+
+        Fallback 2 — nothing has an ``active_from`` at all (e.g. this is
+        called before the 19.0.5.0.0 backfill migration has run, or on a
+        fresh install with no activation history yet). There is nothing
+        to fall back to: return empty. Callers MUST treat empty as
+        "unknown" and must NOT substitute today's active spec — silently
+        rewriting history is the exact failure mode this feature exists
+        to prevent (see the backfill migration's Step 2 "do not guess"
+        rule, which mirrors this).
+        """
+        if not when:
+            return self.browse()
+        Spec = self.with_context(active_test=False)
+        match = Spec.search(
+            [
+                ("active_from", "<=", when),
+                "|",
+                ("active_to", "=", False),
+                ("active_to", ">", when),
+            ],
+            order="active_from desc",
+            limit=1,
+        )
+        if match:
+            return match
+        # Fallback 1 (see docstring). search() returns an empty recordset
+        # if nothing has active_from set at all, which IS fallback 2 —
+        # no separate branch needed.
+        return Spec.search(
+            [("active_from", "!=", False)],
+            order="active_from asc",
+            limit=1,
+        )
+
     def _compute_southbrook_eco_count(self):
         for spec in self:
             spec.southbrook_eco_count = len(spec.southbrook_eco_ids)
@@ -323,6 +446,13 @@ class SouthbrookCutSpec(models.Model):
         ``with_context(plm_lifecycle=PLM_LIFECYCLE)`` — may reach this
         line. A direct call (button, RPC, shell) without that context is
         refused and pointed at raising a cut-spec ECO instead.
+
+        CUT-SPEC VERSION CHAIN: also stamps the active-window and chain
+        fields on both sides of the supersession — see the field-block
+        comment above ``active_from`` for the full rationale. This is
+        bookkeeping alongside the state transition, not a second
+        lifecycle event in its own right, so it rides on the same
+        authorisation check above rather than needing its own.
         """
         self.ensure_one()
         if not self._plm_lifecycle_authorised():
@@ -339,11 +469,48 @@ class SouthbrookCutSpec(models.Model):
         if self.state == "active":
             return True
         prior = self._get_active()
+        # Single `now`, shared by both sides of the supersession, rather
+        # than two independent fields.Datetime.now() calls — two reads
+        # could in principle differ by a few microseconds and open a gap
+        # between prior.active_to and self.active_from. A human date
+        # would never notice, but the entire point of this feature is
+        # exact reconstructability, so we don't leave it to chance: one
+        # value, written to both records, guarantees the windows abut
+        # with no gap and no overlap.
+        now = fields.Datetime.now()
         if prior and prior != self:
-            prior.write({"state": "superseded"})
+            # These are the model's OWN readonly fields, written by the
+            # model's own already-authorised action — no sudo() needed.
+            # Whoever reached this line already holds perm_write on
+            # southbrook.cut.spec (ir.model.access.csv grants it only to
+            # group_southbrook_plm_approver, the sole group that can
+            # apply a cut-spec ECO; see the write() override above for
+            # the matching note). Including `state` in this same write()
+            # call is safe: write()'s own state-write guard only blocks
+            # `state` when the caller lacks PLM_LIFECYCLE context
+            # authorisation, and we are running inside that authorised
+            # context right now (checked above) — it does not re-check
+            # per field.
+            prior.write({
+                "state": "superseded",
+                "active_to": now,
+                "successor_id": self.id,
+            })
             prior.message_post(
                 body=_("Superseded by cut spec %s.") % self.display_name
             )
-        self.write({"state": "active"})
+            self.write({
+                "state": "active",
+                "active_from": now,
+                "predecessor_id": prior.id,
+            })
+        else:
+            # First-ever activation (or a corrupted/empty prior lookup) —
+            # nothing precedes this spec, so only the active_from side of
+            # the window opens; predecessor_id stays empty.
+            self.write({
+                "state": "active",
+                "active_from": now,
+            })
         self.message_post(body=_("Activated as the live cut specification."))
         return True

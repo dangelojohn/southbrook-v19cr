@@ -11,6 +11,8 @@
                 <field name="state" widget="badge"
                        decoration-success="state == 'active'"
                        decoration-info="state == 'draft'"/>
+                <field name="active_from"/>
+                <field name="active_to"/>
                 <field name="box_th"/>
                 <field name="back_th"/>
                 <field name="door_th"/>
@@ -77,6 +79,12 @@
                     </group>
                     <group string="Provenance">
                         <field name="note" nolabel="1"/>
+                    </group>
+                    <group string="History">
+                        <field name="active_from" readonly="1"/>
+                        <field name="active_to" readonly="1" invisible="not active_to"/>
+                        <field name="predecessor_id" readonly="1" invisible="not predecessor_id"/>
+                        <field name="successor_id" readonly="1" invisible="not successor_id"/>
                     </group>
                 </sheet>
                 <chatter/>

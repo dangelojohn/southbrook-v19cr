@@ -30,6 +30,8 @@
                 icon="fa-flag"
                 title="Raise an Engineering Change Order about this cabinet"
                 groups="southbrook_plm.group_southbrook_plm_user"/>
+        <field name="southbrook_cut_spec_version_id" optional="hide" readonly="1"/>
+        <field name="southbrook_bom_version" optional="hide" readonly="1"/>
       </xpath>
     </field>
   </record>

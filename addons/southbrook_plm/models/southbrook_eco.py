@@ -241,6 +241,178 @@ class SouthbrookEco(models.Model):
                 )
 
     # ------------------------------------------------------------------
+    # Typed effectivity (2026-08-02). Industry practice for change-control
+    # systems that actually run a factory floor (researched against Odoo
+    # Enterprise mrp_plm, Arena, Oracle Agile/PLM, and PTC Windchill) treats
+    # "when does an approved change take effect" as its OWN typed decision,
+    # distinct from "is it approved". Before this, an approved Southbrook
+    # ECO applied the instant a PLM Approver clicked Apply, or not at all —
+    # fine for a code fix, wrong for a change that a make-to-order cabinet
+    # shop needs to cut in at a predictable, communicated moment.
+    #
+    #   immediate — the default, and the ONLY behaviour that existed
+    #               before this field. action_apply commits the change
+    #               the moment it's clicked, exactly as before.
+    #   date      — the change is scheduled for a specific moment (e.g.
+    #               "the new box spec starts on jobs confirmed from
+    #               Monday"). For a make-to-order shop, ORDER-CONFIRMATION
+    #               DATE is the natural cut-in point — not "today" and not
+    #               an arbitrary calendar date picked in the abstract —
+    #               but this field stores a plain effective_date rather
+    #               than hard-wiring that semantics, so a scheduled ECO
+    #               can also model a vendor-communicated hardware
+    #               availability date, a plant shutdown week, etc. The
+    #               hourly cron (_cron_apply_due_ecos, below) applies it
+    #               automatically once effective_date arrives.
+    #   use_up    — the change cuts in once EXISTING STOCK of a superseded
+    #               material is exhausted, not on any calendar date. This
+    #               type exists because geometry constants (rabbet depth,
+    #               reveal, etc.) are very often driven by a HARDWARE
+    #               SUBSTITUTION — e.g. a new hinge cup diameter changes
+    #               the boring pattern — and the shop should keep building
+    #               to the OLD geometry as long as the OLD hardware is
+    #               still on the shelf, then cut over. There is no
+    #               reliable calendar date for "the shelf ran out"; it is
+    #               a stock-level event a human on the floor confirms. This
+    #               module deliberately does NOT watch stock.quant levels
+    #               and auto-apply a use_up ECO — use_up_note is
+    #               informational only, and a human still clicks Apply
+    #               once they've confirmed exhaustion (action_apply's
+    #               existing checks apply unchanged; there is no cron path
+    #               for use_up).
+    effectivity_type = fields.Selection(
+        [
+            ("immediate", "Immediate — apply on approval"),
+            ("date", "Scheduled — apply on a date"),
+            ("use_up", "Use-up — apply when existing stock is exhausted"),
+        ],
+        default="immediate",
+        required=True,
+        tracking=True,
+        help="WHEN an approved ECO takes effect, as distinct from WHETHER "
+        "it is approved. Immediate applies the instant Apply is clicked, "
+        "exactly like every ECO before this field existed. Scheduled "
+        "defers to effective_date (the hourly cron applies it "
+        "automatically once due). Use-up defers to a stock-exhaustion "
+        "event a human confirms on the floor — geometry constants are "
+        "often driven by a hardware substitution, so the change should "
+        "cut in once the old hardware is consumed, not on a calendar "
+        "date; nothing automated watches stock for this type, a human "
+        "still applies it.",
+    )
+    effective_date = fields.Datetime(
+        tracking=True,
+        copy=False,
+        help="When a Scheduled ECO becomes live. The cron applies it at "
+        "or after this moment; until then the change is approved but NOT "
+        "in force.",
+    )
+    use_up_note = fields.Char(
+        tracking=True,
+        help="Which stock must be exhausted before this change cuts in. "
+        "Informational only — nothing in this module watches inventory "
+        "levels; a human confirms exhaustion on the floor and then "
+        "applies the ECO manually, same as any other apply.",
+    )
+    # effectivity_state is a STORED compute, which immediately runs into a
+    # basic limitation: a stored field only recomputes when one of its
+    # @api.depends fields changes on the record — it has no way to notice
+    # that wall-clock time has simply passed. A pure "pending vs due"
+    # split (has effective_date arrived RIGHT NOW) cannot live in a stored
+    # compute without something re-triggering it every time "now" crosses
+    # effective_date, which nothing here does. Rather than pretend
+    # otherwise with a compute that quietly goes stale, this field never
+    # assigns "due" itself — "due" exists in the selection purely so the
+    # value is self-documenting (and available to any future non-stored
+    # display use), while the ACTUAL pending-vs-due distinction is
+    # resolved where it belongs: _cron_apply_due_ecos' search domain,
+    # which re-evaluates effective_date <= now() fresh on every run. The
+    # compute below treats every approved + scheduled + unapplied ECO as
+    # "pending" — which stays TRUE right up until the cron (or a human,
+    # via action_apply once effective_date has passed) actually applies
+    # it, at which point state flips to applied and this recomputes to
+    # in_force. No wall-clock claim is ever stored as fact.
+    effectivity_state = fields.Selection(
+        [
+            ("not_scheduled", "Not Scheduled"),
+            ("pending", "Pending — Scheduled, Not Yet Due"),
+            ("due", "Due"),
+            ("in_force", "In Force"),
+        ],
+        string="Effectivity State",
+        compute="_compute_effectivity_state",
+        store=True,
+        help="not_scheduled: Immediate or Use-up type, or a Scheduled ECO "
+        "not yet approved. pending: approved and Scheduled, effective_date "
+        "in the future (or the compute simply can't know — see the field "
+        "comment). due: reserved for display use; this stored field never "
+        "assigns it — the cron's search domain is the actual source of "
+        "truth for 'is it due right now'. in_force: state == applied.",
+    )
+
+    @api.depends("state", "effectivity_type", "effective_date", "approver_id")
+    def _compute_effectivity_state(self):
+        for eco in self:
+            if eco.state == "applied":
+                eco.effectivity_state = "in_force"
+            elif (
+                eco.effectivity_type == "date"
+                and eco.effective_date
+                and eco.approver_id
+            ):
+                eco.effectivity_state = "pending"
+            else:
+                eco.effectivity_state = "not_scheduled"
+
+    @api.constrains("effectivity_type", "effective_date", "use_up_note", "state")
+    def _check_effectivity(self):
+        for eco in self:
+            if eco.effectivity_type == "date":
+                if not eco.effective_date:
+                    raise ValidationError(
+                        _(
+                            "ECO %s: Effectivity is 'Scheduled' — an "
+                            "Effective Date is required."
+                        )
+                        % eco.name
+                    )
+                # Future-date requirement is skipped once the ECO is
+                # applied: applying is exactly the moment effective_date
+                # is EXPECTED to have arrived (the cron only ever applies
+                # a due ECO, and a human applying early is refused by
+                # action_apply's own check, below), and "state" is
+                # deliberately in this constraint's @api.depends because
+                # the terminal write that flips state to 'applied' would
+                # otherwise re-run this check against a now-past date and
+                # fail the very apply it just performed. Applied ECOs are
+                # immutable history anyway (see write()'s terminal-write
+                # guard) — allowing a past date on them is what keeps that
+                # history writable by the lifecycle write path at all.
+                if (
+                    eco.state != "applied"
+                    and eco.effective_date <= fields.Datetime.now()
+                ):
+                    raise ValidationError(
+                        _(
+                            "ECO %(eco)s: Effective Date must be in the "
+                            "future — %(date)s has already passed (or is "
+                            "now). A Scheduled ECO cannot be scheduled "
+                            "into the past."
+                        )
+                        % {"eco": eco.name, "date": eco.effective_date}
+                    )
+            if eco.effectivity_type == "use_up" and not eco.use_up_note:
+                raise ValidationError(
+                    _(
+                        "ECO %s: Effectivity is 'Use-up' — a Use-up Note "
+                        "is required so a human on the floor knows which "
+                        "stock must be exhausted before this change cuts "
+                        "in."
+                    )
+                    % eco.name
+                )
+
+    # ------------------------------------------------------------------
     # Target-required validation (mirrors the form view's per-target_kind
     # required attrs at the model level, so an RPC/import caller that
     # bypasses the view can't create an unappliable ECO).
@@ -1006,6 +1178,20 @@ class SouthbrookEco(models.Model):
         two states — zero flagged stages (refused) or exactly one (used)
         — never the ambiguous "flag drifted away and nobody noticed"
         state the old fallback allowed.
+
+        Typed effectivity (2026-08-02): every check in this method still
+        runs, unweakened, exactly as before. What changed is what happens
+        AFTER the checks pass — the actual commit (handler dispatch,
+        impact scan, terminal write) now lives in _execute_apply(), which
+        this method calls per-record once its own checks are satisfied.
+        This method also gained one more check of its own: a Scheduled
+        ECO (effectivity_type == 'date') whose effective_date hasn't
+        arrived yet refuses Apply outright rather than jumping the queue
+        — see the comment at that check, below, for why. The split exists
+        so _cron_apply_due_ecos can call _execute_apply() directly once a
+        Scheduled ECO's effective_date arrives, replaying an
+        already-recorded approval decision on schedule without an acting
+        human identity to check four-eyes/group membership against.
         """
         if not self.env.user.has_group(
             "southbrook_plm.group_southbrook_plm_approver"
@@ -1094,59 +1280,221 @@ class SouthbrookEco(models.Model):
                         "reason": eco.bypass_reason or _("(no reason given)"),
                     }
                 )
-            handler = getattr(eco, "_apply_%s" % (eco.target_kind or ""), None)
-            if handler is None:
+            # Typed effectivity (2026-08-02): a Scheduled ECO
+            # (effectivity_type == 'date') that hasn't reached its
+            # effective_date yet is approved but NOT YET IN FORCE — that
+            # is the entire point of scheduling it instead of applying
+            # immediately. A human clicking Apply early must be told,
+            # not silently allowed to jump the queue; the escape hatch is
+            # explicit (clear/advance the date, or switch to Immediate).
+            # _cron_apply_due_ecos (below) applies a due Scheduled ECO
+            # automatically once effective_date arrives, and it does so
+            # by calling _execute_apply() directly — NOT this method — so
+            # there is no "caller is the cron" branch to special-case
+            # here: any execution that reaches this line is, by
+            # construction, a human or API caller going through this
+            # gated entry point, never the cron.
+            if (
+                eco.effectivity_type == "date"
+                and eco.effective_date
+                and eco.effective_date > fields.Datetime.now()
+            ):
                 raise UserError(
-                    _("No apply handler for ECO type kind '%s'.")
-                    % eco.target_kind
+                    _(
+                        "ECO %(eco)s is scheduled for %(date)s and will "
+                        "apply automatically then — it is approved but "
+                        "not yet in force. To apply it now instead, clear "
+                        "or move up its Effective Date, or switch "
+                        "Effectivity to Immediate, then Apply again."
+                    )
+                    % {"eco": eco.name, "date": eco.effective_date}
                 )
-            handler()
-            # SAMI PRD PLM-02 — flag live MOs that were referencing the
-            # versioned target. Non-fatal: failure to scan MUST NEVER
-            # block the ECO apply itself.
-            #
-            # FIX 10 (2026-08-02 blindspot pass): the bare try/except here
-            # was documented "non-fatal" but wasn't actually safe against
-            # every failure mode — a DB-level error (e.g. an
-            # IntegrityError from the m2m write) poisons the CURSOR, not
-            # just raises a Python exception, and every subsequent
-            # statement on that cursor (including the terminal-state write
-            # below, and this whole ECO's apply) then fails too, rolling
-            # back the ECO's own already-committed change handler right
-            # along with it. `with self.env.cr.savepoint():` scopes any
-            # such failure to a rollback of ONLY the scan, leaving the
-            # cursor usable for everything after it — the exact pattern
-            # southbrook_plm_productgraph's ECO bridge already uses for
-            # this identical class of problem (see
-            # _trigger_pg_release there). Logged via the module logger
-            # instead of a silent `pass` so an operator can actually see
-            # that the scan failed, even though the apply itself proceeds.
+            eco._execute_apply()
+        return True
+
+    def _execute_apply(self):
+        """Actually commit an ECO's change: handler dispatch, the
+        savepoint-wrapped impact scan, and the terminal write. ensure_one().
+
+        Split out of action_apply (2026-08-02, typed effectivity) so the
+        scheduled-effectivity cron (_cron_apply_due_ecos, below) can reuse
+        the EXACT SAME commit path a human Apply click uses — same handler
+        dispatch, same non-fatal impact scan, same terminal-write sentinel
+        — without also re-running action_apply's identity/authorisation
+        checks (PLM Approver group, already-applied/rejected, approval
+        prerequisite, approved-stage location, four-eyes). Those checks
+        are about WHO DECIDES to apply an ECO; for a scheduled ECO that
+        decision was already made and recorded (approver_id /
+        approval_date stamped) when a second person approved it, possibly
+        days or weeks before the cron ever runs. The cron has no acting
+        human identity to check four-eyes or group membership against —
+        it is executing a recorded decision on a timer, not making a new
+        one — so it deliberately calls straight into this method.
+
+        Do NOT call this directly for a human-initiated apply. Go through
+        action_apply, which is what actually enforces every one of the
+        checks above before it calls this.
+        """
+        self.ensure_one()
+        handler = getattr(self, "_apply_%s" % (self.target_kind or ""), None)
+        if handler is None:
+            raise UserError(
+                _("No apply handler for ECO type kind '%s'.")
+                % self.target_kind
+            )
+        handler()
+        # SAMI PRD PLM-02 — flag live MOs that were referencing the
+        # versioned target. Non-fatal: failure to scan MUST NEVER
+        # block the ECO apply itself.
+        #
+        # FIX 10 (2026-08-02 blindspot pass): the bare try/except here
+        # was documented "non-fatal" but wasn't actually safe against
+        # every failure mode — a DB-level error (e.g. an
+        # IntegrityError from the m2m write) poisons the CURSOR, not
+        # just raises a Python exception, and every subsequent
+        # statement on that cursor (including the terminal-state write
+        # below, and this whole ECO's apply) then fails too, rolling
+        # back the ECO's own already-committed change handler right
+        # along with it. `with self.env.cr.savepoint():` scopes any
+        # such failure to a rollback of ONLY the scan, leaving the
+        # cursor usable for everything after it — the exact pattern
+        # southbrook_plm_productgraph's ECO bridge already uses for
+        # this identical class of problem (see
+        # _trigger_pg_release there). Logged via the module logger
+        # instead of a silent `pass` so an operator can actually see
+        # that the scan failed, even though the apply itself proceeds.
+        try:
+            with self.env.cr.savepoint():
+                self._scan_and_flag_affected_mos()
+        except Exception:  # noqa: BLE001
+            _logger.exception(
+                "southbrook_plm: impact scan failed for ECO %s — the "
+                "apply itself is unaffected (informational only).",
+                self.name,
+            )
+        applied_stage = self.env["southbrook.eco.stage"].search(
+            [("is_applied_stage", "=", True)], limit=1
+        )
+        now = fields.Datetime.now()
+        write_vals = {
+            "state": "applied",
+            "applied_date": now,
+            "stage_id": applied_stage.id if applied_stage else self.stage_id.id,
+        }
+        # approver_id/approval_date are guaranteed set already — either
+        # checked by action_apply above, or by _cron_apply_due_ecos'
+        # search domain, which only selects ECOs that already carry both.
+        # No de-facto stamping here. The lifecycle sentinel (FIX 1)
+        # authorises the terminal-state write past the write() forge-guard
+        # AND the terminal-write immutability guard — we are inside either
+        # the approver-gated action or the cron's own recorded-decision
+        # replay, and have already run the change handler.
+        self.with_context(plm_lifecycle=PLM_LIFECYCLE).write(write_vals)
+
+    # ------------------------------------------------------------------
+    # Scheduled-effectivity cron
+    # ------------------------------------------------------------------
+    @api.model
+    def _cron_apply_due_ecos(self, limit=100):
+        """Hourly cron: apply Scheduled (effectivity_type == 'date') ECOs
+        whose effective_date has arrived.
+
+        Deliberately calls _execute_apply() directly, NOT action_apply().
+        action_apply's checks (PLM Approver group membership, four-eyes,
+        emergency-bypass logging) are about WHO DECIDES to apply an ECO —
+        that decision was already made and recorded (approver_id +
+        approval_date) when a second, independent person approved this
+        ECO, possibly long before this cron run. The cron is executing a
+        recorded decision on schedule, not making a new one, and it has
+        no acting human identity to run those checks against even if it
+        wanted to. It must NOT re-run them.
+        It MUST, however, verify the approval was genuinely recorded
+        before touching anything — that's what the search domain below
+        does (approver_id / approval_date set, and — when the pipeline
+        defines one — parked in the flagged Approved stage). Skipping
+        that verification would let a scheduled-but-never-approved ECO
+        apply itself purely because a calendar date arrived, which would
+        be a real approval bypass, not a scheduling convenience.
+
+        Each ECO is applied inside its own savepoint + try/except so one
+        broken ECO (a bad handler, a stale target) cannot abort the whole
+        batch — the remaining due ECOs still get their chance this run,
+        and the failed one is simply retried on the next run untouched
+        (its state is still 'open', so it stays in next run's domain).
+        """
+        approved_stage_exists = bool(
+            self.env["southbrook.eco.stage"].search_count(
+                [("is_approved_stage", "=", True)]
+            )
+        )
+        domain = [
+            ("state", "=", "open"),
+            ("effectivity_type", "=", "date"),
+            ("effective_date", "<=", fields.Datetime.now()),
+            ("approver_id", "!=", False),
+            ("approval_date", "!=", False),
+        ]
+        # Mirror action_apply's approved-stage check — and mirror its
+        # FAIL-CLOSED posture too. An earlier draft of this cron made the
+        # check permissive when no stage carries is_approved_stage, on the
+        # reasoning that a silent cron refusing everything is worse than
+        # one trusting approver_id/approval_date alone. That reasoning is
+        # wrong here, and dangerously so: the whole point of the 2026-08-02
+        # fail-closed fix is that un-flagging the stages must never widen
+        # what can be applied. A permissive cron reopens exactly that hole
+        # on a delay — approve an ECO while the flag is set, schedule it,
+        # unset the flag, and the cron applies it with no stage evidence.
+        # Refusing loudly is the correct behaviour; the log line below is
+        # the "something to look at" that the permissive version was
+        # reaching for.
+        if not approved_stage_exists:
+            _logger.error(
+                "southbrook_plm: scheduled-ECO cron is standing down — no "
+                "southbrook.eco.stage carries is_approved_stage, so an "
+                "approved-stage gate cannot be evidenced. Flag exactly one "
+                "stage as the Approved stage; scheduled ECOs will apply on "
+                "the next run. (Refusing rather than applying on "
+                "approver_id alone: un-flagging stages must never widen "
+                "what can be applied.)"
+            )
+            return 0
+        domain.append(("stage_id.is_approved_stage", "=", True))
+        due = self.search(domain, order="effective_date asc", limit=limit)
+        # Returned so the cron log / a caller can see how much actually
+        # landed, and so the stood-down path above (return 0) is
+        # type-consistent with a normal run rather than returning True.
+        applied = 0
+        for eco in due:
             try:
                 with self.env.cr.savepoint():
-                    eco._scan_and_flag_affected_mos()
+                    eco._execute_apply()
             except Exception:  # noqa: BLE001
                 _logger.exception(
-                    "southbrook_plm: impact scan failed for ECO %s — the "
-                    "apply itself is unaffected (informational only).",
+                    "southbrook_plm: scheduled-effectivity apply failed "
+                    "for ECO %s (effective_date %s) — will be retried on "
+                    "the next cron run.",
                     eco.name,
+                    eco.effective_date,
                 )
-            applied_stage = self.env["southbrook.eco.stage"].search(
-                [("is_applied_stage", "=", True)], limit=1
+                eco.message_post(
+                    body=_(
+                        "Scheduled apply failed (effective date "
+                        "%(date)s) — will be retried automatically on "
+                        "the next cron run. See server logs for the "
+                        "error."
+                    )
+                    % {"date": eco.effective_date}
+                )
+                continue
+            eco.message_post(
+                body=_(
+                    "Applied automatically on its scheduled effective "
+                    "date (%(date)s)."
+                )
+                % {"date": eco.effective_date}
             )
-            now = fields.Datetime.now()
-            write_vals = {
-                "state": "applied",
-                "applied_date": now,
-                "stage_id": applied_stage.id if applied_stage else eco.stage_id.id,
-            }
-            # approver_id/approval_date are guaranteed set already (checked
-            # above) — no de-facto stamping here. The lifecycle sentinel
-            # (FIX 1) authorises the terminal-state write past the write()
-            # forge-guard AND the terminal-write immutability guard — we
-            # are inside the approver-gated action and have already run
-            # the change handler.
-            eco.with_context(plm_lifecycle=PLM_LIFECYCLE).write(write_vals)
-        return True
+            applied += 1
+        return applied
 
     # ------------------------------------------------------------------
     # Per-kind apply handlers

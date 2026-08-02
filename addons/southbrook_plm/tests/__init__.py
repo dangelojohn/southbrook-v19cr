@@ -3,3 +3,4 @@ from . import test_eco_workflow
 from . import test_eco_governance
 from . import test_eco_governance2
 from . import test_w079_cut_spec_version
+from . import test_effectivity_pinning
