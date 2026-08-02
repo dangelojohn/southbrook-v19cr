@@ -319,13 +319,20 @@ for eco in test_ecos:
 hr("STEP 6 -- ECO/2026/0115 (empty Target BoM draft)")
 
 target_eco = env["southbrook.eco"].search([("name", "=", "ECO/2026/0115")], limit=1)
+# 2026-08-02 — John's verdict on the NEEDS-HUMAN flag: DELETE. The record
+# carries a realistic title ("Add lazy-susan exclusion to Corner BoM") but was
+# created by __system__ on 2026-06-01, the same demo-walkthrough batch that
+# produced the other fixtures — it is a walkthrough prop, not real engineering
+# work. If the lazy-susan exclusion is still wanted, it gets re-raised cleanly
+# under the new governance with the Corner BoM actually set as target.
+ECO_0115_VERDICT_DELETE = True
 if not target_eco:
     print("  ECO/2026/0115 not found (already handled, or never existed). Nothing to do.")
 else:
     title = target_eco.title or ""
     description = target_eco.description or ""
     combined = "%s %s" % (title, description)
-    if TESTISH_RE.search(combined):
+    if ECO_0115_VERDICT_DELETE or TESTISH_RE.search(combined):
         print("  ECO %s (id=%s) title=%r matches a test-ish pattern -> unlinking."
               % (target_eco.name, target_eco.id, target_eco.title))
         try:
