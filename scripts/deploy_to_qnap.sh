@@ -287,6 +287,33 @@ if [[ "${RESTART:-0}" == "1" && "$DRY_RUN" != "1" ]]; then
   wait_healthy 30 || fail "after restart, $CONTAINER never returned 200 on /web/login — site may be DOWN. Roll back / investigate now."
 fi
 
+# ---- served-bundle freshness gate (2026-08-02) -------------------------
+# Three stale-bundle incidents in two days (one whole-DB unstyled-HTML
+# outage, one client-side OwlError from an old compiled template, one
+# label deploy that served the previous JS) share one mechanism: asset
+# bundles are compiled LAZILY on first request, so the cold-upgrade gate
+# above cannot see a bundle that will fail or go stale. Fix: after a
+# restart, drop the compiled bundle attachments (Odoo regenerates on the
+# next request — the proven recovery from all three incidents), force one
+# regeneration, and FAIL LOUDLY if the served CSS is an error stub.
+# CLEAR_ASSETS=0 skips (e.g. data-only deploys with no asset changes).
+CLEAR_ASSETS="${CLEAR_ASSETS:-1}"
+if [[ "$DRY_RUN" != "1" && "$RESTART" == "1" && "$CLEAR_ASSETS" == "1" ]]; then
+  log "clearing compiled asset bundles + verifying regeneration…"
+  ssh "$QNAP_HOST" "$QNAP_DOCKER exec southbrook-postgres psql -U odoo -d $DB -t -c \
+    \"DELETE FROM ir_attachment WHERE name LIKE 'web.assets%';\"" \
+    || log "(asset clear failed — non-fatal, bundles may be stale)"
+  bundle_probe="$(ssh "$QNAP_HOST" "$QNAP_DOCKER exec $CONTAINER python3 -c \"
+import urllib.request as u
+c = u.urlopen('http://127.0.0.1:8069/web/assets/1/any/web.assets_web.min.css', timeout=240).read().decode('utf-8','ignore')
+bad = ('Incompatible units' in c) or ('Internal Error' in c) or (len(c) < 5000)
+print('STUB' if bad else 'OK', len(c))\"" 2>&1 | tail -1)"
+  case "$bundle_probe" in
+    OK*) log "served CSS bundle regenerated clean ($bundle_probe)" ;;
+    *)   fail "served CSS bundle is an ERROR STUB or unreachable ($bundle_probe) — the site is likely unstyled. Investigate before walking away." ;;
+  esac
+fi
+
 # ---- post-flight inventory (informational ONLY — not a success signal) -
 if [[ "$DRY_RUN" != "1" ]]; then
   log "post-deploy module versions (informational; success was gated above):"
