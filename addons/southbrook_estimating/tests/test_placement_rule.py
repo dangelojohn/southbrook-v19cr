@@ -285,6 +285,51 @@ class TestPlacementRule(TransactionCase):
         self.assertEqual(rule.payload["min_leg_x_mm"], 762.0)
         self.assertEqual(rule.payload["min_leg_z_mm"], 762.0)
 
+    def test_seeded_diagonal_last_resort_rule(self):
+        """Catalog decision (2026-08-02) — SB-CORNER-DIAG's own
+        last-resort rule (previously unreachable — no rule pointed at
+        it at all). Skips gracefully when SB-CORNER-DIAG isn't seeded
+        on this DB (sibling-module product, same as the blind/wall-
+        corner seed rules)."""
+        rule = self.Rule.search([
+            ("corner_type_id", "=", "open-corner-shelf"),
+            ("tier", "=", "base"),
+        ], limit=1)
+        if not rule:
+            self.skipTest(
+                "SB-CORNER-DIAG not seeded on this DB — "
+                "southbrook_configurator_ux demo data may not be "
+                "installed here.")
+        self.assertEqual(rule.sequence, 30,
+                          "must rank strictly AFTER susan (10) and blind (20)")
+        self.assertEqual(rule.anchor_class, "junction")
+        self.assertEqual(rule.product_tmpl_id.default_code
+                          or self.env["product.product"].search(
+                              [("product_tmpl_id", "=",
+                                rule.product_tmpl_id.id)], limit=1
+                          ).default_code,
+                          "SB-CORNER-DIAG")
+        # Same real geometry as the susan family (36x36in, 34.5in tall).
+        self.assertEqual(rule.payload["leg_x_mm"], 914.4)
+        self.assertEqual(rule.payload["leg_z_mm"], 914.4)
+        self.assertEqual(rule.payload["height_mm"], 876.3)
+        # The defining "last resort" property: min_leg == leg (no
+        # swing-clearance margin), strictly smaller than both the susan
+        # (1143.0) and the blind's host leg (1371.6) — this rule must be
+        # able to fit rooms neither of those two can.
+        self.assertEqual(rule.payload["min_leg_x_mm"], 914.4)
+        self.assertEqual(rule.payload["min_leg_z_mm"], 914.4)
+        susan = self._find_susan()
+        self.assertTrue(susan, "susan rule must exist for this comparison")
+        self.assertLess(rule.payload["min_leg_x_mm"],
+                         susan.payload["min_leg_x_mm"])
+        self.assertLess(rule.payload["min_leg_z_mm"],
+                         susan.payload["min_leg_z_mm"])
+        blind = self._find_blind()
+        self.assertTrue(blind, "blind rule must exist for this comparison")
+        self.assertLess(rule.payload["min_leg_z_mm"],
+                         blind.payload["min_leg_z_mm"])
+
     def test_seed_is_idempotent(self):
         # Re-running the seeder (as -u would) must not create duplicates.
         before = self.Rule.search_count([])

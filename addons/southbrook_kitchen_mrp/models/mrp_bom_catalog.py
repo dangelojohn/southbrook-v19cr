@@ -157,21 +157,27 @@ class MrpBom(models.Model):
         "ply_3_4": "Raw Material: 3/4in Plywood Panel Stock",
     }
 
-    # BOM-generation task (2026-07-31) — accessory_type (End Panel /
-    # Filler / Cornice / Pelmet / Plinth, southbrook_estimating/data/
-    # attributes.xml's attr_accessory_type) -> a real, purchasable SKU
-    # from southbrook_hardware_catalog/data/end_panel_seed.xml. Only 2 of
-    # the 5 accessory_type values have ANY seeded real product (End Panel,
-    # Filler) — Cornice/Pelmet/Plinth have no SKU anywhere in this
-    # catalog (bom-research.md §4 item 3), so they deliberately stay on
-    # the generic melamine placeholder rather than guessing a SKU that
-    # doesn't exist. "Standard"/"Base" is the least-wrong single default
-    # within each mapped type absent a dedicated style/class attribute
-    # anywhere on the accessory template (see _southbrook_resolve_
-    # accessory_product's docstring for the full ambiguity note).
+    # BOM-generation task (2026-07-31), extended by catalog decision
+    # (2026-08-02) — accessory_type (End Panel / Filler / Cornice /
+    # Pelmet / Plinth, southbrook_estimating/data/attributes.xml's
+    # attr_accessory_type) -> a real, purchasable SKU from
+    # southbrook_hardware_catalog/data/end_panel_seed.xml. All 5
+    # accessory_type values now have a real seeded product (Cornice/
+    # Pelmet/Plinth were the last 3 with no SKU anywhere in this catalog
+    # — bom-research.md §4 item 3 — seeded 2026-08-02 as SB-CORNICE-STD/
+    # SB-PELMET-STD/SB-PLINTH-STD). "Standard"/"Base" is the least-wrong
+    # single default within each mapped type absent a dedicated
+    # style/class attribute anywhere on the accessory template (see
+    # _southbrook_resolve_accessory_product's docstring for the full
+    # ambiguity note) — the generic melamine placeholder now only fires
+    # for an accessory_type this dict doesn't recognise at all (e.g. a
+    # future 6th value, or the type left blank).
     _SOUTHBROOK_ACCESSORY_SKU_BY_TYPE = {
         "end panel": "SB-EP-BASE-STD",
         "filler": "SB-FILLER-BASE",
+        "cornice": "SB-CORNICE-STD",
+        "pelmet": "SB-PELMET-STD",
+        "plinth": "SB-PLINTH-STD",
     }
 
     @api.model
@@ -595,22 +601,25 @@ class MrpBom(models.Model):
 
     def _southbrook_resolve_accessory_product(self, accessory_type):
         """Resolve an accessory_type ("End Panel" / "Filler" / "Cornice" /
-        "Pelmet" / "Plinth") to a real, purchasable SKU where one is
-        seeded (End Panel -> SB-EP-BASE-STD, Filler -> SB-FILLER-BASE —
-        see end_panel_seed.xml), falling back to the generic melamine
-        placeholder otherwise.
+        "Pelmet" / "Plinth") to a real, purchasable SKU — all 5 values
+        now have one seeded (End Panel -> SB-EP-BASE-STD, Filler ->
+        SB-FILLER-BASE, Cornice -> SB-CORNICE-STD, Pelmet ->
+        SB-PELMET-STD, Plinth -> SB-PLINTH-STD — see end_panel_seed.xml)
+        — falling back to the generic melamine placeholder only for an
+        accessory_type this mapping doesn't recognise at all (unmapped/
+        blank/future value).
 
         HONEST AMBIGUITY (bom-research.md §4 item 3): the real SKU
         catalog is keyed by style (Standard/Inline/T&G/Radius/Square) x
-        class (Base/Tall/Wall), but no attribute anywhere on the
-        accessory template/variant captures either axis — only the
-        coarse accessory_type. "Base"+"Standard" is used as the
-        least-wrong single default (same "least-wrong" convention
+        class (Base/Tall/Wall) for End Panel, but no attribute anywhere
+        on the accessory template/variant captures either axis for any
+        of the 5 types — only the coarse accessory_type. "Base"+
+        "Standard" (or the single representative SKU seeded for Cornice/
+        Pelmet/Plinth, which carry no style/class axis at all) is used
+        as the least-wrong single default (same "least-wrong" convention
         canonical_catalog_tag.xml's own comment already uses for tagging
         the accessory template cabinet_type="panel"), not a guess dressed
-        as certainty. Cornice/Pelmet/Plinth have NO seeded SKU at all —
-        those stay on the placeholder, a real, flagged gap, not silently
-        invented.
+        as certainty.
         """
         sku = self._SOUTHBROOK_ACCESSORY_SKU_BY_TYPE.get((accessory_type or "").strip().lower())
         if sku:

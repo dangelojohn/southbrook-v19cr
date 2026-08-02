@@ -28,6 +28,16 @@ HARDWARE_CATEGORIES = [
     # A3 (2026-06-18) — Corner mechanism category for specialty corner
     # fitments (LAVA / Planero / Magic Corner / BCO / CPOS).
     ("corner_mech", "Corner Mechanism"),
+    # Catalog decision (2026-08-02) — Cornice/Pelmet/Plinth trim SKUs
+    # (southbrook_estimating's attr_accessory_type carries 5 values;
+    # End Panel/Filler already had real SKUs here, these 3 didn't — see
+    # data/end_panel_seed.xml and mrp_bom_catalog.py's
+    # _SOUTHBROOK_ACCESSORY_SKU_BY_TYPE). One category per type, same
+    # granularity as end_panel/filler above rather than lumping all
+    # three "trim" SKUs into one bucket.
+    ("cornice", "Cornice"),
+    ("pelmet", "Pelmet"),
+    ("plinth", "Plinth"),
     ("other", "Other"),
 ]
 

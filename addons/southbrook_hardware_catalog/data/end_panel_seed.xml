@@ -288,4 +288,80 @@
     <field name="x_material">18mm MDF</field>
   </record>
 
+  <!-- ======================================================== -->
+  <!-- TRIM (Cornice / Pelmet / Plinth) — catalog decision 2026-08-02 -->
+  <!-- ======================================================== -->
+  <!--
+    Cornice/Pelmet/Plinth were the last 3 of the 5 attr_accessory_type
+    values (southbrook_estimating/data/attributes.xml) with NO real SKU
+    anywhere in this catalog — mrp_bom_catalog.py's BoM generator fell
+    back to the generic melamine placeholder for every accessory
+    variant configured with one of these 3 types (bom-research.md §4
+    item 3). Seeded here matching the End Panel/Filler pattern exactly:
+    one representative "least-wrong default" SKU per type (no
+    style/class attribute exists anywhere on the accessory template to
+    pick a variant — same ambiguity note as End Panel/Filler above),
+    96in (2438mm) standard trim-strip length, $0 cost/price (pricing is
+    the client's — x_pricing_pending=True, same convention as every
+    other unpriced Marathon/in-house SKU in this file).
+  -->
+  <record id="trim_cornice" model="product.product">
+    <field name="name">Cornice · Wall Cap Molding (2438 × 100)</field>
+    <field name="default_code">SB-CORNICE-STD</field>
+    <field name="x_marathon_sku">SB-CORNICE-STD</field>
+    <field name="type">consu</field>
+    <field name="is_storable" eval="True"/>
+    <!-- $0 cost/price — pricing is the client's. Odoo's own
+         list_price default is 1.0 (NOT 0.0), so this must be explicit,
+         not left to the field default. -->
+    <field name="list_price">0.0</field>
+    <field name="standard_price">0.0</field>
+    <field name="x_hardware_category">cornice</field>
+    <field name="x_hardware_brand_id" ref="brand_southbrook_inhouse"/>
+    <field name="x_pricing_pending" eval="True"/>
+    <field name="x_length_mm">2438</field>
+    <field name="x_width_mm">100</field>
+    <field name="x_projection_mm">18</field>
+    <field name="x_material">18mm MDF crown profile (paintable) — mounts atop wall cabinets</field>
+  </record>
+  <record id="trim_pelmet" model="product.product">
+    <field name="name">Pelmet · Under-Cabinet Light Rail (2438 × 75)</field>
+    <field name="default_code">SB-PELMET-STD</field>
+    <field name="x_marathon_sku">SB-PELMET-STD</field>
+    <field name="type">consu</field>
+    <field name="is_storable" eval="True"/>
+    <!-- $0 cost/price — pricing is the client's (see cornice record's
+         comment above for why this must be explicit). -->
+    <field name="list_price">0.0</field>
+    <field name="standard_price">0.0</field>
+    <field name="x_hardware_category">pelmet</field>
+    <field name="x_hardware_brand_id" ref="brand_southbrook_inhouse"/>
+    <field name="x_pricing_pending" eval="True"/>
+    <field name="x_length_mm">2438</field>
+    <field name="x_width_mm">75</field>
+    <field name="x_projection_mm">18</field>
+    <field name="x_material">18mm MDF (paintable) — conceals under-cabinet lighting/wiring</field>
+  </record>
+  <record id="trim_plinth" model="product.product">
+    <!-- 101.6mm = 4in = shared/southbrook_dims.py's TOEKICK_H exactly
+         — a plinth IS the toe-kick trim panel, so its face height
+         matches the codebase's own canonical toe-kick constant. -->
+    <field name="name">Plinth · Toe-Kick Panel (2438 × 101.6)</field>
+    <field name="default_code">SB-PLINTH-STD</field>
+    <field name="x_marathon_sku">SB-PLINTH-STD</field>
+    <field name="type">consu</field>
+    <field name="is_storable" eval="True"/>
+    <!-- $0 cost/price — pricing is the client's (see cornice record's
+         comment above for why this must be explicit). -->
+    <field name="list_price">0.0</field>
+    <field name="standard_price">0.0</field>
+    <field name="x_hardware_category">plinth</field>
+    <field name="x_hardware_brand_id" ref="brand_southbrook_inhouse"/>
+    <field name="x_pricing_pending" eval="True"/>
+    <field name="x_length_mm">2438</field>
+    <field name="x_width_mm">101.6</field>
+    <field name="x_projection_mm">18</field>
+    <field name="x_material">18mm MDF (paintable) — kickboard trim beneath base cabinets</field>
+  </record>
+
 </odoo>

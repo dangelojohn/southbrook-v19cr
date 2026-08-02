@@ -629,10 +629,11 @@ class TestCatalogBomGenerator(TransactionCase):
         codes = bom.bom_line_ids.mapped("product_id.default_code")
         self.assertIn("SB-FILLER-BASE", codes)
 
-    def test_accessory_variant_cornice_falls_back_to_placeholder(self):
-        """Cornice has no seeded real SKU anywhere in this catalog — the
-        generic melamine placeholder is an honest fallback, not a
-        fabricated SKU."""
+    def test_accessory_variant_cornice_resolves_real_sku(self):
+        """Catalog decision (2026-08-02) — Cornice now has a real seeded
+        SKU (SB-CORNICE-STD, southbrook_hardware_catalog/data/
+        end_panel_seed.xml) and no longer falls back to the generic
+        melamine placeholder."""
         tmpl = self._new_cabinet_template(
             "M4 Test Accessory Cornice", "panel", 3.0, 6.0, 0.75,
             "M4-ACCESSORY-CORNICE",
@@ -640,6 +641,66 @@ class TestCatalogBomGenerator(TransactionCase):
         tmpl.write({"config_ok": True})
         variant = self._make_configured_variant(
             tmpl, [("Accessory Type", "Cornice")],
+        )
+
+        self.Bom._southbrook_generate_catalog_boms()
+
+        bom = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom), 1)
+        codes = bom.bom_line_ids.mapped("product_id.default_code")
+        self.assertIn("SB-CORNICE-STD", codes)
+        self.assertNotIn("RM-MELAMINE_WHITE_5_8", codes)
+
+    def test_accessory_variant_pelmet_resolves_real_sku(self):
+        """Catalog decision (2026-08-02) — Pelmet -> SB-PELMET-STD."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Accessory Pelmet", "panel", 3.0, 6.0, 0.75,
+            "M4-ACCESSORY-PELMET",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(
+            tmpl, [("Accessory Type", "Pelmet")],
+        )
+
+        self.Bom._southbrook_generate_catalog_boms()
+
+        bom = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom), 1)
+        codes = bom.bom_line_ids.mapped("product_id.default_code")
+        self.assertIn("SB-PELMET-STD", codes)
+        self.assertNotIn("RM-MELAMINE_WHITE_5_8", codes)
+
+    def test_accessory_variant_plinth_resolves_real_sku(self):
+        """Catalog decision (2026-08-02) — Plinth -> SB-PLINTH-STD."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Accessory Plinth", "panel", 3.0, 6.0, 0.75,
+            "M4-ACCESSORY-PLINTH",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(
+            tmpl, [("Accessory Type", "Plinth")],
+        )
+
+        self.Bom._southbrook_generate_catalog_boms()
+
+        bom = self.Bom.search([("product_id", "=", variant.id)])
+        self.assertEqual(len(bom), 1)
+        codes = bom.bom_line_ids.mapped("product_id.default_code")
+        self.assertIn("SB-PLINTH-STD", codes)
+        self.assertNotIn("RM-MELAMINE_WHITE_5_8", codes)
+
+    def test_accessory_variant_unrecognised_type_still_falls_back(self):
+        """The generic melamine placeholder still exists as an honest
+        fallback for an accessory_type this mapping doesn't recognise at
+        all (unmapped/future value) — it isn't dead code now that all 5
+        DOCUMENTED types resolve to real SKUs."""
+        tmpl = self._new_cabinet_template(
+            "M4 Test Accessory Unmapped", "panel", 3.0, 6.0, 0.75,
+            "M4-ACCESSORY-UNMAPPED",
+        )
+        tmpl.write({"config_ok": True})
+        variant = self._make_configured_variant(
+            tmpl, [("Accessory Type", "Some Future Type")],
         )
 
         self.Bom._southbrook_generate_catalog_boms()

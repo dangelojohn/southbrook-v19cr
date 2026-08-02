@@ -910,5 +910,22 @@
       <field name="priority">60</field>
     </record>
 
+    <!--
+      Catalog decision (2026-08-02) — pin every SINK slot above to SB30
+      (data/demo_cabinets.xml, default_code SB30, $195, exact 30in
+      width) so the resolver's fallback rung can never land a SINK slot
+      on a different 30in-nominal template's arbitrary variant (e.g.
+      SB-BASE-2DR's 24in variant, $395). A <function> (not a per-record
+      ref()) because SB30 has no product.product xml_id of its own —
+      only the product.template xml_id (product_tmpl_sb30) exists; the
+      seeder resolves the single auto-materialized variant by
+      default_code at runtime, the same "search, don't hardcode an id"
+      convention southbrook_estimating/models/placement_rule.py's
+      _seed_default_rules already uses. Idempotent — see
+      models/kitchen_template.py::_pin_sink_slots_to_sb30.
+    -->
+    <function model="southbrook.kitchen.template.line"
+              name="_pin_sink_slots_to_sb30"/>
+
   </data>
 </odoo>

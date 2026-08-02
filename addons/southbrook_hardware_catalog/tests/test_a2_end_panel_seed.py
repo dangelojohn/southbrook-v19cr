@@ -103,3 +103,52 @@ class TestA2EndPanelSeed(TransactionCase):
                 r.x_pricing_pending,
                 f"{r.default_code} should have x_pricing_pending=True until "
                 "Peter signs off per-style pricing")
+
+    # ------------------------------------------------------------------
+    # Catalog decision (2026-08-02) — Cornice/Pelmet/Plinth trim SKUs.
+    # Cornice/Pelmet/Plinth were the last 3 of the 5 attr_accessory_type
+    # values with no real SKU anywhere in this catalog (bom-research.md
+    # §4 item 3) — mrp_bom_catalog.py's BoM generator fell back to a
+    # generic melamine placeholder for them. Seeded here in the same
+    # file as End Panel/Filler, one representative SKU per type.
+    # ------------------------------------------------------------------
+    def test_trim_skus_seeded(self):
+        brand = self.env.ref("southbrook_hardware_catalog.brand_southbrook_inhouse")
+        for code, category in (
+            ("SB-CORNICE-STD", "cornice"),
+            ("SB-PELMET-STD", "pelmet"),
+            ("SB-PLINTH-STD", "plinth"),
+        ):
+            with self.subTest(code=code):
+                product = self.Product.search(
+                    [("default_code", "=", code)], limit=1)
+                self.assertTrue(product, f"{code} must be seeded")
+                self.assertEqual(product.x_hardware_category, category)
+                self.assertEqual(product.x_hardware_brand_id, brand)
+                self.assertEqual(product.x_marathon_sku, code)
+                self.assertTrue(
+                    product.x_pricing_pending,
+                    f"{code} should have x_pricing_pending=True — "
+                    "pricing is the client's")
+
+    def test_plinth_width_matches_toekick_height_constant(self):
+        """A plinth IS the toe-kick trim panel — its face height must
+        match shared/southbrook_dims.py's TOEKICK_H (101.6mm = 4in)
+        exactly, the same inch-exact convention the rest of this
+        codebase's geometry constants already follow."""
+        plinth = self.Product.search(
+            [("default_code", "=", "SB-PLINTH-STD")], limit=1)
+        self.assertTrue(plinth, "SB-PLINTH-STD must be seeded")
+        self.assertEqual(plinth.x_width_mm, 101.6)
+
+    def test_trim_zero_cost_and_price(self):
+        """Pricing is the client's — every trim SKU ships at $0 cost/
+        price (list_price/standard_price both default 0, never set by
+        this seed) until a real price is signed off, same convention as
+        every other x_pricing_pending=True SKU."""
+        for code in ("SB-CORNICE-STD", "SB-PELMET-STD", "SB-PLINTH-STD"):
+            product = self.Product.search(
+                [("default_code", "=", code)], limit=1)
+            self.assertTrue(product, f"{code} must be seeded")
+            self.assertEqual(product.list_price, 0.0)
+            self.assertEqual(product.standard_price, 0.0)

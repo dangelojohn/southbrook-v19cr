@@ -13,11 +13,12 @@
   payload afterwards — _seed_default_rules only CREATEs missing rows,
   it never overwrites an existing one.
 
-  Why a <function> instead of <record> elements: two of the three
-  seed rules' products (SB-CORNER-BLIND / SB-WALL-CORNER) are minted
-  by the sibling southbrook_configurator_ux module, which this addon
-  does not depend on and which may not be installed in every database
-  this module loads into (including this module's own test runs). A
+  Why a <function> instead of <record> elements: three of the four
+  seed rules' products (SB-CORNER-BLIND / SB-CORNER-DIAG /
+  SB-WALL-CORNER) are minted by the sibling southbrook_configurator_ux
+  module, which this addon does not depend on and which may not be
+  installed in every database this module loads into (including this
+  module's own test runs). A
   <record eval="ref(...)"> would hard-fail install in that case. The
   model-level seeder resolves each product by default_code at runtime
   and falls back to the in-module SB-CORNER template when the sibling

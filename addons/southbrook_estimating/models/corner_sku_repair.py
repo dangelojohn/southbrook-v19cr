@@ -424,6 +424,7 @@ def repair_corner_family_skus(env):
         "flags_set": 0, "width_values_created": 0, "width_fixed": 0,
         "codes_set": 0, "lh_created": 0, "lh_combo_backfilled": 0,
         "rh_created": 0, "renamed": False, "lsusan_archived": False,
+        "lsusan_dims_fixed": 0,
     }
     Template = env["product.template"]
     Product = env["product.product"]
@@ -670,6 +671,53 @@ def repair_corner_family_skus(env):
             "lines referencing it.", dup.id)
         dup.active = False
         summary["lsusan_archived"] = True
+
+    # Item 5b (catalog decision, 2026-08-02) — SB-CORNER-LSUSAN's own
+    # classification dims are stuck at the generic new-template MODEL
+    # DEFAULT (southbrook_kitchen_3d_configurator/models/product_
+    # template.py: southbrook_width_in/_depth_in default to 24.0,
+    # southbrook_height_in to 34.5) rather than its real pie-cut-bifold-
+    # susan footprint — the SAME 36x36x34.5in equal-leg diagonal-corner
+    # carcass this repair already gives SB-CORNER-DIAG above (docs/
+    # research/corner-engine/09-rule-engine-spec.md §1 flags this exact
+    # mismatch by name; bom-research.md 2026-07-31 confirms it was still
+    # unfixed). Archived (active=False, per Item 5 above) is fine to
+    # correct — this template must simply never let a future width/type
+    # fallback lookup land on a phantom 24in box again.
+    #
+    # Guarded to the EXACT documented known-bad triple (24.0, 34.5,
+    # 24.0) — a human hand-edit (or a legitimate future re-dimension)
+    # that doesn't match that triple is left untouched, same discipline
+    # as every other guarded repair in this file. active_test=False via
+    # raw SQL (not an ORM search, which defaults active-only) so an
+    # ALREADY-ARCHIVED row from a prior call is still found and healed
+    # here, not just a still-active one — dims must self-heal
+    # independently of archive ordering/idempotency. Read+written via
+    # raw SQL column-existence guard (mirrors _write_cabinet_flags'
+    # module-load-order fallback) so this never raises on a DB where
+    # kitchen_3d_configurator's columns don't exist at all.
+    lsusan_dim_columns_present = (
+        has_cabinet_fields
+        or ({"southbrook_width_in", "southbrook_height_in",
+             "southbrook_depth_in"} <= (cabinet_columns or set())))
+    if lsusan_dim_columns_present:
+        env.cr.execute(
+            "SELECT id, southbrook_width_in, southbrook_height_in, "
+            "southbrook_depth_in FROM product_template "
+            "WHERE default_code = %s", ("SB-CORNER-LSUSAN",))
+        for lsusan_id, width, height, depth in env.cr.fetchall():
+            if (width, height, depth) != (24.0, 34.5, 24.0):
+                continue  # not the known-bad fallback state -- leave it
+            lsusan_tmpl = Template.browse(lsusan_id)
+            if _write_cabinet_flags(lsusan_tmpl, {
+                    "southbrook_width_in": 36.0,
+                    "southbrook_height_in": 34.5,
+                    "southbrook_depth_in": 36.0}):
+                summary["lsusan_dims_fixed"] += 1
+                _logger.info(
+                    "[T4 corner family repair] SB-CORNER-LSUSAN (tmpl "
+                    "id=%s): dims corrected 24x34.5x24 -> 36x34.5x36 "
+                    "(never poisons a fallback lookup again).", lsusan_id)
 
     if any(summary.values()):
         _logger.info("[T4 corner family repair] %s", summary)

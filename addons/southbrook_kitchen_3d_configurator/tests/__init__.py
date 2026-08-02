@@ -285,3 +285,10 @@ from . import test_state_lifecycle_guards
 # endpoint the persistent status chip polls (NOT_FOUND/ACCESS_DENIED
 # shape, layout_key resolution for click-to-select, no side effects).
 from . import test_validation_endpoint
+
+# Catalog decision (2026-08-02) — SINK slot pinning to SB30:
+# `_pin_sink_slots_to_sb30` seeder pins every unpinned SINK slot in the
+# shipped T4 catalog to SB30's own variant, never overwrites a hand pin,
+# and the resolver honours the pin (never falls through to a same-width
+# sibling template like SB-BASE-2DR).
+from . import test_sink_slot_pin

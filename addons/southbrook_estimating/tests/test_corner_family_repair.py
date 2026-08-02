@@ -201,6 +201,67 @@ class TestCornerFamilyRepair(TransactionCase):
             "SB-CORNER-LSUSAN must be archived as a duplicate of "
             "SB-CORNER — found active record(s) %s" % still_active.ids)
 
+    def test_lsusan_dims_fixed_from_known_bad_fallback(self):
+        """Item 5b (catalog decision, 2026-08-02) — a LSUSAN record
+        stuck at the generic new-template fallback (southbrook_width_in
+        =24.0/height_in=34.5/depth_in=24.0, the field defaults) gets
+        corrected to its real pie-cut-bifold-susan footprint
+        (36x34.5x36, matching the SB-CORNER-DIAG correction) — archived
+        is fine, it must simply never poison a fallback lookup again.
+        Uses its own fixture (rather than the DB's real record, which
+        may already be settled by setUpClass) so this proves the fix
+        deterministically regardless of what this DB already carries."""
+        if not self.has_cabinet_fields:
+            self.skipTest("southbrook_kitchen_3d_configurator not installed.")
+        known_bad = self.Template.create({
+            "name": "Corner Base · Lazy-Susan (known-bad dims fixture)",
+            "default_code": "SB-CORNER-LSUSAN",
+            "active": False,
+            # southbrook_width_in/_height_in/_depth_in left at their
+            # field defaults (24.0/34.5/24.0) — the exact known-bad
+            # state this repair targets.
+        })
+        self.assertEqual(known_bad.southbrook_width_in, 24.0)
+        self.assertEqual(known_bad.southbrook_height_in, 34.5)
+        self.assertEqual(known_bad.southbrook_depth_in, 24.0)
+
+        summary = repair_corner_family_skus(self.env)
+
+        known_bad.invalidate_recordset()
+        self.assertEqual(known_bad.southbrook_width_in, 36.0)
+        self.assertEqual(known_bad.southbrook_height_in, 34.5)
+        self.assertEqual(known_bad.southbrook_depth_in, 36.0)
+        self.assertGreaterEqual(summary["lsusan_dims_fixed"], 1)
+        # Still archived — the fix never resurrects the record.
+        self.assertFalse(known_bad.active)
+
+        # Idempotent — nothing left to fix on a second pass.
+        second = repair_corner_family_skus(self.env)
+        self.assertEqual(second["lsusan_dims_fixed"], 0)
+
+    def test_lsusan_dims_fix_does_not_clobber_a_hand_edit(self):
+        """Guarded to the EXACT known-bad triple — a LSUSAN record
+        already carrying a different (hand-edited, or otherwise
+        legitimately re-dimensioned) combination must never be
+        overwritten."""
+        if not self.has_cabinet_fields:
+            self.skipTest("southbrook_kitchen_3d_configurator not installed.")
+        hand_edited = self.Template.create({
+            "name": "Corner Base · Lazy-Susan (hand-edited fixture)",
+            "default_code": "SB-CORNER-LSUSAN",
+            "active": False,
+            "southbrook_width_in": 40.0,
+            "southbrook_height_in": 34.5,
+            "southbrook_depth_in": 40.0,
+        })
+
+        repair_corner_family_skus(self.env)
+
+        hand_edited.invalidate_recordset()
+        self.assertEqual(hand_edited.southbrook_width_in, 40.0)
+        self.assertEqual(hand_edited.southbrook_height_in, 34.5)
+        self.assertEqual(hand_edited.southbrook_depth_in, 40.0)
+
     def test_repair_is_idempotent(self):
         """AC: running the repair twice changes nothing on the second
         pass — every counter in the second summary must be zero/false."""
@@ -209,7 +270,8 @@ class TestCornerFamilyRepair(TransactionCase):
             second,
             {"flags_set": 0, "width_values_created": 0, "width_fixed": 0,
              "codes_set": 0, "lh_created": 0, "lh_combo_backfilled": 0,
-             "rh_created": 0, "renamed": False, "lsusan_archived": False},
+             "rh_created": 0, "renamed": False, "lsusan_archived": False,
+             "lsusan_dims_fixed": 0},
             "second run must be a strict no-op: %s" % second)
 
     def test_sql_fallback_writes_match_orm_path(self):

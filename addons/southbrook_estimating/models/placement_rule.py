@@ -115,6 +115,63 @@ _SEED_RULES = [
             "clearance_front_mm": 300.0,
         },
     },
+    {
+        # Catalog decision (2026-08-02) — SB-CORNER-DIAG (template
+        # "Corner Base · Diagonal", prod id 224) had NO placement rule
+        # at all: the only two base-tier junction rules were the susan
+        # (seq 10, product SB-CORNER) and the blind (seq 20, product
+        # SB-CORNER-BLIND) — SB-CORNER-DIAG was structurally unreachable
+        # via select_corner_type regardless of leg space available.
+        #
+        # This rule is a LAST-RESORT fallback (sequence 30 — strictly
+        # AFTER susan and blind, so today's auto-pick behaviour for
+        # every EXISTING room is byte-identical; it only ever fires when
+        # BOTH the susan (needs 45in/1143mm on both legs) and the blind
+        # (needs 54in/1371.6mm on its host leg) fail their min-leg
+        # checks). corner_type_id is deliberately NOT the susan's own
+        # "diagonal-corner-lazy-susan" (that combination is already
+        # claimed by the seq-10 rule above and _seed_default_rules keys
+        # its idempotent "does this rule already exist" search on
+        # (corner_type_id, tier) — reusing it here would make this rule
+        # invisible to its own seeder, not create a second row).
+        #
+        # docs/research/corner-engine/01-base-corner-taxonomy.md Type 13
+        # ("Open Corner Shelf (no door, static shelves)") is the
+        # taxonomy's own name for exactly this shape: "the same
+        # diagonal-cut box as Type 3 [diagonal-corner-lazy-susan], but
+        # with fixed open shelves and no door at all" — and its own
+        # Placement facts note "No door swing clearance required at all
+        # (a genuine placement-engine advantage — it can sit adjacent to
+        # fixed obstructions that a hinged corner cabinet could not)".
+        # That is precisely the last-resort property wanted here: unlike
+        # the susan/blind rules, min_leg == leg (no swing-clearance
+        # margin added), so this rule fits whenever the bare 36x36in box
+        # itself physically fits — the true floor beneath every other
+        # corner rule, never a fabricated exception.
+        "name": "Diagonal corner 36x36 (last-resort — no mechanism, no "
+                "door-swing clearance required)",
+        "product_default_code": "SB-CORNER-DIAG",
+        "corner_type_id": "open-corner-shelf",
+        "anchor_class": "junction",
+        "tier": "base",
+        "sequence": 30,
+        "payload": {
+            # Same real geometry as the susan rule's product family
+            # (36x36in legs, 34.5in height) — inch-exact mm, Task 3/
+            # Task 4 convention: 914.4 = 25.4 * 36, 876.3 = 25.4 * 34.5.
+            "leg_x_mm": 914.4,
+            "leg_z_mm": 914.4,
+            "height_mm": 876.3,
+            # min_leg == leg on both axes: no bifold door-swing/tray-
+            # access margin modeled (taxonomy Type 13's "no door swing
+            # clearance required at all") — this is what makes the rule
+            # a genuine last resort rather than a third copy of the
+            # susan's own 45in requirement.
+            "min_leg_x_mm": 914.4,
+            "min_leg_z_mm": 914.4,
+            "clearance_front_mm": 0.0,
+        },
+    },
 ]
 
 # Prior seed payload versions, keyed by (corner_type_id, tier). When the
@@ -389,19 +446,21 @@ class SouthbrookPlacementRule(models.Model):
 
     @api.model
     def _seed_default_rules(self):
-        """Idempotent install-time seed for the 3 M1 corner rules
-        (invoked by data/placement_rules.xml via <function>).
+        """Idempotent install-time seed for the M1 corner rules (3
+        original + 1 added 2026-08-02, the SB-CORNER-DIAG last-resort
+        fallback — see _SEED_RULES) (invoked by data/placement_rules.xml
+        via <function>).
 
         Product resolution choice (documented per the M1 task brief):
         southbrook_estimating ships only ONE corner template in its own
         data/product_templates.xml — xml_id 'corner' / default_code
-        SB-CORNER (see that file, ~line 1120). SB-CORNER-BLIND and
-        SB-WALL-CORNER are minted at runtime by the SIBLING module
-        southbrook_configurator_ux (models/catalog_expansion.py) — a
-        module this addon does NOT depend on, so those templates have
-        no stable xml_id reachable from here and may not even exist in
-        every database this module installs into (e.g. this module's
-        own unit tests).
+        SB-CORNER (see that file, ~line 1120). SB-CORNER-BLIND,
+        SB-CORNER-DIAG and SB-WALL-CORNER are minted at runtime by the
+        SIBLING module southbrook_configurator_ux (models/
+        catalog_expansion.py) — a module this addon does NOT depend on,
+        so those templates have no stable xml_id reachable from here and
+        may not even exist in every database this module installs into
+        (e.g. this module's own unit tests).
         A hardcoded ref() to a foreign xml_id would either raise
         (module not installed) or be fragile (relies on load order
         across two independently-versioned addons). Instead we search

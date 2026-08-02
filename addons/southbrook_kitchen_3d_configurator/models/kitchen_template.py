@@ -136,6 +136,50 @@ class SouthbrookKitchenTemplateLine(models.Model):
         for line in self:
             line.is_appliance_slot = line.cabinet_type == "appliance"
 
+    # -- catalog decision (2026-08-02) — SINK slot pinning -------------
+    _SINK_SLOT_PIN_DEFAULT_CODE = "SB30"
+
+    @api.model
+    def _pin_sink_slots_to_sb30(self):
+        """Pin every unpinned SINK slot in the shipped T4 template
+        catalog to SB30's own variant ("SB30 Sink Base 30\"",
+        data/demo_cabinets.xml, $195, exact 30in width).
+
+        Without a hard pin, `_resolve_slot`'s last-resort fallback rung
+        (cabinet_type + template nominal width — see that method's own
+        docstring) matches ANY cabinet_type='base' template whose OWN
+        nominal width is 30in, and SB-BASE-2DR is ALSO 30in-nominal in
+        this catalog — the tie-break among several width-matching
+        templates (SB-BASE-2DR/SB-VANITY/SB30, all 30in) is a DATA
+        decision, not something the generic resolver rung can get right
+        on its own. Live symptom: a SINK slot landed on SB-BASE-2DR's
+        24in variant ($395) instead of SB30's own 30in variant ($195).
+        Catalog decision (2026-08-02): SINK always means SB30.
+
+        Idempotent and non-destructive: only writes slots whose
+        product_id is currently UNSET — a hand pin (including a future
+        human re-pin to a different SKU) is never overwritten. Safe to
+        call on every -u: kitchen_templates.xml is noupdate="0" by
+        locked decision (dimension/data fixes land via -u, no deploy of
+        Python required).
+        """
+        sb30 = self.env["product.product"].search(
+            [("default_code", "=", self._SINK_SLOT_PIN_DEFAULT_CODE)],
+            limit=1)
+        if not sb30:
+            _logger.warning(
+                "[kitchen-template] _pin_sink_slots_to_sb30: no product "
+                "with default_code=%r found -- SINK slots left unpinned "
+                "(demo_cabinets.xml not loaded on this DB?).",
+                self._SINK_SLOT_PIN_DEFAULT_CODE)
+            return 0
+        unpinned = self.search([
+            ("slot_code", "=", "SINK"), ("product_id", "=", False),
+        ])
+        if unpinned:
+            unpinned.write({"product_id": sb30.id})
+        return len(unpinned)
+
 
 # ── Task 2: resolver + parametric fit + instantiation ─────────────────────
 # Appended below both model classes so the file reads models-first. The
