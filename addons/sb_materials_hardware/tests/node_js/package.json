@@ -1,0 +1,13 @@
+{
+  "name": "sb-materials-hardware-node-tests",
+  "private": true,
+  "type": "module",
+  "description": "Node-native regression harness for sb_materials_hardware's MaterialsHardwareCatalog OWL component. Same rationale as southbrook_kitchen_3d_configurator/tests/node_js (see its README): this environment has no headless-Chromium binary, so Hoot can't run here. Mounts the REAL catalog.js under jsdom + the real @odoo/owl package (pinned to the same vendored 2.8.2), with catalog.xml's actual templates and a stubbed orm service — no DOM/WebGL surface needed, this component is plain OWL + a table.",
+  "scripts": {
+    "test": "node --import ./harness/register.mjs --test contracts/*.test.mjs"
+  },
+  "devDependencies": {
+    "@odoo/owl": "2.8.2",
+    "jsdom": "^29.0.0"
+  }
+}

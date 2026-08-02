@@ -95,7 +95,16 @@ export class MaterialsHardwareCatalog extends Component {
         // search_note is ADDITIVE and only present when a search synonym
         // fired server-side — reset it first so a stale note from the
         // previous payload never outlives the search that produced it.
-        Object.assign(this.state, { search_note: null }, payload, { loading: false });
+        //
+        // payload.detail is always a placeholder ({}) — the provider
+        // contract's real detail data comes exclusively from selectRow()'s
+        // separate get_detail RPC (or _emptyDetail() below). Merging it in
+        // here would clobber a still-valid state.detail with a shape the
+        // template can't render (no specs/engineering/badges keys), most
+        // visibly when `stillPresent` below returns early and never gets a
+        // chance to repair it.
+        const { detail: _unusedDetailPlaceholder, ...catalogPayload } = payload;
+        Object.assign(this.state, { search_note: null }, catalogPayload, { loading: false });
 
         if (!this.state.ok) {
             this.state.selectedProductId = null;
