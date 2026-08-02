@@ -19,18 +19,18 @@ PLAN #NN") overlapped web.external_layout's company header (logo,
 address, VAT) on every page. The title strip was never mispositioned —
 it's a plain in-flow <table>, same as southbrook_estimating's
 signature_spec_sheet.xml title strip under the same web.external_layout.
-The real cause is wkhtmltopdf's header/body box math: the company
-header renders into the page's reserved top-margin band and is NOT
-clipped to it, so real (multi-line) header content taller than that
-band overflows downward. Empirically verified on this stack's actual
-wkhtmltopdf 0.12.6.1 (varying header_spacing at fixed margin_top, then
-margin_top alone): margin_top ALONE controls where body content (our
-title table) starts — header_spacing has no effect on that position on
-this binary. At margin_top=20 the header overflowed past that band and
-printed on top of the title. signature_spec_sheet.xml renders the
-IDENTICAL company header at margin_top=28 with no reported collision,
-so the fix matches that proven-safe margin_top rather than guessing a
-new one (see reports/kitchen_plan_report.xml's paperformat comment).
+The real cause — FINAL empirical model, established by rendering LIVE
+prod PDFs at 20/16, 28/16, 45/16 and 42/34 and visually inspecting
+them (Task 37 fix round 2): wkhtmltopdf 0.12.6.1 draws the company
+header from (margin_top - header_spacing) downward, unclipped, and
+body content at margin_top — the header's room is exactly
+HEADER_SPACING, not margin_top and not their sum. 16mm of room for the
+~30mm company block overprinted the body at EVERY margin_top tried
+(20/28/45 — the collision just moved down the page intact). 42/34
+renders overlap-free on both pages; Odoo's stock invoice default
+(40/35) obeys the same rule. NOTE: signature_spec_sheet.xml still runs
+28/16 and likely carries the same latent collision — follow-up flagged
+for southbrook_estimating (see kitchen_plan_report.xml's comment).
 test_04/05 pin the structural + config side of that fix; test_06/07
 render actual PDFs via wkhtmltopdf to check the render isn't degraded
 and doesn't regress the page count (both skip cleanly if the binary
