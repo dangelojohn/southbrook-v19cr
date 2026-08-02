@@ -222,43 +222,44 @@ class TestKitchenPlanReport(TransactionCase):
             "title/page markup must stay in normal flow — no "
             "position:absolute/fixed or negative top margin")
 
-    def test_05_paperformat_margin_top_gives_the_company_header_clearance(self):
-        """Regression pin for the actual fix. Review fast-follow (Task 37,
-        fix round 1) — the reviewer empirically tested this stack's real
-        wkhtmltopdf 0.12.6.1 binary (varying header_spacing 0/30/100 at a
-        fixed margin_top, then varying margin_top alone) and confirmed
-        body-content start position is controlled by margin_top ALONE;
-        header_spacing has no effect on it. An earlier version of this
-        test asserted on margin_top + header_spacing's SUM, which a
-        future edit could satisfy by dropping margin_top back to 20 and
-        raising header_spacing to compensate — passing the test while
-        silently reintroducing the real overlap. This asserts on
-        margin_top alone, which is the only field the fix actually
-        depends on.
+    def test_05_paperformat_header_room_and_body_clearance(self):
+        """Regression pin for the actual fix — FINAL empirical model
+        (Task 37, fix round 2, established by rendering LIVE prod PDFs
+        at 20/16, 28/16, 45/16 and 42/34 and visually inspecting them):
 
-        The bound: margin_top must be >= southbrook_estimating's
-        signature_spec_sheet.xml paperformat's margin_top (28), which
-        renders the SAME company header (same web.external_layout, no
-        override) with no reported collision — proof margin_top=28 is
-        sufficient clearance for this company's actual header content.
-        Regressing below it reintroduces the header/title overlap."""
+        wkhtmltopdf 0.12.6.1 draws the company header starting at
+        (margin_top - header_spacing) from the page top, unclipped, and
+        body content at margin_top — so the header's room is exactly
+        HEADER_SPACING. With header_spacing=16 the ~30mm company block
+        (logo + name + email + website) overprinted the first body rows
+        at EVERY margin_top tried (20, 28, 45 — the collision just moved
+        down the page intact). 42/34 was verified overlap-free on both
+        pages of a live render. Odoo's stock invoice default (40/35)
+        obeys the same rule, which is why standard reports don't
+        collide.
+
+        Two floors, both load-bearing:
+        - header_spacing >= 34: the header's actual room; regressing it
+          reintroduces the overlap regardless of margin_top.
+        - margin_top >= header_spacing + 6: keeps a visible gap between
+          the header's bottom and the title strip (and margin_top >=
+          header_spacing is structurally required or the header band
+          extends above the page top)."""
         report = self.env.ref(
             "southbrook_kitchen_3d_configurator.action_report_kitchen_plan")
         pf = report.paperformat_id
         self.assertTrue(pf, "action_report_kitchen_plan must carry a "
                              "dedicated paperformat")
-
-        sibling_pf = self.env.ref(
-            "southbrook_estimating.paperformat_southbrook_invoice_a4")
-
         self.assertGreaterEqual(
-            pf.margin_top or 0, sibling_pf.margin_top or 0,
-            "plan report's margin_top (%.0fmm) must be >= the "
-            "proven-safe sibling report's margin_top (%.0fmm) — they "
-            "render the identical company header, and margin_top alone "
-            "(not header_spacing) controls where body content starts "
-            "on this stack's wkhtmltopdf" % (
-                pf.margin_top or 0, sibling_pf.margin_top or 0))
+            pf.header_spacing or 0, 34,
+            "header_spacing IS the company header's room on this "
+            "wkhtmltopdf — the ~30mm company block needs >= 34mm "
+            "(empirically verified overlap-free); regressing this "
+            "reintroduces the header/title overprint on every page")
+        self.assertGreaterEqual(
+            (pf.margin_top or 0) - (pf.header_spacing or 0), 6,
+            "margin_top - header_spacing is the visible gap between the "
+            "header bottom and the first body row; keep >= 6mm")
 
     def test_06_pdf_smoke_renders_a_real_pdf(self):
         """Bakes an actual PDF via wkhtmltopdf (not the HTML-only
