@@ -47,14 +47,19 @@ $sb-cfg-blue:         #2f57c4;            // Import button + SKU
 $sb-cfg-blue-soft:    #eef2fb;
 $sb-cfg-blue-rule:    #d3def6;
 
-$sb-cfg-ok:           #1f9d6b;
-$sb-cfg-ok-soft:      #e6f7ef;
+// $sb-cfg-ok / $sb-cfg-warn* rebind to the canonical status tokens
+// (southbrook_ui) — see design-token lint ratchet 2026-08-02.
+// $sb-cfg-err* stays as a literal: not part of the baselined lint
+// keyword set ("err" isn't a recognized STATUS_KEYWORD, only "error"
+// is), left untouched to keep this pass scoped to the ratchet.
+$sb-cfg-ok:           var(--sb-status-ok-fg);
+$sb-cfg-ok-soft:      var(--sb-status-ok-bg);
 
 $sb-cfg-err:          #c0392b;
 $sb-cfg-err-soft:     #fdecea;
-$sb-cfg-warn:         #b07d2a;
-$sb-cfg-warn-soft:    #fff7e8;
-$sb-cfg-warn-rule:    #f0dca8;
+$sb-cfg-warn:         var(--sb-status-warn-fg);
+$sb-cfg-warn-soft:    var(--sb-status-warn-bg);
+$sb-cfg-warn-rule:    var(--sb-status-warn-border);
 
 $sb-cfg-chip-on:      #2f3b52;            // Selected-chip background
 

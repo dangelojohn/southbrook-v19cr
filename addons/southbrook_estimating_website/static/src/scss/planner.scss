@@ -280,13 +280,13 @@
 }
 
 .o_kp_error {
-  color: var(--sb-alert, #a83a2b);
+  color: var(--sb-status-blocked-fg);
 
   .o_kp_error_msg {
     font-family: var(--sb-font-mono, 'JetBrains Mono', monospace);
     font-size: 12px;
-    background: rgba(181, 75, 59, 0.08);
-    border: 1px solid var(--sb-alert, #a83a2b);
+    background: var(--sb-status-blocked-bg);
+    border: 1px solid var(--sb-status-blocked-border);
     border-radius: 4px;
     padding: 8px 12px;
     margin: 12px auto;
@@ -770,12 +770,12 @@
 .o_kp_drawer_rule_alert {
   margin: 0 32px 12px;
   padding: 10px 14px;
-  background: rgba(181, 75, 59, 0.08);
-  border: 1px solid var(--sb-alert, #a83a2b);
+  background: var(--sb-status-blocked-bg);
+  border: 1px solid var(--sb-status-blocked-border);
   border-radius: 3px;
   font-family: var(--sb-font-mono, 'JetBrains Mono', monospace);
   font-size: 11px;
-  color: var(--sb-alert, #a83a2b);
+  color: var(--sb-status-blocked-fg);
   letter-spacing: 0.02em;
 
   strong {
@@ -786,6 +786,11 @@
 
 // "Saving…" pill in the drawer foot — fades in while a
 // set-value RPC is in flight (typically 80-150ms over LAN).
+// reviewed 2026-08-02: a transient in-progress/loading indicator, not
+// one of the six status semantics (nothing is ok/warn/late/blocked/
+// info/neutral here, it's just "please wait") — the amber is a legacy
+// brand accent, not a status colour. Stays hardcoded (via legacy
+// --sb-warn alias) rather than guessing at a status mapping.
 .o_kp_drawer_saving {
   margin-right: auto;
   padding: 4px 10px;

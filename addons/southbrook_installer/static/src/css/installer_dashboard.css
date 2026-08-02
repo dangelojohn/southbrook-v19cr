@@ -79,9 +79,9 @@
     border-left: 4px solid #d4d8de;
 }
 
-.sbi-tile-blocked { border-left-color: #d32f2f; }
-.sbi-tile-flagged { border-left-color: #f7b500; }
-.sbi-tile-ok { border-left-color: #29c46f; }
+.sbi-tile-blocked { border-left-color: var(--sb-status-blocked-border); }
+.sbi-tile-flagged { border-left-color: var(--sb-status-warn-border); }
+.sbi-tile-ok { border-left-color: var(--sb-status-ok-border); }
 
 .sbi-tile-label {
     font-size: 0.78rem;
@@ -125,16 +125,16 @@
 }
 
 .sbi-row-blocked {
-    border-left-color: #d32f2f;
-    background: linear-gradient(90deg, #fdecec 0%, white 25%);
+    border-left-color: var(--sb-status-blocked-border);
+    background: linear-gradient(90deg, var(--sb-status-blocked-bg) 0%, white 25%);
 }
 
 .sbi-row-flagged {
-    border-left-color: #f7b500;
+    border-left-color: var(--sb-status-warn-border);
 }
 
 .sbi-row-ok {
-    border-left-color: #29c46f;
+    border-left-color: var(--sb-status-ok-border);
 }
 
 .sbi-row-terminal {

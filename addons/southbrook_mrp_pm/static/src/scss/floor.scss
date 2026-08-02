@@ -297,6 +297,11 @@
   }
 }
 
+// reviewed 2026-08-02: --sb-ink-dim/#6b665e is this file's generic
+// muted-secondary-text/surface treatment (11 other uses in this file,
+// none status-related) — the disabled/can't-act signal here is
+// `cursor: not-allowed`, not the colour. Not a status colour; stays
+// hardcoded (the "blocked" match is the selector name, not the hue).
 .o_sb_floor_wo_blocked {
   color: var(--sb-ink-dim, #6b665e);
   background: var(--sb-paper, #fbf7ef);

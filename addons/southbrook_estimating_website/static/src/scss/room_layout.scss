@@ -123,9 +123,13 @@
     }
 
     &--conflict {
-        border-color: var(--sb-alert);
+        border-color: var(--sb-status-blocked-border);
+        // reviewed 2026-08-02: #fbf7ef here is the plain paper background
+        // literal (see original comment) wrapped in a no-op lighten(), not
+        // a status colour — the conflict signal is the border/shadow, not
+        // this fill. Left hardcoded.
         background: lighten(#fbf7ef, 0); // keep paper, just border + corner mark
-        box-shadow: 0 0 0 1px var(--sb-alert) inset;
+        box-shadow: 0 0 0 1px var(--sb-status-blocked-border) inset;
     }
 }
 
@@ -1230,6 +1234,11 @@
     stroke-width: 1;
 }
 
+// reviewed 2026-08-02: this block is a fixture-TYPE colour legend for
+// the floorplan SVG (window/door/sink/cooktop/oven/...), not a status
+// system — it reuses --sb-warn/--sb-alert/--sb-sky purely for their hue
+// as categorical differentiation between fixture icons, with no
+// severity meaning. None of these are status colours; left hardcoded.
 .sb-room-plan-constraint--window      { fill: var(--sb-sky, #6fb8d6); fill-opacity: 0.6; }
 .sb-room-plan-constraint--door        { fill: var(--sb-walnut); fill-opacity: 0.4; }
 .sb-room-plan-constraint--sink        { fill: var(--sb-warn, #d9a85f); fill-opacity: 0.7; }
@@ -1543,39 +1552,46 @@
         font-size: 11px;
     }
     .sb-palette-ghost-snap {
-        color: var(--sb-success, #2f7a3d);
+        color: var(--sb-status-ok-fg);
         font-size: 11px;
         font-weight: 600;
         padding-top: 3px;
-        border-top: 1px dashed var(--sb-success, #2f7a3d);
+        border-top: 1px dashed var(--sb-status-ok-border);
         margin-top: 2px;
     }
+    // box-shadow glows below stay literal rgba tints (reviewed 2026-08-02):
+    // there's no --sb-status-*-glow token and hex custom properties can't
+    // be fed into rgba() for opacity — only border-color, which carries
+    // the actual status signal, is tokenized.
     &.sb-palette-ghost--targeting {
-        border-color: var(--sb-success, #2f7a3d);
+        border-color: var(--sb-status-ok-border);
         box-shadow: 0 4px 16px rgba(47, 122, 61, 0.25);
     }
     &.sb-palette-ghost--tight {
-        border-color: var(--sb-warn, #d9a85f);
+        border-color: var(--sb-status-warn-border);
         box-shadow: 0 4px 16px rgba(217, 168, 95, 0.30);
     }
     &.sb-palette-ghost--overlap {
-        border-color: var(--sb-alert, #d94e3a);
+        border-color: var(--sb-status-blocked-border);
         box-shadow: 0 4px 16px rgba(217, 78, 58, 0.30);
     }
+    // shown when snapInfo.status === 'overlap' (appliance_palette.xml) —
+    // a hard collision, hence status-blocked despite the "-warn" class
+    // name (the class predates the blocked/late/warn split).
     .sb-palette-ghost-warn {
-        color: var(--sb-alert, #d94e3a);
+        color: var(--sb-status-blocked-fg);
         font-size: 11px;
         font-weight: 600;
         padding-top: 3px;
-        border-top: 1px dashed var(--sb-alert, #d94e3a);
+        border-top: 1px dashed var(--sb-status-blocked-border);
         margin-top: 2px;
     }
     .sb-palette-ghost-tight {
-        color: var(--sb-warn, #d9a85f);
+        color: var(--sb-status-warn-fg);
         font-size: 11px;
         font-weight: 600;
         padding-top: 3px;
-        border-top: 1px dashed var(--sb-warn, #d9a85f);
+        border-top: 1px dashed var(--sb-status-warn-border);
         margin-top: 2px;
     }
 }
@@ -1609,15 +1625,15 @@
 }
 
 .sb-essentials-item--present {
-    color: var(--sb-success, #2f7a3d);
-    background: rgba(47, 122, 61, 0.08);
-    border-color: rgba(47, 122, 61, 0.30);
+    color: var(--sb-status-ok-fg);
+    background: var(--sb-status-ok-bg);
+    border-color: var(--sb-status-ok-border);
 }
 
 .sb-essentials-item--missing {
-    color: var(--sb-warn, #d9a85f);
-    background: rgba(217, 168, 95, 0.08);
-    border-color: rgba(217, 168, 95, 0.40);
+    color: var(--sb-status-warn-fg);
+    background: var(--sb-status-warn-bg);
+    border-color: var(--sb-status-warn-border);
 }
 
 .sb-essentials-mark {
@@ -1638,8 +1654,11 @@
     vector-effect: non-scaling-stroke;
 }
 
+// edge.violation (room_layout.xml) is an NKBA work-triangle guideline
+// advisory, not a hard-stop rule — status-warn, despite the legacy
+// implementation having reused the (blocked-aliased) --sb-alert var.
 .sb-room-plan-triangle--warn {
-    stroke: var(--sb-alert, #d94e3a);
+    stroke: var(--sb-status-warn-fg);
     stroke-width: 2;
     stroke-dasharray: 4 3;
 }
@@ -1657,7 +1676,7 @@
 }
 
 .sb-room-plan-triangle-label--warn {
-    fill: var(--sb-alert, #d94e3a);
+    fill: var(--sb-status-warn-fg);
 }
 
 // Gap markers — dashed rect, no fill.
@@ -2047,9 +2066,9 @@
 .sb-room-plan-modal-error {
     margin: 0.4rem 0 0 0;
     padding: 0.4rem 0.55rem;
-    color: var(--sb-alert);
-    background: rgba(220, 80, 80, 0.08);
-    border: 1px solid var(--sb-alert);
+    color: var(--sb-status-blocked-fg);
+    background: var(--sb-status-blocked-bg);
+    border: 1px solid var(--sb-status-blocked-border);
     border-radius: var(--sb-radius-sm);
     font-size: 0.85rem;
 }
@@ -2215,12 +2234,12 @@
 
     &--done {
         color: var(--sb-walnut-d);
-        border-color: var(--sb-ok, #2f7d4f);
+        border-color: var(--sb-status-ok-border);
 
         .sb-room-progress-bubble {
-            background: var(--sb-ok, #2f7d4f);
+            background: var(--sb-status-ok-fg);
             color: var(--sb-paper);
-            border-color: var(--sb-ok, #2f7d4f);
+            border-color: var(--sb-status-ok-border);
         }
     }
 
@@ -2293,7 +2312,7 @@
     margin: 0 0 1.1rem 0;
     padding: 0.85rem 1rem;
     background: var(--sb-hl, #f6f1e6);
-    border: 1px solid var(--sb-ok, #2f7d4f);
+    border: 1px solid var(--sb-status-ok-border);
     border-radius: var(--sb-radius-sm);
 }
 
@@ -2304,7 +2323,7 @@
     width: 32px;
     height: 32px;
     border-radius: 50%;
-    background: var(--sb-ok, #2f7d4f);
+    background: var(--sb-status-ok-fg);
     color: var(--sb-paper);
     font-family: var(--sb-font-mono);
     font-weight: 600;

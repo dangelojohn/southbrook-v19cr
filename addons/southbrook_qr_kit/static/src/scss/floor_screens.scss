@@ -21,6 +21,9 @@
 
 .sb_floor_sub {
     display: block;
+    // reviewed 2026-08-02: plain muted subtitle text; the linter's
+    // "block" match is `display: block` on the line above, not a
+    // status semantic. Not a status colour; stays hardcoded.
     color: #666;
     font-size: 0.95rem;
     margin-top: 0.2rem;
@@ -212,27 +215,27 @@
 }
 
 .sb_toast_ok {
-    background: #d3f9d8;
-    color: #155724;
-    border: 1px solid #69db7c;
+    background: var(--sb-status-ok-bg);
+    color: var(--sb-status-ok-fg);
+    border: 1px solid var(--sb-status-ok-border);
 }
 
 .sb_toast_err {
-    background: #f8d7da;
-    color: #721c24;
-    border: 1px solid #f1a1a8;
+    background: var(--sb-status-blocked-bg);
+    color: var(--sb-status-blocked-fg);
+    border: 1px solid var(--sb-status-blocked-border);
 }
 
 .sb_toast_warn {
-    background: #fff3bf;
-    color: #5c4400;
-    border: 1px solid #ffd43b;
+    background: var(--sb-status-warn-bg);
+    color: var(--sb-status-warn-fg);
+    border: 1px solid var(--sb-status-warn-border);
 }
 
 .sb_toast_info {
-    background: #d0ebff;
-    color: #0b4d8b;
-    border: 1px solid #74c0fc;
+    background: var(--sb-status-info-bg);
+    color: var(--sb-status-info-fg);
+    border: 1px solid var(--sb-status-info-border);
 }
 
 .sb_floor_chip {
@@ -243,18 +246,18 @@
 }
 
 .sb_chip_ok {
-    background: #d3f9d8;
-    color: #155724;
+    background: var(--sb-status-ok-bg);
+    color: var(--sb-status-ok-fg);
 }
 
 .sb_chip_warn {
-    background: #fff3bf;
-    color: #5c4400;
+    background: var(--sb-status-warn-bg);
+    color: var(--sb-status-warn-fg);
 }
 
 .sb_chip_info {
-    background: #d0ebff;
-    color: #0b4d8b;
+    background: var(--sb-status-info-bg);
+    color: var(--sb-status-info-fg);
 }
 
 .sb_floor_counts {
@@ -293,16 +296,18 @@
     font-variant-numeric: tabular-nums;
 }
 
-.sb_history_ok .sb_history_msg { color: #155724; }
-.sb_history_warn .sb_history_msg { color: #5c4400; font-weight: 600; }
-.sb_history_err .sb_history_msg { color: #721c24; font-weight: 600; }
-.sb_history_info .sb_history_msg { color: #0b4d8b; }
-.sb_history_queued .sb_history_msg { color: #5c4400; font-style: italic; }
+.sb_history_ok .sb_history_msg { color: var(--sb-status-ok-fg); }
+.sb_history_warn .sb_history_msg { color: var(--sb-status-warn-fg); font-weight: 600; }
+.sb_history_err .sb_history_msg { color: var(--sb-status-blocked-fg); font-weight: 600; }
+.sb_history_info .sb_history_msg { color: var(--sb-status-info-fg); }
+// .sb_history_queued reuses the warn hex verbatim (pending/waiting, not
+// yet processed) — same token as .sb_history_warn.
+.sb_history_queued .sb_history_msg { color: var(--sb-status-warn-fg); font-style: italic; }
 
 .sb_floor_err {
-    color: #721c24;
-    background: #f8d7da;
-    border: 1px solid #f1a1a8;
+    color: var(--sb-status-blocked-fg);
+    background: var(--sb-status-blocked-bg);
+    border: 1px solid var(--sb-status-blocked-border);
     padding: 1rem;
     border-radius: 8px;
     margin: 1rem;

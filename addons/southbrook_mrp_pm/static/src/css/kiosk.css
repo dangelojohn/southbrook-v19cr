@@ -105,14 +105,22 @@ html, body {
   font-weight: 600;
 }
 
+/* .o_sb_kiosk_late_badge_calm is the zero-lates ("on track") state of
+ * the late counter — genuinely an ok/success signal, not a muted
+ * "late" tone, hence the status-ok tokens despite the parent
+ * component's name. .o_sb_kiosk_late_badge_warn is the active
+ * overdue-count state: overdue-but-continue, not a hard stop, so it
+ * maps to status-late (not status-blocked) per the design-token
+ * ratchet 2026-08-02 — this pairing was previously rendered in the
+ * same red as a hard-stop/blocked state. */
 .o_sb_kiosk_late_badge_calm {
-  background: rgba(56, 142, 60, 0.2);
-  color: rgb(102, 187, 106);
+  background: var(--sb-status-ok-bg);
+  color: var(--sb-status-ok-fg);
 }
 
 .o_sb_kiosk_late_badge_warn {
-  background: rgba(198, 40, 40, 0.25);
-  color: rgb(255, 138, 128);
+  background: var(--sb-status-late-bg);
+  color: var(--sb-status-late-fg);
   animation: kiosk-pulse 2s ease-in-out infinite;
 }
 
@@ -203,11 +211,11 @@ html, body {
 }
 
 .o_sb_kiosk_metric_done {
-  color: rgb(102, 187, 106);
+  color: var(--sb-status-ok-fg);
 }
 
 .o_sb_kiosk_metric_late {
-  color: rgb(255, 138, 128);
+  color: var(--sb-status-late-fg);
 }
 
 .o_sb_kiosk_metric_l {

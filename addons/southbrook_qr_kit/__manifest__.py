@@ -53,7 +53,7 @@ SECURITY:
     # binds a pre-staged stock.picking (internal) to mrp.workorder via
     # the new x_sbk_trolley_id field; resolution code reads
     # employee_assigned_ids / operator_id from mrp.workorder.
-    "depends": ["base", "web", "mail", "stock", "hr", "mrp"],
+    "depends": ["base", "web", "mail", "stock", "hr", "mrp", "southbrook_ui"],
     "data": [
         "security/ir.model.access.csv",
         "data/qr_kit_config_parameters.xml",

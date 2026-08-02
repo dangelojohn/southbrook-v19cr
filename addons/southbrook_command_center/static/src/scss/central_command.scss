@@ -276,6 +276,10 @@
     .sb_cc_rec_top { display: flex; gap: 8px; }
     .sb_cc_prio { font-size: 11px; color: var(--sb-status-warn-fg); text-transform: uppercase; }
 
+    // reviewed 2026-08-02: renders al.event_type/source (e.g. "stock",
+    // "quality") as a muted category label, not a severity indicator —
+    // "alert" here names the row it lives in, not this text's meaning.
+    // Not a status colour; stays hardcoded.
     .sb_cc_alert_type { color: #667; margin-right: 6px; font-size: 12px; }
 
     // -- "New here?" help banner -- an informational callout, not a

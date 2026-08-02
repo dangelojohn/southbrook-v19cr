@@ -129,8 +129,10 @@ refers to a cabinet — lists, counters, previews, swap pickers — reuse
 `cabinetThumbSVG(product, sizePx)` (synthetic `{cabinet_type, width_in}`
 literals are fine for family-level icons). Never hand-draw a second variant:
 one source means the icon can never disagree with what gets placed. Family
-inference lives in ONE seam (`thumbFamily`) pending explicit footprint fields
-on the product record.
+inference lives in ONE seam (`thumbFamily`); `product.template.southbrook_thumb_family`
+(2026-08-02) is the explicit override that seam always wanted — set it and it
+wins outright, leave it blank and the SKU/name inference behaves exactly as
+before.
 
 ## Before you claim a UI change works
 

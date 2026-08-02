@@ -97,11 +97,11 @@
 }
 
 .o_owl_error_card {
-    border-color: var(--sb-alert);
-    background: rgba(168, 58, 43, 0.06);
+    border-color: var(--sb-status-blocked-border);
+    background: var(--sb-status-blocked-bg);
 
     strong {
-        color: var(--sb-alert);
+        color: var(--sb-status-blocked-fg);
     }
     .o_owl_retry_btn {
         margin-top: 14px;
@@ -583,9 +583,13 @@
     font-size: 0.75em;
     letter-spacing: 0.05em;
 }
-.o_owl_dv_hard .o_owl_dv_sev { color: #983b3b; }
-.o_owl_dv_soft .o_owl_dv_sev { color: #b07a1f; }
-.o_owl_dv_info .o_owl_dv_sev { color: #4a6b3d; }
+// hard/soft/info is the rule-inspector's 3-tier severity (see
+// portal_boot.esm.js lineIssues) — hard is a blocking rule violation,
+// soft is a suggestion, info is a neutral FYI note. dv_info's green
+// literal was a mismatched holdover; status-info's blue is correct.
+.o_owl_dv_hard .o_owl_dv_sev { color: var(--sb-status-blocked-fg); }
+.o_owl_dv_soft .o_owl_dv_sev { color: var(--sb-status-warn-fg); }
+.o_owl_dv_info .o_owl_dv_sev { color: var(--sb-status-info-fg); }
 .o_owl_dv_msg { flex: 1; }
 
 // Phase 3 Sprint C1 — per-zone inline "+ Add to <zone>" CTA.
@@ -690,6 +694,11 @@
 // Visually distinct from the primary CTA (Confirm) so an accidental
 // click is unlikely. Renders as a desaturated red outline; hover
 // fills the background for clear affordance.
+// reviewed 2026-08-02: this IS the blocked/danger semantic, but the
+// desaturated base + darker hover-fill text are a deliberate, documented
+// palette for this specific button (see comment above) — swapping in
+// the standard (more saturated) --sb-status-blocked-* values would
+// visually regress against that intent. Left hardcoded.
 .o_owl_btn_danger {
     color: #983b3b;
     border-color: #c87272;
@@ -1419,9 +1428,9 @@
         cursor: progress;
     }
     &.o_owl_bulk_btn_danger {
-        background: #dc2626;
+        background: var(--sb-status-blocked-fg);
         color: white;
-        border-color: #dc2626;
+        border-color: var(--sb-status-blocked-fg);
     }
     &.o_owl_bulk_btn_link {
         background: transparent;
@@ -1892,9 +1901,9 @@
 // warning; green ≥ 15% is the "OK" zone.
 .o_owl_hs_margin {
     .o_owl_hs_value { font-weight: 600; }
-    &.o_owl_hs_margin_red   .o_owl_hs_value { color: #dc2626; }
-    &.o_owl_hs_margin_amber .o_owl_hs_value { color: #b45309; }
-    &.o_owl_hs_margin_green .o_owl_hs_value { color: var(--sb-ok, #16a34a); }
+    &.o_owl_hs_margin_red   .o_owl_hs_value { color: var(--sb-status-blocked-fg); }
+    &.o_owl_hs_margin_amber .o_owl_hs_value { color: var(--sb-status-warn-fg); }
+    &.o_owl_hs_margin_green .o_owl_hs_value { color: var(--sb-status-ok-fg); }
 }
 
 // ----- OWL OrderBuilder root (T2C2 commit's component) ------------
@@ -3097,7 +3106,7 @@
     padding: 10px 14px;
     background: var(--sb-paper);
     border: 1px solid var(--sb-rule);
-    border-left: 4px solid var(--sb-ok, #2f7d32);
+    border-left: 4px solid var(--sb-status-ok-border);
     border-radius: 3px;
     box-shadow: 0 4px 14px rgba(15, 15, 15, 0.12);
     color: var(--sb-ink);
@@ -3107,8 +3116,8 @@
     animation: o_owl_toast_in 180ms ease-out;
 }
 
-.o_owl_toast_success { border-left-color: var(--sb-ok, #2f7d32); }
-.o_owl_toast_error   { border-left-color: var(--sb-alert, #a83a2b); }
+.o_owl_toast_success { border-left-color: var(--sb-status-ok-border); }
+.o_owl_toast_error   { border-left-color: var(--sb-status-blocked-border); }
 
 .o_owl_toast_text {
     flex: 1 1 auto;

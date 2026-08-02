@@ -55,6 +55,7 @@ PHASE 3 — Generative + Planning Activation
         'southbrook_plm',
         'southbrook_ai_design',
         'southbrook_freecad_bridge',
+        'southbrook_ui',
     ],
     'data': [
         # security

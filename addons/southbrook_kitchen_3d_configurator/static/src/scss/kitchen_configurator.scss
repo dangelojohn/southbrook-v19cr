@@ -15,9 +15,16 @@ $sbk-bg:         #F5F2EE;
 $sbk-white:      #FFFFFF;
 $sbk-accent:     #1866D4;
 $sbk-accent-bg:  #EEF3FF;
-$sbk-success:    #15803D;
-$sbk-warn:       #C2410C;
-$sbk-amber:      #B45309;
+// $sbk-success/-warn/-amber rebind to the canonical status tokens
+// (southbrook_ui) — see design-token lint ratchet 2026-08-02.
+// $sbk-warn's own hex (#C2410C) and its usage sites (.o_sbk_field_error,
+// .o_sbk_error, .o_sbk_toast_danger) are all hard-validation-error reds
+// despite the "warn" name, so it maps to blocked, not warn. $sbk-amber
+// is the file's actual soft-warn amber (.o_sbk_toast_warning,
+// .o_sbk_remainder) and maps to warn.
+$sbk-success:    var(--sb-status-ok-fg);
+$sbk-warn:       var(--sb-status-blocked-fg);
+$sbk-amber:      var(--sb-status-warn-fg);
 
 // ─── Root wrapper ─────────────────────────────────────────────────────────────
 .o_sbk_root {
@@ -1031,9 +1038,9 @@ $sbk-amber:      #B45309;
     border: 1px solid rgba(231, 206, 122, 0.55);
     color: #5a4632;
     &.o_sbk_warning_blocking {
-        background: rgba(192, 73, 47, 0.10);
-        border-color: rgba(192, 73, 47, 0.40);
-        color: #c0492f;
+        background: var(--sb-status-blocked-bg);
+        border-color: var(--sb-status-blocked-border);
+        color: var(--sb-status-blocked-fg);
     }
 }
 .o_sbk_warning_icon { font-size: 13px; line-height: 1; }
@@ -1112,8 +1119,8 @@ $sbk-amber:      #B45309;
     font-family: var(--sb-font-display);
     white-space: nowrap;
     &.is-ok {
-        color: #1e9e6a;
-        background: rgba(30, 158, 106, 0.10);
+        color: var(--sb-status-ok-fg);
+        background: var(--sb-status-ok-bg);
     }
 }
 
@@ -1276,15 +1283,15 @@ $sbk-amber:      #B45309;
 }
 .o_sbk_toast_success {
     border-left-color: $sbk-success;
-    background: rgba(21, 128, 61, 0.06);
+    background: var(--sb-status-ok-bg);
 }
 .o_sbk_toast_warning {
     border-left-color: $sbk-amber;
-    background: #FEF9EC;
+    background: var(--sb-status-warn-bg);
 }
 .o_sbk_toast_danger {
     border-left-color: $sbk-warn;
-    background: #FEF2F2;
+    background: var(--sb-status-blocked-bg);
 }
 
 .o_sbk_toast_body {

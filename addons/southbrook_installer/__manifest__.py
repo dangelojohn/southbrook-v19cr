@@ -66,6 +66,7 @@ SAFE DEPS ONLY:
         "account",
         "bus",
         "web",
+        "southbrook_ui",
     ],
     "data": [
         "security/southbrook_installer_groups.xml",

@@ -22,6 +22,7 @@
         "southbrook_quality",
         "southbrook_finance_pack",
         "southbrook_integrations",
+        "southbrook_ui",
     ],
     "data": [
         "security/groups.xml",

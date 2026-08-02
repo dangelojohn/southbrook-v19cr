@@ -26,8 +26,14 @@
     --mc-accent: #b8242a;
     --mc-accent-2: #8a1a1f;
     --mc-accent-soft: #fbeced;
-    --mc-ok: #1f7a3d;
-    --mc-ok-soft: #e6f4ea;
+    // --mc-ok / --mc-ok-soft rebind to the canonical status tokens
+    // (southbrook_ui) rather than a local literal — see design-token
+    // lint ratchet 2026-08-02. --mc-row-hover below is a hover-highlight
+    // tint, not a status colour; it stays hardcoded (reviewed, not a
+    // status colour — flagged only by comment-line context bleed from
+    // the ok/ok-soft lines directly above it).
+    --mc-ok: var(--sb-status-ok-fg);
+    --mc-ok-soft: var(--sb-status-ok-bg);
     --mc-row-hover: #fff8e1;
     --mc-flag: #fff3d6;
     --mc-link: #1851a8;
@@ -46,8 +52,10 @@
         --mc-accent: #e2686c;
         --mc-accent-2: #f0898c;
         --mc-accent-soft: #2e1c1e;
-        --mc-ok: #6fcf87;
-        --mc-ok-soft: #163821;
+        // --mc-ok / --mc-ok-soft dark values dropped: the canonical
+        // token they now reference (var(--sb-status-ok-*)) already
+        // rebinds under prefers-color-scheme:dark, so redeclaring here
+        // would just duplicate that rebind.
         --mc-row-hover: #2a2418;
         --mc-flag: #2e2718;
         --mc-link: #7aa6e8;
@@ -318,8 +326,9 @@
     --mc-accent: #e2686c;
     --mc-accent-2: #f0898c;
     --mc-accent-soft: #2e1c1e;
-    --mc-ok: #6fcf87;
-    --mc-ok-soft: #163821;
+    // --mc-ok / --mc-ok-soft dropped here too — same reasoning as the
+    // prefers-color-scheme block above; [data-theme="dark"] is exactly
+    // where the canonical token rebinds itself.
     --mc-row-hover: #2a2418;
     --mc-flag: #2e2718;
     --mc-link: #7aa6e8;
@@ -337,8 +346,8 @@
     --mc-accent: #b8242a;
     --mc-accent-2: #8a1a1f;
     --mc-accent-soft: #fbeced;
-    --mc-ok: #1f7a3d;
-    --mc-ok-soft: #e6f4ea;
+    --mc-ok: var(--sb-status-ok-fg);
+    --mc-ok-soft: var(--sb-status-ok-bg);
     --mc-row-hover: #fff8e1;
     --mc-flag: #fff3d6;
     --mc-link: #1851a8;

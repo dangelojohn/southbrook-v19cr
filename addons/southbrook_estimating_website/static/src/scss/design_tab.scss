@@ -408,7 +408,7 @@
     .o_owl_design3d_detail_remove {
         font-size: 0.85rem !important;
 
-        &:hover { color: var(--sb-alert, #a83a2b) !important; }
+        &:hover { color: var(--sb-status-blocked-fg) !important; }
     }
 
     .o_owl_design3d_detail_name {
@@ -417,12 +417,15 @@
         font-weight: 600;
     }
 
+    // Despite the "warn" name this renders "can't be manufactured until
+    // a BOM exists" — a hard stop, not a soft warning — so it maps to
+    // status-blocked, not status-warn (design-token ratchet 2026-08-02).
     .o_owl_design3d_bom_warn {
         margin: 0 0 8px;
         padding: 6px 8px;
         border-radius: var(--sb-radius-sm, 4px);
-        background: rgba(168, 58, 43, 0.1);
-        color: var(--sb-alert, #a83a2b);
+        background: var(--sb-status-blocked-bg);
+        color: var(--sb-status-blocked-fg);
         font-family: var(--sb-font-sans, inherit);
         font-size: 11px;
         line-height: 1.4;

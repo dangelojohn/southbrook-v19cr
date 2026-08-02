@@ -78,6 +78,31 @@ const CORNER_TINT = 0x2E6F63;
 /**
  * Style key from a product default_code, or null when it doesn't match
  * any known corner family (caller degrades to the plain box).
+ *
+ * Debt fix (2026-08-02) verification — `product.template` now carries
+ * an explicit `southbrook_thumb_family` override that
+ * `cabinet_thumb.esm.js`'s `thumbFamily()` honours outright (see that
+ * module's doc comment). This function DELIBERATELY still reads
+ * `default_code` only, not that field, and that's not an oversight:
+ * `default_code` here is the product's own real SKU (server-sent per
+ * design line by `_serialize_design_lines`/`_product_payload`, never a
+ * free-text name guess) — already the kind of "explicit field the mesh
+ * trusts" the icon's own inference mirrors, so this seam was never the
+ * fragile one. Threading `thumb_family` through here as well would also
+ * require a value mapping this codebase doesn't have: this function's
+ * three mesh styles (pie/blind/diag) and `thumbFamily()`'s three corner
+ * icon families (cornerL/cornerBlind/cornerDiag) are NOT a 1:1
+ * correspondence today — e.g. a plain "SB-CORNER" code (the shipped
+ * canonical "Corner Cabinet" product) resolves to "diag" here but to
+ * the icon's generic "cornerL" bucket in `thumbFamily()` (no code/name
+ * keyword matches BLIND/DIAG/LSUSAN/WALL-CORNER, so it falls to the
+ * fallback-of-the-fallback default). That's a pre-existing icon/mesh
+ * label mismatch this debt-fix task did NOT sign up to correct — porting
+ * it blind into a "family drives style" rule here would either invent a
+ * new mesh shape for "cornerL" or silently change this SKU's placed
+ * geometry. Left as a documented gap for a follow-up that reconciles
+ * the two taxonomies on purpose, not as a side effect of this ticket.
+ *
  * @param {string|null|undefined} code
  * @returns {"pie"|"blind"|"diag"|null}
  */

@@ -8,7 +8,7 @@
                "domain model of its own.",
     "author": "Southbrook / METISA",
     "license": "LGPL-3",
-    "depends": ["product", "uom", "stock", "southbrook_mrp_kitchen_tools"],
+    "depends": ["product", "uom", "stock", "southbrook_mrp_kitchen_tools", "southbrook_ui"],
     "data": [
         "security/ir.model.access.csv",
         "data/catalog_action.xml",

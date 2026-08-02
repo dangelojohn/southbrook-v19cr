@@ -7,9 +7,14 @@ $sb-walnut-light: #8b6240;
 $sb-linen: #f5efe2;
 $sb-linen-deep: #e8dcc3;
 $sb-ink: #1f2933;
-$sb-good: #2b8a3e;
-$sb-warn: #d97706;
-$sb-bad: #c0392b;
+// $sb-good/-warn/-bad rebind to the canonical status tokens
+// (southbrook_ui) — design-token lint ratchet 2026-08-02. $sb-good
+// covers good-performance KPI tiles (FPY, OTD) -> ok. $sb-warn covers
+// the bottleneck-tile heads-up -> warn. $sb-bad covers the hard error
+// banner and NCR (quality-failure) tile -> blocked.
+$sb-good: var(--sb-status-ok-fg);
+$sb-warn: var(--sb-status-warn-fg);
+$sb-bad: var(--sb-status-blocked-fg);
 
 .sb-exec-dashboard {
     font-family: "Roboto Flex", "Roboto", -apple-system, BlinkMacSystemFont, sans-serif;
@@ -52,7 +57,10 @@ $sb-bad: #c0392b;
     }
 
     .sb-exec-error {
-        background: lighten($sb-bad, 40%);
+        // was lighten($sb-bad, 40%) — a Sass colour function can't
+        // operate on $sb-bad now that it's a CSS var(); the canonical
+        // blocked-bg tint is the direct equivalent.
+        background: var(--sb-status-blocked-bg);
         color: $sb-bad;
         padding: 12px 16px;
         border-radius: 8px;

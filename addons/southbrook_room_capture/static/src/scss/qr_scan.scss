@@ -150,9 +150,9 @@
 .sb-qr-modal-error {
     margin: 0.4rem 0 0 0;
     padding: 0.4rem 0.55rem;
-    color: var(--sb-alert);
-    background: rgba(220, 80, 80, 0.08);
-    border: 1px solid var(--sb-alert);
+    color: var(--sb-status-blocked-fg);
+    background: var(--sb-status-blocked-bg);
+    border: 1px solid var(--sb-status-blocked-border);
     border-radius: var(--sb-radius-sm);
     font-size: 0.85rem;
 }
@@ -205,10 +205,10 @@
 .sb-qr-flash {
     margin: 0;
     padding: 0.35rem 0.6rem;
-    background: var(--sb-warn-bg, rgba(200, 150, 40, 0.12));
-    border: 1px solid var(--sb-warn-border, var(--sb-warn));
+    background: var(--sb-status-warn-bg);
+    border: 1px solid var(--sb-status-warn-border);
     border-radius: var(--sb-radius-sm);
-    color: var(--sb-warn);
+    color: var(--sb-status-warn-fg);
     font-size: 0.8rem;
     text-align: center;
 }
@@ -338,9 +338,9 @@
     font-weight: 600;
 
     &--here {
-        background: rgba(60, 140, 90, 0.12);
-        color: var(--sb-ok, var(--sb-success, #3c8c5a));
-        border: 1px solid var(--sb-ok, var(--sb-success, #3c8c5a));
+        background: var(--sb-status-ok-bg);
+        color: var(--sb-status-ok-fg);
+        border: 1px solid var(--sb-status-ok-border);
     }
 
     &--elsewhere {

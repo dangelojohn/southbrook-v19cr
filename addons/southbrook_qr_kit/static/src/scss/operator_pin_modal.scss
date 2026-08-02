@@ -16,14 +16,17 @@
     font-size: 13px;
     font-weight: 600;
     color: #fff;
-    background: #c92a2a;          // unbound = warning red
+    // unbound = no operator is attributed to this station yet, a hard
+    // gate on shop-floor actions — status-blocked, not status-warn
+    // (this is a binary bound/unbound toggle, no intermediate warn state).
+    background: var(--sb-status-blocked-fg);
     border-radius: 14px;
     cursor: pointer;
     user-select: none;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 
     &--bound {
-        background: #2b8a3e;       // bound = ok green
+        background: var(--sb-status-ok-fg);       // bound = ok green
     }
 }
 
@@ -147,7 +150,10 @@
         }
 
         &--ok {
-            background: #2b8a3e;
+            background: var(--sb-status-ok-fg);
+            // reviewed 2026-08-02: plain white button text, not a status
+            // colour — the lint match here is "ok" inside the token name
+            // on the line above (--sb-status-ok-fg), not this literal.
             color: #fff;
         }
     }

@@ -35,6 +35,10 @@
         # model. We depend on the configurator for those models + the
         # canvas/* JS modules (added to web.assets_frontend below).
         "southbrook_kitchen_3d_configurator",
+        # 2026-08-02 — design-token lint ratchet: design_tab.scss,
+        # planner.scss, portal_root.scss and room_layout.scss now
+        # reference the canonical --sb-status-* tokens directly.
+        "southbrook_ui",
     ],
     "data": [
         # Track 2 commit 1 — portal-route view templates.

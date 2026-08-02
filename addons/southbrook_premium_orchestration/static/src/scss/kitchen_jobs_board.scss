@@ -37,15 +37,23 @@
     // status palette — CONTRACT §6, values ported verbatim from
     // mrp_explorer.scss's WCAG-AA-fixed pairs (blocked/at-risk chips ~L100-160,
     // 316-320; at-risk header rollup ~L516; DO NEXT card accents ~L585-594).
-    --skj-blocked-bg: #f7dcd7;
-    --skj-blocked-fg: #bc2f1c;
+    //
+    // blocked/late/ok/warn/unknown rebind to the canonical southbrook_ui
+    // status tokens (design-token lint ratchet 2026-08-02). --skj-atrisk-*
+    // deliberately stays a hardcoded literal: it's a 5th escalation tier
+    // (warn -> at-risk -> late -> blocked) with no canonical equivalent,
+    // and the existing "distinct from blocked red — do not merge"
+    // requirement means collapsing it into any of the 6 canonical tokens
+    // would erase a distinction this board's own contract relies on.
+    --skj-blocked-bg: var(--sb-status-blocked-bg);
+    --skj-blocked-fg: var(--sb-status-blocked-fg);
     --skj-atrisk-bg: #fbe0d1;
     --skj-atrisk-fg: #b04319; // distinct from blocked red — reviewed requirement, do not merge
-    --skj-late-fg: #b3261e;
-    --skj-ok-fg: #2f8f4f;
-    --skj-unknown-fg: #a7a7b2;
-    --skj-warn-bg: #f7e9c8;
-    --skj-warn-fg: #7a5a12;
+    --skj-late-fg: var(--sb-status-late-fg);
+    --skj-ok-fg: var(--sb-status-ok-fg);
+    --skj-unknown-fg: var(--sb-status-neutral-fg);
+    --skj-warn-bg: var(--sb-status-warn-bg);
+    --skj-warn-fg: var(--sb-status-warn-fg);
 
     // typography — 12px floor everywhere (CONTRACT §6 + repo-wide WCAG pass
     // this ports from: mrp_explorer.scss WI-7).
@@ -393,11 +401,16 @@
     .skj-fchip.skj-warn.is-active,
     .skj-fchip.skj-review.is-active { background: var(--skj-warn-bg); color: var(--skj-warn-fg); }
     .skj-chip.skj-ok,
-    .skj-fchip.skj-ok.is-active { background: #e5f1ea; color: var(--skj-ok-fg); }
+    .skj-fchip.skj-ok.is-active { background: var(--sb-status-ok-bg); color: var(--skj-ok-fg); }
     .skj-chip.skj-unknown,
     .skj-fchip.skj-unknown.is-active { background: var(--skj-line); color: var(--skj-unknown-fg); font-style: italic; }
+    // was `background: var(--skj-blocked-bg)` — the late chip was reusing
+    // the blocked background (no --skj-late-bg existed), rendering "late"
+    // and "blocked" chips with the same fill. Paired with its own
+    // status-late-bg tint instead, per the late-vs-blocked distinction
+    // this ratchet exists to restore.
     .skj-chip.skj-late,
-    .skj-fchip.skj-late.is-active { background: var(--skj-blocked-bg); color: var(--skj-late-fg); font-weight: 800; }
+    .skj-fchip.skj-late.is-active { background: var(--sb-status-late-bg); color: var(--skj-late-fg); font-weight: 800; }
 
     // bare (non-chip) text markers — used inline on card lines for values
     // that have no pill, e.g. "no customer in data".

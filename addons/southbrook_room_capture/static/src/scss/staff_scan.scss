@@ -88,7 +88,7 @@
         text-align: center;
     }
     &-error {
-        color: #ff9a8a;
+        color: var(--sb-status-blocked-fg);
         margin: 0;
     }
     &-spinner {
