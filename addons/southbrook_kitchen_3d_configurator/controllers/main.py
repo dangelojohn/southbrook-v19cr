@@ -58,6 +58,14 @@ from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import
 from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
     clamp_counter_thickness_in,
 )
+# Touch editing v1 (2026-08-02 spec §4 item 3 / addendum item 3) — the
+# ONE validation rule for the optional touch_stats health-counter dict
+# save_design accepts, shared with a unit test that pins the clamp/drop
+# behaviour directly against the model layer (same convention as
+# clamp_counter_thickness_in above).
+from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import (
+    normalize_touch_stats,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -213,6 +221,16 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         return {
             "channel": self._channel_meta(partner, pricelist),
             "products": [self._product_payload(p, pricelist, partner) for p in products],
+            # Touch editing v1 (2026-08-02 spec §4 item 2) — this is the
+            # backend configurator's one unconditional boot RPC
+            # (kitchen_configurator.js's onWillStart always calls
+            # _loadProducts(), new-design or existing-design alike,
+            # unlike /layout and /load_design_lines which are
+            # branch-specific), so it's the equivalent of qr_scan.py's
+            # `whoami` for this surface: a single always-fetched call
+            # the per-surface kill switch can ride on.
+            "touch_enabled": request.env["southbrook.kitchen.design"]
+                ._sb_touch_enabled("backend"),
         }
 
     # ── Layout calculation ───────────────────────────────────────────────────────
@@ -555,7 +573,8 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
     )
     def save_design(self, name, room, items, partner_id=False, design_id=False,
                      filler_strategy=None, wall_cab_top_alignment=None,
-                     soffit_height_in=None, counter_thickness_in=None):
+                     soffit_height_in=None, counter_thickness_in=None,
+                     touch_stats=None):
         """
         Persist (or update) a KitchenDesign and its layout lines.
 
@@ -564,6 +583,18 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         D4 — auto-names new designs (no design_id, no real name) using
         the customer + room dims + date so the design tree view doesn't
         fill with "New Kitchen Design" collisions.
+
+        Touch editing v1 (2026-08-02 spec §4 item 3 / addendum item 3)
+        — `touch_stats` is an OPTIONAL dict riding this existing
+        round-trip: `{gesture_rollbacks: int, gesture_abandons: int}`.
+        Validated via normalize_touch_stats (ints, capped, unknown keys
+        dropped) and logged one line per save when present — no new
+        model/table; the log IS the v1 telemetry per the addendum's
+        "minimal signal, not a telemetry build-out" verdict. Omitted or
+        malformed input is ignored silently: the response shape below
+        is unchanged either way, so existing clients that never send
+        this key see a byte-identical contract (pinned by
+        test_touch_health_counters.py).
 
         SBK-026 — filler_strategy / wall_cab_top_alignment /
         soffit_height_in / counter_thickness_in are the Room panel's
@@ -1181,6 +1212,22 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         if design.cabinet_line_ids:
             design.state = "configured"
 
+        # Touch editing v1 (2026-08-02 spec §4 item 3) — only on the
+        # success path (every early-return above this point rejected
+        # the save outright and never reaches here — nothing to log for
+        # a save that didn't happen). `normalize_touch_stats` returns {}
+        # for absent/malformed input, which this treats as "don't log"
+        # rather than logging a hollow line every save.
+        _touch_stats = normalize_touch_stats(touch_stats)
+        if _touch_stats:
+            _logger.info(
+                "[touch] save_design design=%s gesture_rollbacks=%s "
+                "gesture_abandons=%s",
+                design.id,
+                _touch_stats.get("gesture_rollbacks", 0),
+                _touch_stats.get("gesture_abandons", 0),
+            )
+
         return {
             "id":     design.id,
             "name":   design.display_name,
@@ -1536,62 +1583,20 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         field list — keep this the single source of truth for the
         line → item-dict shape. Behaviour must stay byte-identical to the
         pre-factor inline loop in load_design_lines.
+
+        Touch editing v1 (2026-08-02 spec §5) — the field-list body that
+        used to live here moved onto the model as
+        southbrook.kitchen.design._serialize_configurator_lines(), so
+        SouthbrookKitchenDesignLine.action_move (a model method, called
+        directly via /web/dataset/call_kw — it never passes through this
+        controller) can return relaid lines in this exact shape without
+        a second network hop. This method is now a thin delegate kept
+        for every existing controller call site (load_design_lines,
+        rearrange, save_design's corner-relay) — output is unchanged,
+        pinned by test_save_load_identity.py / test_wall_persistence.py
+        and friends, which never needed to change for this refactor.
         """
-        lines = design.cabinet_line_ids.filtered(
-            lambda l: l.origin == "configurator"
-        )
-        out = []
-        for line in lines:
-            product = line.product_id
-            out.append({
-                "id":             product.id,
-                "product_id":     product.id,
-                "product_name":   product.display_name,
-                # Task 8 fix (corner-remediation code review) — the 3D
-                # renderer's corner-cabinet builder
-                # (canvas/corner_cabinet.esm.js) picks its style
-                # (blind/pie-cut/diagonal) off this line's product
-                # default_code prefix. Send it directly instead of
-                # requiring the client to cross-reference the
-                # /products catalog: derived corner-node lines
-                # (SB-WALL-CORNER / SB-CORNER-BLIND / SB-CORNER-*) can
-                # legitimately reference a product outside the
-                # panel-catalog's southbrook_is_cabinet=True set (that
-                # catalog gate is for droppable inventory, not for
-                # every product a line can ever point at), so a
-                # client-side catalog lookup can never be relied on to
-                # resolve these. Same access boundary as
-                # product_name/display_name above — no sudo.
-                "default_code":   product.default_code or None,
-                "layout_key":     line.layout_key,
-                "cabinet_type":   line.cabinet_type,
-                "width_in":       line.width_in,
-                "height_in":      line.height_in,
-                "depth_in":       line.depth_in,
-                "x_position_in":  line.x_position_in,
-                "y_position_in":  line.y_position_in,
-                "z_position_in":  line.z_position_in,
-                "rotation_deg":   line.rotation_deg,
-                "pinned":         line.pinned,
-                "price":          line.price_unit,
-                "quantity":       line.quantity,
-                # PR2 — read-side emission. NULL on pre-PR2 rows (no
-                # migration) reads back as "back" for backward compat,
-                # matching the model field's own default.
-                "wall":           line.wall or "back",
-                # Task 16 (SBK-028) — round-trip appliance_type so a
-                # load -> unmodified resave doesn't blank it out (save_design
-                # now writes this field for cabinet_type='appliance' lines).
-                "appliance_type": line.appliance_type or False,
-                # Task 7 (SBK-033) — the client's local bucket-count
-                # mirror (kitchen_configurator.js countCabinetBuckets)
-                # needs this to keep its `unplaced_count` overlay in
-                # sync with the server's; previously unexposed, so a
-                # hydrated/rearranged session couldn't tell a GHOST
-                # placeholder (Task 2) apart from a real cabinet.
-                "is_unresolved":  line.is_unresolved,
-            })
-        return out
+        return design._serialize_configurator_lines()
 
     def _validate_end_cap_panel_placement(self, items, tol=0.5):
         """Log a warning for any `cabinet_type == "panel"` item whose

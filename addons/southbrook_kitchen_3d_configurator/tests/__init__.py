@@ -299,3 +299,29 @@ from . import test_sink_slot_pin
 # for all 11 families, never overwriting a human-set value, idempotency,
 # non-cabinet templates untouched, and the falsy-version no-op guard.
 from . import test_thumb_family_backfill_migration
+
+# Touch editing v1, Wave-1 server build (2026-08-02 spec §4/§5) — three
+# building blocks, three files:
+#   test_touch_kill_switch     — per-surface ir.config_parameter kill
+#                                 switch (TOUCH_ENABLED_PARAM_BACKEND/
+#                                 _PORTAL), default-on, independent per
+#                                 surface, threaded into /products
+#                                 (the backend's one unconditional boot
+#                                 RPC).
+#   test_touch_health_counters — the OPTIONAL touch_stats health-signal
+#                                 dict save_design now accepts: ints
+#                                 clamped, unknown/malformed input
+#                                 ignored silently, absence is
+#                                 byte-compatible with every existing
+#                                 caller.
+#   test_send_to_wall          — action_move(wall, run_seq)'s touch-v1
+#                                 hardening: wall validated against the
+#                                 shared kitchen_layout_engine.WALLS
+#                                 constant, relaid lines returned in
+#                                 the response (no client follow-up
+#                                 round trip needed), and another
+#                                 line's `pinned` flag survives the
+#                                 rearrange action_move triggers.
+from . import test_touch_kill_switch
+from . import test_touch_health_counters
+from . import test_send_to_wall

@@ -92,6 +92,62 @@ def clamp_counter_thickness_in(value, default=1.5):
     return max(COUNTER_THICKNESS_MIN_IN, min(COUNTER_THICKNESS_MAX_IN, v))
 
 
+# ── Touch editing v1 (2026-08-02 spec §4 rollout controls) ───────────────────
+# Rollout item 2 — per-surface kill switch. Modeled on
+# southbrook_qr_kit/controllers/qr_scan.py:906-925's `pin_modal_enabled`:
+# an ir.config_parameter boolean read fresh per request and handed to the
+# client in the boot payload the surface already calls, so touch can be
+# disabled without a deploy. Two keys (not one) because spec §4 item 1
+# stages backend-tablet and portal-phone/tablet as separate rollout
+# phases — either can be killed independently. Default "1" (touch on)
+# matches the spec's explicit ask; both keys live here (not the
+# controller) so southbrook_estimating_website's portal controller —
+# which depends on this module — can read the SAME parsing rule for its
+# own payload instead of re-implementing the "0/false/no/off" convention.
+TOUCH_ENABLED_PARAM_BACKEND = "southbrook_kitchen.touch_enabled_backend"
+TOUCH_ENABLED_PARAM_PORTAL = "southbrook_kitchen.touch_enabled_portal"
+
+# Rollout item 3 — minimal health-signal cap for the OPTIONAL touch_stats
+# dict save_design accepts (addendum item 3: "a couple of integer
+# counters riding existing round-trips", explicitly NOT a telemetry
+# platform). A real save cycle never approaches five figures of
+# rollbacks/abandons; the cap exists purely so a malformed or hostile
+# payload can't smuggle an unbounded number into the log line.
+TOUCH_STATS_MAX = 100000
+TOUCH_STATS_KEYS = ("gesture_rollbacks", "gesture_abandons")
+
+
+def normalize_touch_stats(value):
+    """Validate the OPTIONAL `touch_stats` health-counter dict.
+
+    Ints only, clamped to [0, TOUCH_STATS_MAX]; unknown keys dropped;
+    non-dict/missing input returns {} (never raises). Callers treat an
+    empty return as "nothing to log" — save_design's payload contract
+    must stay byte-compatible for existing clients that never send this
+    key at all, so a malformed touch_stats degrades to silence, never a
+    500. Shared module-level (not inlined in the controller) so a unit
+    test can pin the clamp/drop behaviour directly against the model
+    layer, matching this file's existing clamp_counter_thickness_in
+    convention.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key in TOUCH_STATS_KEYS:
+        if key not in value:
+            continue
+        try:
+            n = int(value[key])
+        except (TypeError, ValueError):
+            continue
+        if n < 0:
+            n = 0
+        elif n > TOUCH_STATS_MAX:
+            n = TOUCH_STATS_MAX
+        out[key] = n
+    return out
+
+
 class _BomAutoseedDryRun(Exception):
     """Internal control-flow sentinel for `_bom_autoseed_would_resolve`
     (Task 2, corner-remediation 2026-07-30) — raised unconditionally to
@@ -1300,6 +1356,71 @@ class SouthbrookKitchenDesign(models.Model):
             "cabinet_price":   cabinet_price,
             "filler_price":    filler_price,
         }
+
+    # ── Touch editing v1 (2026-08-02 spec §4 item 2) ─────────────────────────────
+    @api.model
+    def _sb_touch_enabled(self, surface):
+        """Per-surface touch-editing kill switch.
+
+        `surface` is "backend" or "portal"; anything else falls back to
+        "backend" (fail toward the surface with actual test coverage).
+        `@api.model` + a plain string arg (not a record) so this is
+        callable cross-addon with zero design context — the portal
+        controller (southbrook_estimating_website, which depends on
+        this module) calls the exact same rule for its own payload
+        instead of re-deriving the "0/false/no/off" parsing convention.
+        See TOUCH_ENABLED_PARAM_BACKEND/_PORTAL above for the precedent
+        this mirrors (qr_scan.py:906-925 pin_modal_enabled).
+        """
+        key = (TOUCH_ENABLED_PARAM_PORTAL if surface == "portal"
+               else TOUCH_ENABLED_PARAM_BACKEND)
+        raw = self.env["ir.config_parameter"].sudo().get_param(key, "1")
+        return str(raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+    # ── Send-to-wall (2026-08-02 touch spec §5) ──────────────────────────────────
+    def _serialize_configurator_lines(self):
+        """This design's configurator-origin lines as item dicts.
+
+        Single source of truth for the load_design_lines/rearrange/save
+        line shape — moved here (from controllers/main.py's
+        _serialize_design_lines, which now delegates to this method
+        unchanged) so SouthbrookKitchenDesignLine.action_move can hand
+        the client relaid lines in the SAME shape without a controller
+        round-trip: action_move is called directly via the generic
+        /web/dataset/call_kw path (same as action_swap_product), never
+        through this controller, so this logic has to live where
+        action_move can reach it. Behaviour must stay byte-identical to
+        the pre-move inline loop the controller used to own.
+        """
+        self.ensure_one()
+        lines = self.cabinet_line_ids.filtered(
+            lambda l: l.origin == "configurator"
+        )
+        out = []
+        for line in lines:
+            product = line.product_id
+            out.append({
+                "id":             product.id,
+                "product_id":     product.id,
+                "product_name":   product.display_name,
+                "default_code":   product.default_code or None,
+                "layout_key":     line.layout_key,
+                "cabinet_type":   line.cabinet_type,
+                "width_in":       line.width_in,
+                "height_in":      line.height_in,
+                "depth_in":       line.depth_in,
+                "x_position_in":  line.x_position_in,
+                "y_position_in":  line.y_position_in,
+                "z_position_in":  line.z_position_in,
+                "rotation_deg":   line.rotation_deg,
+                "pinned":         line.pinned,
+                "price":          line.price_unit,
+                "quantity":       line.quantity,
+                "wall":           line.wall or "back",
+                "appliance_type": line.appliance_type or False,
+                "is_unresolved":  line.is_unresolved,
+            })
+        return out
 
     # ── Actions ─────────────────────────────────────────────────────────────────
     def action_generate_layout(self):
@@ -4961,16 +5082,47 @@ class SouthbrookKitchenDesignLine(models.Model):
         return self._write_then_rearrange({"width_in": float(width_in)})
 
     def action_move(self, wall, run_seq):
-        if wall not in ("back", "front", "left", "right"):
+        """Send-to-wall (touch v1, 2026-08-02 spec §5). Same governed
+        canonical-write + re-derive path every sibling action on this
+        class uses (_write_then_rearrange -> design.action_auto_arrange),
+        so a move that would drop a cabinet to fit refuses exactly like
+        action_set_width does.
+
+        Wall check — touch spec §5: "validate wall against the design's
+        real walls server-side". `kitchen_layout_engine.WALLS` is the
+        single enumeration of valid room-wall identifiers (every room is
+        a 4-wall box; there is no narrower per-design subset) — the same
+        constant controllers/main.py's save_design already validates
+        each incoming item's `wall` against, so this can never drift
+        from that check.
+
+        Called via the generic /web/dataset/call_kw path the client
+        already uses for action_swap_product (no thin route wrapper
+        needed — same model, same ACL grant covers both) — verified
+        zero JS/controller callers exist yet (touch v1 is the first),
+        confirming this really is "server-complete, zero client wiring"
+        per the spec's own claim.
+
+        Unlike action_swap_product's two-hop convention (swap, then a
+        follow-up /load_design_lines to refresh state), this hands back
+        the relaid lines directly: a send-to-wall move can restructure
+        far more than the one line moved (multi-wall corner
+        resolution), and touch's optimistic-drag UX needs that in one
+        round trip, not two.
+        """
+        if wall not in kitchen_layout_engine.WALLS:
             raise UserError("wall must be back/front/left/right")
+        design = self.design_id
         # `sequence` mirrors run_seq: the engine's auto-assign path (all
         # cabinets on the back wall) orders by flat INPUT order — which
         # is this model's _order (sequence, id) — while the manual path
         # sorts by (run_seq, input idx). Writing both keeps the two
         # ordering keys agreeing on either path.
-        return self._write_then_rearrange(
+        res = self._write_then_rearrange(
             {"wall": wall, "run_seq": int(run_seq),
              "sequence": int(run_seq)})
+        res["lines"] = design._serialize_configurator_lines()
+        return res
 
 
 # ── v19.0.5.6.12 — Template gallery wizard ────────────────────────────────
