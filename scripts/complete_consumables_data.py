@@ -13,7 +13,7 @@ no odoo.cli imports here):
     docker exec -i kjb-data sh -lc \\
         'PYTHONPATH=/srv/shared odoo shell -c /etc/odoo/odoo.conf \\
          --addons-path=/mnt/extra-addons,/mnt/pg-addons \\
-         --db_host=db --db_user=odoo --db_password=change-me-strong-password \\
+         --db_host=db --db_user=odoo --db_password="$PGPASSWORD" \\
          -d southbrook --http-port=8997 2>/dev/null' \\
         < scripts/complete_consumables_data.py
 

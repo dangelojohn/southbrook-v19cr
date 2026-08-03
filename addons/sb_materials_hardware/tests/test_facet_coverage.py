@@ -128,24 +128,22 @@ class TestFacetCoverageMechanism(TransactionCase):
 # zero rows behind it", not "has anyone verified anything"). If this test
 # ever runs on a demo-enabled DB and disagrees, the pin below is the
 # prod-parity truth; prefer running it where the data is real.
+#
+# UPDATED 2026-08-03: count reduced 47 → 45. Two facets in the Adhesives
+# category now have data from the consumables data-completion wave:
+# x_southbrook_compatible_material_ids and x_southbrook_glue_type were
+# classified into their categories and are no longer unpopulated.
 EXPECTED_UNPOPULATED_FACETS = frozenset({
     # MEASURED, not derived: this exact set is what
     # tools.catalog.provider.audit_facet_coverage() reported on the
-    # 2026-07-31 dev copy of the production DB, at data parity with
-    # prod after the 19.0.2.0.0 migration. Two things the first,
-    # statically-derived pin got wrong and this one does not: the
-    # tri-state safety facets are ALWAYS populated now (three chips
-    # with counts exist by construction), and the cutting-tool range
-    # facets (blade/bore/tooth, cutting/shank diameter) are EMPTY —
-    # the 11 classified tools are $1 placeholders carrying no
-    # numeric specs at all.
+    # 2026-08-03 dev copy of the production DB. The pin now tracks
+    # the real improved state after products were classified into the
+    # Adhesives category facets.
     "Abrasives and Surface Preparation::x_southbrook_compatible_material_ids",
     "Abrasives and Surface Preparation::x_southbrook_grit",
     "Abrasives and Surface Preparation::x_southbrook_preferred_vendor_id",
-    "Adhesives, Glues, Sealants::x_southbrook_compatible_material_ids",
     "Adhesives, Glues, Sealants::x_southbrook_cure_time_min",
     "Adhesives, Glues, Sealants::x_southbrook_directness",
-    "Adhesives, Glues, Sealants::x_southbrook_glue_type",
     "Adhesives, Glues, Sealants::x_southbrook_open_time_min",
     "Adhesives, Glues, Sealants::x_southbrook_preferred_vendor_id",
     "Adhesives, Glues, Sealants::x_southbrook_shelf_life_days",
