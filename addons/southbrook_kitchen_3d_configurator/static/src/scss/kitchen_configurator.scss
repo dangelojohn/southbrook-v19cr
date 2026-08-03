@@ -1622,6 +1622,21 @@ $sbk-amber:      var(--sb-status-warn-fg);
     }
 }
 
+// X2 fix (2026-08-03) — inline Door Style badge, next to the row title.
+// Same 11px/$sbk-mid treatment as .o_sbk_catalog_preview_attrs (the one
+// place attribute detail already surfaces) for visual consistency, but
+// shows only the Door Style value itself — never the full attribute
+// parenthetical P2 deliberately stripped from the title. Absent
+// entirely (t-if in the template) for any row whose product carries no
+// Door Style attribute, so non-swept templates render unchanged.
+.o_sbk_prod_doorstyle {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 400;
+    color: $sbk-mid;
+    white-space: nowrap;
+}
+
 // Panel P2 — L/R handing segmented toggle, inline after the title, for
 // "pair" rows only (a same-family cabinet merged from its L and R
 // variants by groupCatalog()). Toggling swaps which product the row's

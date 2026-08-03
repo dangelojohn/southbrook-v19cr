@@ -218,6 +218,7 @@ function singleRow(entry) {
         width_in: entry.width,
         price: entry.price,
         sku: entry.sku,
+        doorStyle: entry.doorStyle,
         dataFlags: entry.dataFlags,
     };
 }
@@ -231,6 +232,11 @@ function pairRow(left, right) {
         left: left.product,
         right: right.product,
         sku: `${left.sku || "?"} / ${right.sku || "?"}`,
+        // X2 fix (2026-08-03) — an L/R merge only ever happens within
+        // one merge-bucket key, which now includes doorStyle (see the
+        // bucket key below), so left/right are guaranteed to share the
+        // same doorStyle already; either side's value is correct here.
+        doorStyle: left.doorStyle,
         dataFlags: mergeDataFlags(left.dataFlags, right.dataFlags),
     };
 }
@@ -253,6 +259,8 @@ function rowSort(a, b) {
  * @property {number} width_in - lifted width ({@link liftWidth}).
  * @property {number} price
  * @property {string} sku
+ * @property {?string} doorStyle - real per-variant Door Style value
+ *   (`product.door_style_label`), null when the variant has none.
  * @property {Array<"missing_sku"|"missing_width">} dataFlags
  */
 /**
@@ -264,6 +272,8 @@ function rowSort(a, b) {
  * @property {object} left - the "L"-handed product record.
  * @property {object} right - the "R"-handed product record.
  * @property {string} sku - `"<left sku> / <right sku>"`.
+ * @property {?string} doorStyle - shared by both sides (the merge key
+ *   includes doorStyle, so left/right always agree).
  * @property {Array<"missing_sku"|"missing_width">} dataFlags - union
  *   of both products' flags.
  */
@@ -318,15 +328,26 @@ export function groupCatalog(products) {
             handing,
             price: Number(product && product.price) || 0,
             sku: (product && product.sku) || "",
+            // X2 fix (2026-08-03) — the real per-variant Door Style
+            // value (controllers/main.py `_door_style_label`, payload
+            // key `door_style_label`), null when the variant carries
+            // no such attribute. Distinguishes rows whose parsed title
+            // collapsed to the same text (parseProductName strips the
+            // attribute parenthetical) so a door-style sweep of one
+            // template no longer renders N identical-looking rows.
+            doorStyle: (product && product.door_style_label) || null,
             dataFlags: dataFlagsFor(product, rawWidth),
             categoryKey: categoryKeyFor(product && product.cabinet_type),
         };
     });
 
-    // Bucket by the L/R merge composite key: (category, title, width, price).
+    // Bucket by the L/R merge composite key: (category, title, width,
+    // price, doorStyle). doorStyle joined in (X2 fix, 2026-08-03) so two
+    // variants are never silently merged into one row just because their
+    // title/width/price happen to coincide but their door style differs.
     const mergeBuckets = new Map();
     for (const entry of entries) {
-        const key = [entry.categoryKey, entry.title, entry.width, entry.price].join("");
+        const key = [entry.categoryKey, entry.title, entry.width, entry.price, entry.doorStyle].join("");
         if (!mergeBuckets.has(key)) {
             mergeBuckets.set(key, []);
         }

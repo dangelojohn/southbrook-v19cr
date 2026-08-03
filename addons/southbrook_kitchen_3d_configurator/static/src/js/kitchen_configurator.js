@@ -6016,6 +6016,19 @@ SouthbrookKitchenConfigurator.template = xml`
               <div class="o_sbk_prod_info">
                 <div class="o_sbk_prod_title_line">
                   <strong t-esc="row.title"/>
+                  <!-- X2 fix (2026-08-03) — door-style sweep
+                       distinguishability. parseProductName() strips the
+                       attribute parenthetical off row.title (P2), so a
+                       template with multiple door-style variants used
+                       to render N identical-looking rows. row.doorStyle
+                       is the real per-variant Door Style attribute
+                       value (groupCatalog(), sourced from the payload's
+                       door_style_label — see controllers/main.py
+                       _door_style_label); null for any variant with no
+                       such attribute, so this span is simply absent for
+                       those rows — never an empty badge, never "None". -->
+                  <span t-if="row.doorStyle" class="o_sbk_prod_doorstyle"
+                        t-esc="row.doorStyle"/>
                   <span t-if="row.kind === 'pair'" class="o_sbk_handing_toggle"
                         role="group" aria-label="Handing">
                     <button type="button"

@@ -2085,6 +2085,38 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         })
         return payload
 
+    @staticmethod
+    def _door_style_label(product):
+        """The TRUE per-variant Door Style value, or None.
+
+        X2 fix (2026-08-03) — the payload's legacy `door_style` field
+        (`tmpl.southbrook_door_style`) is template-level and stale: it
+        reads 'shaker' for 116 of 117 saleable cabinet variants
+        regardless of each variant's actual attribute selection, so it
+        cannot be used to tell same-template variants apart. The real
+        value lives on the variant's own
+        `product_template_attribute_value_ids`, matched by attribute
+        NAME (case-insensitive) rather than attribute id, since the
+        `product.attribute` id for "Door Style" is not stable across
+        databases. Returns None (never a guessed/default style) when
+        the variant carries no such attribute line at all — e.g. older,
+        pre-sweep templates with no Door Style attribute.
+
+        `ptav.name` on `product.template.attribute.value` is
+        "AttrName: ValueName" (e.g. "Door Style: Shaker"), not the bare
+        value — same gotcha already documented and worked around in
+        `southbrook_kitchen_mrp/models/mrp_production.py`
+        (`_sbk_attribute_value`) and `mi_engine.py`. Read the bare value
+        off `product_attribute_value_id.name` instead, same fallback
+        order as those call sites.
+        """
+        ptav = product.product_template_attribute_value_ids.filtered(
+            lambda p: (p.attribute_id.name or "").strip().lower() == "door style"
+        )[:1]
+        if not ptav:
+            return None
+        return ptav.product_attribute_value_id.name or ptav.name or None
+
     def _product_payload(self, product, pricelist=False, partner=False):
         tmpl = product.product_tmpl_id
         price = self._channel_price(product, pricelist, partner)
@@ -2114,6 +2146,14 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             "depth_in":      tmpl.southbrook_depth_in  or 24.0,
             "material":      tmpl.southbrook_material   or "white_melamine",
             "door_style":    tmpl.southbrook_door_style or "shaker",
+            # X2 fix (2026-08-03) — additive, per-variant, real Door
+            # Style attribute value (see _door_style_label). Distinct
+            # from the stale `door_style` key above: this is None when
+            # unknown, never a guessed default, and is what the catalog
+            # list/preview badge is built from. Do NOT collapse the two
+            # keys — `door_style` above is left untouched in case any
+            # other consumer already depends on its (wrong) behaviour.
+            "door_style_label": self._door_style_label(product),
             "price":         price,
             "list_price":    product.lst_price,
             "available_qty": product.qty_available,
