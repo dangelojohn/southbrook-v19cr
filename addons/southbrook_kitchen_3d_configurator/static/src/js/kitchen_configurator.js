@@ -2934,10 +2934,42 @@ class SouthbrookKitchenConfigurator extends Component {
         this._markUserAction();   // T7 gate
         this._pushUndoSnapshot();   // Task 35 — pre-op, before the in-place mutation below
         this._placementsDirty = true;
-        this.state.items[idx].width_in = v;
+        const it = this.state.items[idx];
+        // C3 (money-integrity fix, 2026-08-03) — this used to be the
+        // WHOLE handler: mutate width_in, repack, autosave — and NEVER
+        // touch `it.price`, so the header estimate (state.summary.price,
+        // summed from state.items[*].price in _recomputeLayoutFromItems)
+        // stayed flat no matter what width was dialed in. `it.price` is
+        // never independently derived here — it's an OPTIMISTIC local
+        // echo of the server's own pro-rata formula (controllers/main.py
+        // save_design: base channel price x (custom width / the
+        // product's own nominal placed width)) so the header updates
+        // the instant this edit commits instead of only after the next
+        // ~3s debounced autosave round-trip. The debounced autosave this
+        // handler already queues below is still what makes the number
+        // authoritative — same "server truth overwrites local recompute"
+        // contract _applyRelaidResult() documents for every other save
+        // path — so any drift here self-corrects within one autosave.
+        const product = (this.state.products || []).find(
+            p => p.product_id === it.product_id);
+        const nominalWidth = product && product.width_in;
+        const isCustom = !!(nominalWidth && Math.abs(v - nominalWidth) > 0.01);
+        it.is_custom_width = isCustom;
+        sel.is_custom_width = isCustom;
+        if (product && nominalWidth) {
+            const basePrice = typeof product.price === "number"
+                ? product.price : (it.price || 0);
+            it.price = isCustom
+                ? Math.round(basePrice * (v / nominalWidth) * 100) / 100
+                : basePrice;
+            sel.price = it.price;
+        }
+        it.width_in = v;
         sel.width_in = v;
         this._recomputeLayoutFromItems();
-        this._queueAutoSave();    // D5
+        this._queueAutoSave();    // D5 — persists is_custom_width + width_in;
+                                   // the server's authoritative price_unit
+                                   // comes back via the summary merge above.
     }
 
     // Product swap: replace cabinet at the same position with the
@@ -5672,8 +5704,18 @@ SouthbrookKitchenConfigurator.template = xml`
         </span>
         <t t-if="state.summary.price &gt; 0">
           <span class="o_sbk_count_sep">•</span>
-          <span class="o_sbk_count_item o_sbk_count_price">
-            <span class="o_sbk_count_label">Est. </span>
+          <!-- "Cabinets subtotal", NOT "Est.". This number is
+               sum(channel_price x qty) over cabinet boxes only: it excludes
+               install, countertop, hardware, delivery, tax and discount, and
+               labour/countertop have no SKUs in the catalog at all. Because
+               it IS channel-pricelist-aware it looks precisely computed, so a
+               bare "Est." next to a photoreal render reads as a quote — the
+               one number a customer would repeat back. Naming what it covers
+               is the honest fix; the same rule the safety flags and the
+               provenance strips follow. -->
+          <span class="o_sbk_count_item o_sbk_count_price"
+                title="Cabinet boxes only at this customer's channel price — excludes install, countertop, hardware, delivery and tax.">
+            <span class="o_sbk_count_label">Cabinets subtotal </span>
             <strong t-esc="_money(state.summary.price)"/>
           </span>
         </t>

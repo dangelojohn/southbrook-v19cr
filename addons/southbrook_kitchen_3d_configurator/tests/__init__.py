@@ -388,3 +388,15 @@ from . import test_sentinel_cleanup_migration
 # actually refused/archived something, so an all-in-bounds save keeps
 # byte-compatible with test_touch_health_counters.py).
 from . import test_save_reports_truthfully
+
+# P1 (money/data-integrity remediation, 2026-08-03) — C3 + H10:
+# `is_custom_width` (southbrook.kitchen.design.line, default False), the
+# new CUSTOM_WIDTH_UNCONFIRMED blocking check (_check_production_ready)
+# for a width/product mismatch with no acknowledgement, save_design's
+# width-ratio price pro-rata gated on that flag, and the new MISSING_SKU
+# blocking check (same validator) for a design line whose product has
+# no default_code — scoped to design lines, not a global
+# product.template constraint (which would break unrelated SKU-less
+# sellable non-cabinet products like services/freight).
+from . import test_width_price_and_sku_integrity
+from . import test_template_determinism

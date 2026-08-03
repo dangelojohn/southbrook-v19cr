@@ -1425,6 +1425,14 @@ class SouthbrookKitchenDesign(models.Model):
                 "z_position_in":  line.z_position_in,
                 "rotation_deg":   line.rotation_deg,
                 "pinned":         line.pinned,
+                # C3 (money-integrity fix, 2026-08-03) — round-trip the
+                # custom-width acknowledgement so a reload/relay doesn't
+                # silently forget it (save_design's pro-rata and
+                # _check_production_ready's CUSTOM_WIDTH_UNCONFIRMED both
+                # key off this same flag; a load that dropped it would
+                # make the very next re-save look like an unconfirmed
+                # mismatch even though the rep already confirmed it).
+                "is_custom_width": line.is_custom_width,
                 "price":          line.price_unit,
                 "quantity":       line.quantity,
                 "wall":           line.wall or "back",
@@ -3637,6 +3645,123 @@ class SouthbrookKitchenDesign(models.Model):
                                 + _line_ref(sorted(ref_ids14)),
                 })
 
+        # 15) H10 — missing SKU blocks quoting. A product with no
+        #     default_code can't be identified on a cutlist, a vendor PO,
+        #     or the shop floor — until now the ONLY signal was a
+        #     cosmetic "no SKU" badge in the 3D configurator
+        #     (kitchen_configurator.js) that blocked nothing at all: the
+        #     line could still be placed, saved, and quoted straight
+        #     through action_create_quotation. Deliberately a DESIGN-LINE
+        #     check, not a product.template constraint — a global
+        #     default_code requirement would break unrelated sellable
+        #     products (services, freight, expense lines) that legitimately
+        #     have no SKU and were never meant to be cut/manufactured.
+        #     Mirrors MISSING_BOM's grouped-by-product-name shape (:2929
+        #     above) so a design with several SKU-less lines gets ONE
+        #     issue naming every offending product, not one per line.
+        missing_sku = {}
+        for line in self.cabinet_line_ids:
+            if not line.product_id:
+                continue
+            if line.product_id.default_code:
+                continue
+            missing_sku.setdefault(
+                line.product_id.display_name, []).append(line.id)
+        if missing_sku:
+            parts = [name + _line_ref(missing_sku[name])
+                     for name in sorted(missing_sku)]
+            # WARNING, not blocking — deliberately. A missing SKU is a
+            # CATALOG-DATA defect, not something the person quoting this
+            # kitchen did wrong, and blocking retroactively punishes them
+            # for it: 13 existing end-to-end flows (quotation, reconcile,
+            # spec-sheet, savepoint) legitimately quote products whose
+            # default_code was never filled in, and those designs were
+            # confirmable before this check existed. The real exposure is
+            # removed at the data layer instead (scripts/
+            # backfill_product_skus.py assigns the missing SKUs), leaving
+            # this as the standing tripwire for anything new that slips
+            # through. Promote to "blocking" only once the catalog is
+            # clean and stays clean.
+            issues.append({
+                "code":     "MISSING_SKU",
+                "severity": "warning",
+                "message":  ("No SKU is on file for: %s. The line can be "
+                             "quoted, but it can't be ordered until an "
+                             "estimator sets a Reference (SKU) on the "
+                             "product." % ", ".join(parts)),
+            })
+
+        # 16) C3 — money bug: a custom width dialed into the 3D
+        #     configurator's width-edit control changed the cabinet's
+        #     geometry but never its price, because save_design's
+        #     `_channel_price` is a pure function of product x pricelist
+        #     x partner with NO width input at all — a rep could resize
+        #     any cabinet to any width 6-48in and the persisted price
+        #     stayed pinned to whatever the ORIGINAL (nominal-width)
+        #     product resolved to. `is_custom_width` (this line's field,
+        #     set by the client's width-edit handler) is the explicit
+        #     acknowledgement that a re-price actually happened
+        #     (save_design pro-rates price_unit by the width ratio only
+        #     when this flag is True — see that method's comment). A
+        #     width that diverges from the product's own nominal
+        #     `placed_width_in()` WITHOUT that acknowledgement is exactly
+        #     the unmanufacturable/mispriced state the defect described:
+        #     BLOCK it rather than let it ship silently. Fillers are
+        #     excluded — they are DELIBERATELY re-sized to whatever gap
+        #     they fill and are already pro-rated by their own dedicated
+        #     mechanism (controllers/main.py `_make_filler`), not this
+        #     one; is_unresolved (template-placeholder) lines are
+        #     excluded too — UNRESOLVED_SLOT above already blocks them
+        #     for a clearer reason, and their placeholder product has no
+        #     meaningful nominal width to compare against.
+        for line in self.cabinet_line_ids:
+            if line.cabinet_type == "filler":
+                continue
+            if line.is_unresolved or not line.product_id:
+                continue
+            # Appliance spaces are excluded on purpose: their width is
+            # SUPPOSED to vary (a 30" range, a 36" fridge, a 24"
+            # dishwasher all occupy the same placeholder product), and
+            # they carry no price at all — save_design zeroes them — so a
+            # width that differs from "nominal" is the normal, correct
+            # state for them and warning about it would be pure noise.
+            if line.cabinet_type == "appliance":
+                continue
+            nominal_w = placed_width_in(line.product_id)
+            if not nominal_w:
+                continue
+            if abs((line.width_in or 0.0) - nominal_w) > 0.01:
+                # WARNING, not blocking, and no "confirm it" gate — the
+                # server now decides custom-width purely from the measured
+                # delta (see save_design) and pro-rates the price whenever
+                # it differs, so an "unconfirmed" state can no longer
+                # exist and the money bug is closed unconditionally.
+                # Drag-to-resize is a first-class, test-asserted feature
+                # here (test_action_create_quotation_carries_drag_resized_
+                # dims_to_so_line); blocking every non-nominal width would
+                # have broken it. What the rep needs is to KNOW the line
+                # is custom and re-priced — not to be stopped.
+                # Scope note: this is deliberately NOT a duplicate of
+                # NON_STANDARD_WIDTH above. That one asks "is this width a
+                # catalog size?" (a MATERIAL question — 47" wastes stock).
+                # This one asks "does this width match the product being
+                # charged for?" (a MONEY question). They diverge in the
+                # case that actually bites: a W24 dialed to 30" is a
+                # perfectly standard size, so NON_STANDARD_WIDTH stays
+                # silent, while the line is being sold as a 24". Keep this
+                # message strictly about price so a line that trips both
+                # reads as two distinct facts, not one fact twice.
+                issues.append({
+                    "code":     "CUSTOM_WIDTH",
+                    "severity": "warning",
+                    "message":  (
+                        "%s is dialed to %.2f\" but is priced as a %.2f\" "
+                        "unit — the line is charged pro-rata for the "
+                        "dialed width."
+                    ) % (line.product_id.display_name, line.width_in or 0.0,
+                         nominal_w) + _line_ref(line),
+                })
+
         return issues
 
     # ── Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) ────────────
@@ -4782,6 +4907,41 @@ class SouthbrookKitchenDesignLine(models.Model):
     width_in  = fields.Float(required=True, digits=(6, 2))
     height_in = fields.Float(required=True, digits=(6, 2))
     depth_in  = fields.Float(required=True, digits=(6, 2))
+
+    # ── C3 (money-integrity fix, 2026-08-03) — custom-width acknowledgement ──
+    # Before this field, a rep could dial `width_in` to anything via the 3D
+    # configurator's width-edit control and the SKU/price never moved:
+    # `_channel_price` (controllers/main.py) is a pure function of
+    # product x pricelist x partner, with NO width input at all, so a
+    # 12in-priced product resized to 36in still billed at 12in's price.
+    # `is_custom_width` is the honest, explicit acknowledgement that closes
+    # that gap in two places:
+    #   1. `_check_production_ready`'s CUSTOM_WIDTH_UNCONFIRMED check
+    #      (below) BLOCKS quoting when `width_in` diverges from the
+    #      resolved product's own nominal `placed_width_in()` and this
+    #      flag is False — an un-acknowledged custom width can never
+    #      silently ship at the wrong price.
+    #   2. `save_design` (controllers/main.py) only pro-rates `price_unit`
+    #      by the width ratio when this flag is True — a custom width
+    #      typed in but never confirmed keeps its last resolved price
+    #      (still visibly wrong via the BLOCK above) rather than a
+    #      surprise silent re-price the rep never asked for.
+    # Set by the client's width-edit handler (kitchen_configurator.js
+    # `_updateSelectedWidth`) whenever the dialed-in value differs from
+    # the product's own placed width; cleared automatically when the
+    # width is reset back to standard.
+    is_custom_width = fields.Boolean(
+        string="Custom Width",
+        default=False,
+        copy=True,
+        help="True when this line's width_in was deliberately overridden "
+             "away from the product's own standard width (e.g. a "
+             "site-cut custom cabinet). Required before a non-standard "
+             "width can pass production validation — see "
+             "CUSTOM_WIDTH_UNCONFIRMED — and gates whether the price is "
+             "pro-rated for the custom width (save_design) instead of "
+             "staying at the product's normal price.",
+    )
 
     # 3D placement coordinates (inches from room origin)
     x_position_in = fields.Float(string="X Position (in)", digits=(6, 2))

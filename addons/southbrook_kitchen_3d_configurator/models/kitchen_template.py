@@ -28,6 +28,14 @@ from .kitchen_design import (
 
 _logger = logging.getLogger(__name__)
 
+# A list_price at or below this is treated as an unpriced PLACEHOLDER, not a
+# real commercial price, when breaking a width tie between candidate
+# products (see `_sb_resolve_template_tiebreak`). Measured against this
+# catalog: the hardware range (20+ SKUs) and several cabinet stubs all sit
+# at exactly $1.00 pending real pricing, so a bare "cheapest wins" rule
+# would quote a real cabinet at a dollar.
+_SBK_PLACEHOLDER_PRICE_CEILING = 1.0
+
 
 class SouthbrookKitchenTemplate(models.Model):
     _name = "southbrook.kitchen.template"
@@ -200,6 +208,81 @@ _APPLIANCE_PRODUCT_XMLID = {
 class SouthbrookKitchenTemplateResolve(models.Model):
     _inherit = "southbrook.kitchen.template"
 
+    # ── C6 — deterministic template tiebreak (2026-08-03, money bug) ──
+    #
+    # WHY THIS EXISTS: `_resolve_slot` below has two rungs (archetype
+    # match, and the cabinet_type + exact-width fallback) that each
+    # narrow a slot to a SET of candidate `product.template` records that
+    # all pass that rung's own scoring — and this catalog genuinely
+    # contains more than one real SKU at the identical nominal width and
+    # cabinet_type. The SINK-slot pin's own docstring names the live
+    # example: SB-BASE-2DR / SB-VANITY / SB30, all 30in-nominal
+    # cabinet_type='base' cabinets, three different prices. Historically
+    # both rungs then took `exact[:1]` — the FIRST record of whatever
+    # order `product.template.search()` happened to return
+    # (`_order = "is_favorite desc, name"`, i.e. plain alphabetical once
+    # `is_favorite` ties, which it always does here) — with nothing
+    # pinning that order against catalog growth or edits.
+    #
+    # E2E evidence (2026-08-02/03): the SAME template — "U-Shape Kitchen
+    # 10' x 8'" — instantiated three times with IDENTICAL inputs (14
+    # cabinets each, no user choice differs) priced out at $3,805.00,
+    # $3,805.00, and $3,175.00. Two designers (or the same designer
+    # twice) quoting the identical kitchen from the identical template
+    # can land on different dollar totals purely because of which
+    # width-tied SKU a given `search()` call happened to return first.
+    # That is a correctness defect with a dollar sign on it, not a
+    # cosmetic one — "the same kitchen never silently costs more" is the
+    # bar this method exists to guarantee.
+    #
+    # THE FIX: once a rung's OWN scoring (width match — untouched, still
+    # exactly what it was) has narrowed candidates to a tied set, resolve
+    # the remaining tie through an EXPLICIT, STABLE total order instead
+    # of database order:
+    #   1. `sequence` — the one priority field `product.template` already
+    #      ships natively (lower wins, the same convention every other
+    #      `_order`-by-sequence model in this addon already follows —
+    #      compare `southbrook.kitchen.template.line.sequence` above).
+    #      Every cabinet in the shipped catalog currently sits at this
+    #      field's own default (1), so today this rung is a no-op tie on
+    #      every real candidate set and falls straight through to #2 —
+    #      but the day a catalog owner DOES want to say "prefer this SKU
+    #      over that one at the same width", this is where it lands, no
+    #      code change required.
+    #   2. Lowest `list_price` — a commercial, not arbitrary, tiebreak:
+    #      of several catalog-correct options at the same width, the
+    #      system never silently picks the pricier one.
+    #   3. `default_code` ascending, then 4. `id` ascending — neither is
+    #      a business decision; both exist purely to GUARANTEE a strict
+    #      total order (`id` is unique, so this rung can never fail to
+    #      pick exactly one record).
+    #
+    # This is a tiebreak APPENDED after each rung's existing scoring, not
+    # a replacement of it — see the two call sites in `_resolve_slot` for
+    # exactly where it slots in.
+    def _sb_resolve_template_tiebreak(self, candidates):
+        """Return exactly ONE `product.template` from `candidates` via
+        the explicit total order documented above (empty in -> empty
+        out; a singleton is returned unchanged, no sort needed)."""
+        if len(candidates) <= 1:
+            return candidates
+        # PLACEHOLDER FLOOR. "Lowest price wins" is the right commercial
+        # tiebreak — the same kitchen must never silently cost more — but
+        # this catalog is full of $1.00 placeholder-priced rows (measured:
+        # the entire hardware catalog, 20+ SKUs, sits at $1.00), and a
+        # naive minimum would hand every width tie to whichever stub
+        # happens to share that width, quoting a real cabinet at a dollar.
+        # So: if ANY candidate is priced like a real product, the stubs
+        # are excluded from the contest entirely. If they are ALL stubs
+        # there is nothing better to choose and the ordering still applies
+        # — deterministically, which is the actual contract here.
+        real = candidates.filtered(
+            lambda t: (t.list_price or 0.0) > _SBK_PLACEHOLDER_PRICE_CEILING)
+        contest = real or candidates
+        return contest.sorted(key=lambda t: (
+            t.sequence, t.list_price or 0.0, t.default_code or "", t.id
+        ))[:1]
+
     # -- resolver ------------------------------------------------------
     def _resolve_slot(self, slot, width_in):
         """Map a template slot to a concrete product.product.
@@ -233,14 +316,21 @@ class SouthbrookKitchenTemplateResolve(models.Model):
                 # placed_width_in(): this is a TEMPLATE search filter
                 # (choosing which of several candidate templates to
                 # resolve to), not a placement write of an already-
-                # resolved product's width. `.product_variant_id` below
-                # still takes Odoo's arbitrary "first" variant, which is
-                # the separate "duplicate SB-BASE-1DR" resolution-by-SKU
-                # class of bug V5-partc.md §SBK-024 documents as
-                # related-but-distinct — out of scope for this task.
+                # resolved product's width.
                 exact = tmpls.filtered(
                     lambda t: abs((t.southbrook_width_in or 0.0) - width_in) < 0.51)
-                return (exact[:1] or tmpls[:1]).product_variant_id
+                # C6 (2026-08-03) — WHICH TEMPLATE wins a width tie is no
+                # longer database/search order; see
+                # `_sb_resolve_template_tiebreak`'s docstring above.
+                # `.product_variant_id` below still takes Odoo's arbitrary
+                # "first" variant OF the now-deterministically-chosen
+                # template — that is the separate "duplicate SB-BASE-1DR"
+                # resolution-by-SKU class of bug V5-partc.md §SBK-024
+                # documents as related-but-distinct (variant choice WITHIN
+                # one already-chosen template, not which template wins a
+                # tie) — still out of scope for this fix.
+                chosen = self._sb_resolve_template_tiebreak(exact or tmpls)
+                return chosen.product_variant_id
             return Product  # archetype known, no linked product -> unresolved
         # Last rung: cabinet_type + exact width among flagged cabinets
         # (again variant-bearing only — see the archetype rung's note).
@@ -274,29 +364,36 @@ class SouthbrookKitchenTemplateResolve(models.Model):
         ]).filtered("product_variant_ids")
         # Task 11 (SBK-024) note — same template-search-filter rationale
         # as the archetype rung above; not a placement write. This picks
-        # WHICH TEMPLATE to resolve to (unchanged, still `exact[:1]`'s
-        # stable/"first" tie-break) — the alphabetical tie-break among
-        # several width-matching templates (e.g. SB-BASE-2DR / SB-VANITY
-        # / SB30 all at 30in) is a separate DATA decision the owner must
-        # make, out of scope here.
+        # WHICH TEMPLATE to resolve to.
         exact = tmpls.filtered(
             lambda t: abs((t.southbrook_width_in or 0.0) - width_in) < 0.51)
         if not exact:
             return Product
+        # C6 (2026-08-03) — the alphabetical/database-order tie-break
+        # among several width-matching templates (e.g. SB-BASE-2DR /
+        # SB-VANITY / SB30, all 30in) used to be `exact[:1]`'s bare
+        # "first search result" — this was the live money bug the SINK
+        # slot's hard pin (`_pin_sink_slots_to_sb30`, above) could only
+        # patch around one slot_code at a time. It now goes through the
+        # SAME explicit total order documented on
+        # `_sb_resolve_template_tiebreak`: no candidate set reaches the
+        # variant-width scoring below without first passing through a
+        # fully deterministic template pick.
+        chosen_tmpl = self._sb_resolve_template_tiebreak(exact)
         # V5-partc.md live evidence (2026-07-30, production designs 107/
         # 108) — `.product_variant_id` here used to hand back Odoo's
         # arbitrary "first" materialized variant of the matched template,
         # blind to THAT variant's own width: a 30in-nominal slot could
         # land on SB-BASE-2DR's 24in variant even though the template
         # matched on its 30in nominal. Score every variant of the
-        # (unchanged) chosen template by its REAL placed width — the same
-        # `placed_width_in` helper `_slot_fixed_width` / `action_
-        # instantiate` already use for this identical SBK-024 class of
-        # bug, imported at module top — and take the closest match: an
-        # exact hit (delta 0) always wins outright, and a genuine tie
-        # keeps the variants' own stable ordering so the pick never
-        # flaps between runs.
-        variants = exact[:1].product_variant_ids
+        # now-deterministically-chosen template by its REAL placed
+        # width — the same `placed_width_in` helper `_slot_fixed_width` /
+        # `action_instantiate` already use for this identical SBK-024
+        # class of bug, imported at module top — and take the closest
+        # match: an exact hit (delta 0) always wins outright, and a
+        # genuine tie keeps the variants' own stable ordering so the pick
+        # never flaps between runs.
+        variants = chosen_tmpl.product_variant_ids
         best = variants[0]
         best_delta = abs(placed_width_in(best) - width_in)
         for variant in variants[1:]:

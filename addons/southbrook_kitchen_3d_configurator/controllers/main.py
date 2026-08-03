@@ -69,6 +69,14 @@ from odoo.addons.southbrook_kitchen_3d_configurator.models.kitchen_design import
 
 _logger = logging.getLogger(__name__)
 
+# Hard bounds for a posted cabinet width, in inches. Deliberately far wider
+# than the UI's own 6-48" width control: these are not a UX constraint, they
+# are the sanity floor/ceiling on a value that DIVIDES INTO THE PRICE (see
+# the C3 pro-rata block in save_design). Their only job is to stop an
+# unbounded payload from driving a line's price to ~$0 or negative.
+_SBK_MIN_WIDTH_IN = 3.0
+_SBK_MAX_WIDTH_IN = 96.0
+
 # Task 9b (corner-remediation, 2026-07-30) — server-side write-path guard
 # against the client's 1e6 sort-key sentinel (kitchen_configurator.js
 # `_addCabinetFromProduct`'s `sortX` fallback) leaking into a save_design
@@ -1136,6 +1144,98 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             # is one interactive gesture and refusing it gives the user
             # immediate, visible feedback at the moment they let go, rather
             # than silently dropping one row out of a batch of twenty.
+            # Task 11 (SBK-024) — client normally echoes back the
+            # server-computed width_in (from /products or /layout,
+            # both now placed_width_in-sourced below); the variant's
+            # own Width is the honest fallback when it's omitted.
+            _width_in = item.get("width_in", placed_width_in(product) or 24.0)
+            # SERVER-SIDE WIDTH BOUND — money-critical, added with the C3
+            # pro-rata pricing below. `width_in` arrives from an untrusted
+            # payload and now DIVIDES into the price: an unbounded value
+            # makes the price arbitrarily manipulable (a posted 0.001"
+            # prices a cabinet at ~$0; a negative width prices it
+            # NEGATIVE, which would flow straight into the quotation as a
+            # credit). The UI's own width control offers 6-48", so this
+            # clamp is far wider than any legitimate edit and exists only
+            # to make the ratio's denominator sane. Clamping (rather than
+            # raising) keeps a batch save of twenty lines from failing
+            # wholesale on one bad row — the same posture the surrounding
+            # code already takes — and geometry and price stay consistent
+            # because BOTH read the clamped value from here on.
+            try:
+                _width_in = float(_width_in or 0.0)
+            except (TypeError, ValueError):
+                _width_in = placed_width_in(product) or 24.0
+            if not (_SBK_MIN_WIDTH_IN <= _width_in <= _SBK_MAX_WIDTH_IN):
+                _logger.warning(
+                    "save_design: width_in %.4f out of bounds [%.1f, %.1f] "
+                    "for product %s — clamped (price is pro-rated from this "
+                    "value, so it must never be unbounded).",
+                    _width_in, _SBK_MIN_WIDTH_IN, _SBK_MAX_WIDTH_IN,
+                    product.display_name)
+                _width_in = min(max(_width_in, _SBK_MIN_WIDTH_IN),
+                                _SBK_MAX_WIDTH_IN)
+            # C3 (money-integrity fix, 2026-08-03) — a custom width dialed
+            # into the 3D configurator's width-edit control used to change
+            # the cabinet's geometry (width_in) with NO effect at all on
+            # price_unit: this loop's price came straight from
+            # `_channel_price(product, pricelist, partner)`, a pure
+            # function of product x pricelist x partner that has never
+            # taken a width argument. A rep could resize any cabinet to
+            # any width 6-48in and the persisted price stayed pinned to
+            # whatever the ORIGINAL (nominal-width) product resolved to.
+            #
+            # `is_custom_width` (kitchen_design.py's design-line field) is
+            # the honest, explicit acknowledgement that gates a re-price:
+            # only when the client says "yes, this width is deliberate"
+            # do we pro-rate; an un-acknowledged mismatch is instead left
+            # exactly as before (still visibly wrong) and BLOCKED at
+            # production-validation time by the new CUSTOM_WIDTH_UNCONFIRMED
+            # check (_check_production_ready) — never silently re-priced
+            # behind the rep's back.
+            #
+            # The pro-rata mechanism itself mirrors the ONE other prorate
+            # already in this file — `_make_filler` above prices a filler
+            # by (filler width / catalog standard width). Same idea here:
+            # (dialed-in width / the product's own nominal placed_width_in).
+            # This is the smallest honest mechanism available — the
+            # codebase has no per-series custom-width surcharge concept
+            # to reuse (grepped: no hits) — and it is IMMEDIATELY visible
+            # to the rep, since the line's price genuinely moves with the
+            # width instead of silently staying flat.
+            # SERVER-AUTHORITATIVE, deliberately NOT the client's claim.
+            # Trusting `item["is_custom_width"]` would let any caller post
+            # the flag at a nominal width and pro-rate the price to
+            # whatever they liked — a price-manipulation vector from an
+            # untrusted payload. The width delta is the only honest
+            # source: if the dialed width differs from the product's own
+            # nominal width, the line IS custom, whatever the client says.
+            # This also means the money bug is closed unconditionally —
+            # the price follows the width every time, including on
+            # drag-to-resize (a first-class feature here), instead of
+            # waiting for anyone to tick an acknowledgement.
+            _nominal_for_flag = (0.0 if (is_appliance or is_sentinel)
+                                 else (placed_width_in(product) or 0.0))
+            _is_custom_width = (
+                _nominal_for_flag > 0
+                and abs(float(_width_in or 0.0) - _nominal_for_flag) > 0.01
+            )
+            _base_price = (0.0 if (is_appliance or is_sentinel) else
+                            self._channel_price(product, pricelist, partner))
+            if _is_custom_width:
+                _nominal_w = placed_width_in(product) or 0.0
+                if _nominal_w > 0:
+                    _price_unit = round(
+                        _base_price * (float(_width_in or 0.0) / _nominal_w), 2)
+                else:
+                    # No meaningful nominal width to prorate against
+                    # (e.g. a product with no Width attribute at all) —
+                    # fall back to the plain channel price rather than
+                    # divide by zero or invent a ratio from nothing.
+                    _price_unit = _base_price
+            else:
+                _price_unit = _base_price
+
             line_vals = {
                 "sequence":       seq * 10,
                 "product_id":     product.id,
@@ -1145,8 +1245,7 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 # the sentinel gate alongside it: neither an appliance
                 # stand-in nor a debris line is ever priced from the
                 # resolved channel pricelist.
-                "price_unit":     (0.0 if (is_appliance or is_sentinel) else
-                                    self._channel_price(product, pricelist, partner)),
+                "price_unit":     _price_unit,
                 "active":         not is_sentinel,
                 "is_unresolved":  is_sentinel,
                 "cabinet_type":   tmpl.southbrook_cabinet_type,
@@ -1160,13 +1259,27 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                                         "range", "fridge", "dishwasher",
                                         "hood", "other")
                                     else False),
-                # Task 11 (SBK-024) — client normally echoes back the
-                # server-computed width_in (from /products or /layout,
-                # both now placed_width_in-sourced below); the variant's
-                # own Width is the honest fallback when it's omitted.
-                "width_in":       item.get("width_in",  placed_width_in(product) or 24.0),
+                "width_in":       _width_in,
                 "height_in":      item.get("height_in", tmpl.southbrook_height_in or 34.5),
                 "depth_in":       item.get("depth_in",  tmpl.southbrook_depth_in or 24.0),
+                # C3 — persisted verbatim from the client, same trust
+                # level as `pinned` just below: it never grants access to
+                # anything, it only gates whether THIS line's own price
+                # is pro-rated (above) and whether production validation
+                # blocks it (CUSTOM_WIDTH_UNCONFIRMED) — a false claim of
+                # "yes I confirmed this" just means an honestly-computed
+                # pro-rated price ships instead of a block, never a price
+                # the rep didn't ask for and never an access-control
+                # decision.
+                # The SERVER-DERIVED value (computed above from the measured
+                # width delta), never the client's claim. Persisting
+                # `item["is_custom_width"]` here would have left the stored
+                # flag lying even though the price was correct: a caller
+                # could post the flag at a nominal width and the LINE would
+                # read "custom width" forever after — misreporting a
+                # standard cabinet to anyone who trusts the field.
+                # One derivation, one source of truth, price and flag agree.
+                "is_custom_width": _is_custom_width,
                 "x_position_in":  item.get("x_position_in", 0),
                 "y_position_in":  item.get("y_position_in", 0),
                 "z_position_in":  item.get("z_position_in", 0),
