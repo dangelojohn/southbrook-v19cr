@@ -83,3 +83,10 @@ from . import test_p1_preconfirm_validation
 from . import test_p1_blocked_option_reason
 from . import test_sales_tax_ratchet
 from . import test_attribute_rule_scoping
+# SBK-049 (2026-08-03) — authored 2026-06-10 and never imported here, so its
+# 10 tests had NEVER been collected by any selector. Found while tracing why
+# the module-wide test tag under-collected; this is the second time an
+# unimported test file has hidden in this package (see test_filler_remainder_
+# gate.py, fixed 2026-07-30).
+from . import test_sale_order_line_bom_rollup
+from . import test_all_tests_are_imported

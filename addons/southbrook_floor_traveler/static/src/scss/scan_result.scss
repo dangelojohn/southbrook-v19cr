@@ -25,7 +25,20 @@
 }
 
 .sb-scan-card {
-    width: min(640px, 100%);
+    /* SBK-049 (2026-08-03) — was `width: min(640px, 100%)`.
+       libsass 3.6.5 (Odoo 19) binds LOWERCASE min()/max()/clamp() to the SCSS
+       built-in numeric function and tries to evaluate it at compile time;
+       640px and 100% are incompatible units, so the whole
+       web.assets_floor_traveler_scan bundle aborts. Capitalising it is the
+       documented workaround (SCSS function names are case-sensitive, CSS ones
+       are not), and is what Odoo core itself does in mail/chatter.scss.
+
+       This one was not merely cosmetic. Asset pregeneration compiles EVERY
+       bundle in the database before any HttpCase runs, so this single line
+       crashed the entire post_install test phase for the whole project —
+       871 of 1007 tests silently never executed, while the runner printed the
+       stale at_install count as though the suite had passed. */
+    width: Min(640px, 100%);
     border-radius: var(--sb-corner-xl, 16px);
     border: 3px solid;
     padding: var(--sb-space-6, 32px) var(--sb-space-5, 24px);

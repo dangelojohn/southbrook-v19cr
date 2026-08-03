@@ -33,7 +33,7 @@ External dependencies:
     "author": "Southbrook Cabinetry / OdooIQ",
     "license": "LGPL-3",
     "category": "Manufacturing",
-    "version": "19.0.2.1.0",
+    "version": "19.0.2.1.1",
     "depends": [
         "mrp",
         "sale",

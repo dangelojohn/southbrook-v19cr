@@ -408,3 +408,4 @@ from . import test_reconcile_multiwall_shape
 # no-fit (case 2) must still refuse via LayoutCapacityExceeded and roll
 # back completely. Covers all four walls (left was previously untested).
 from . import test_send_to_wall_corner_absorption
+from . import test_all_tests_are_imported
