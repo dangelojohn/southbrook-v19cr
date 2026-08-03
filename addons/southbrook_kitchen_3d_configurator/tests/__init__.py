@@ -400,3 +400,4 @@ from . import test_save_reports_truthfully
 # sellable non-cabinet products like services/freight).
 from . import test_width_price_and_sku_integrity
 from . import test_template_determinism
+from . import test_reconcile_multiwall_shape

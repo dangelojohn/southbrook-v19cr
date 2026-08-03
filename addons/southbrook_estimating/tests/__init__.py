@@ -81,3 +81,5 @@ from . import test_p1_preconfirm_validation
 # Phase 1 sales-rep UX fix (2026-07-31) — Task 2: blocked-option
 # reason surfaced to the rep, CLAUDE.md section 5.
 from . import test_p1_blocked_option_reason
+from . import test_sales_tax_ratchet
+from . import test_attribute_rule_scoping

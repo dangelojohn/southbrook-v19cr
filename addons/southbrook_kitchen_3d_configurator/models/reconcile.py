@@ -31,6 +31,94 @@ IN_TO_MM = 25.4
 # the cron record itself to force a full re-scan.
 _LAST_RUN_KEY = "southbrook.rec_d.design_reconcile.last_run"
 
+# ── Wall identity, shape derivation (SBK-041, 2026-08-03) ──────────
+#
+# Until now this cron created exactly ONE synthetic wall per room
+# ("Wall A", spanning room_width_in) and hardcoded layout_shape to
+# "straight" at room-creation time, never revisiting it. The Sprint-1
+# comment below step 3 said as much: multi-wall shapes were deferred to
+# a Sprint 2 that reached the reverse cron but never reached this.
+#
+# The cost was not cosmetic. Two separate defects in the 2026-08-03 E2E
+# review are the same line of code:
+#   * every U/L design was stored as layout_shape="straight",
+#     wall_count=1 — 7 of the 8 bridged designs contradicted their own
+#     geometry, so quote, BOM and plan all described a straight kitchen;
+#   * every sale.order.line was pinned to that one wall, so wall
+#     information never survived the trip to the quote.
+#
+# wall_order doubles as the wall's stable identity, so re-running this
+# is idempotent and an existing "Wall A" (always order 10) is adopted as
+# the back wall rather than duplicated.
+_WALL_META = {
+    #  key   → (display name,  wall_order, which room dimension spans it)
+    "back":  ("Back Wall",  10, "width"),
+    "right": ("Right Wall", 20, "depth"),
+    "front": ("Front Wall", 30, "width"),
+    "left":  ("Left Wall",  40, "depth"),
+}
+
+# Two runs facing each other across the room is a galley; two meeting at
+# a corner is an L. This is standard cabinetry vocabulary, not a rule
+# invented here — see _LAYOUT_SHAPES in southbrook_estimating.
+_OPPOSITE_WALL_PAIRS = ({"back", "front"}, {"left", "right"})
+
+# Shapes this cron is competent to derive from a wall set. Anything else
+# a human chose on the room form (island, peninsula, custom) expresses
+# something a set of walls cannot, so we never overwrite it — see
+# _sb_shape_write_vals.
+_DERIVABLE_SHAPES = {"straight", "l_shape", "u_shape", "galley", "g_shape"}
+
+
+def _sb_walls_used_by(design):
+    """The distinct walls this design's configurator lines actually occupy.
+
+    Returns a set of wall keys. An empty design (or one whose lines all
+    predate the `wall` field) reconciles as a single back wall, which is
+    the historical behaviour and the honest reading of "no information".
+    """
+    used = {
+        line.wall
+        for line in design.cabinet_line_ids
+        if line.origin == "configurator" and line.wall in _WALL_META
+    }
+    return used or {"back"}
+
+
+def _sb_derive_layout_shape(wall_keys):
+    """Map a set of occupied walls onto a layout shape.
+
+    Deliberately conservative: it reports what the geometry supports and
+    nothing more. Four walls is reported as a G-shape rather than
+    guessing at an island, because a wall set cannot tell the two apart.
+    """
+    walls = set(wall_keys)
+    count = len(walls)
+    if count <= 1:
+        return "straight"
+    if count == 2:
+        return "galley" if walls in _OPPOSITE_WALL_PAIRS else "l_shape"
+    if count == 3:
+        return "u_shape"
+    return "g_shape"
+
+
+def _sb_shape_write_vals(room, derived_shape):
+    """{'layout_shape': ...} when it is ours to correct, else {}.
+
+    Never overwrites a shape a human picked that this cron could not
+    have produced (island / peninsula / custom). Those carry intent the
+    wall set does not encode, and silently flattening them to "l_shape"
+    would be exactly the kind of unrequested edit this product is trying
+    to stop making.
+    """
+    current = room.layout_shape
+    if current and current not in _DERIVABLE_SHAPES:
+        return {}
+    if current == derived_shape:
+        return {}
+    return {"layout_shape": derived_shape}
+
 
 class SouthbrookDesignReconcile(models.AbstractModel):
     """Rec D Sprint 1 · one-way mirror design → room + SO line graph.
@@ -64,7 +152,8 @@ class SouthbrookDesignReconcile(models.AbstractModel):
             params.set_param(_LAST_RUN_KEY, str(new_watermark))
 
         stats = {"mirrored": 0, "created_orders": 0, "created_rooms": 0,
-                 "created_lines": 0, "divergence": 0, "errors": 0}
+                 "created_walls": 0, "created_lines": 0, "divergence": 0,
+                 "errors": 0}
         for design in designs:
             # Per-design SAVEPOINT so a failure on one design doesn't
             # poison the whole batch (Postgres aborts the outer txn on
@@ -132,6 +221,10 @@ class SouthbrookDesignReconcile(models.AbstractModel):
         #    design during the deprecation window.
         Room = self.env["southbrook.room"]
         room = design.room_id
+        # SBK-041 — derive once; used by the room create/refresh below and
+        # by the wall maintenance in step 3.
+        walls_used = _sb_walls_used_by(design)
+        derived_shape = _sb_derive_layout_shape(walls_used)
         if not room:
             # M2 fix (2026-07-06) — root cause: this used to create a room
             # gated only on `design.room_id`, never checking whether the
@@ -162,7 +255,10 @@ class SouthbrookDesignReconcile(models.AbstractModel):
                     "order_id":              design.sale_order_id.id,
                     "name":                  design.name or "Kitchen",
                     "room_type":             "kitchen",
-                    "layout_shape":          "straight",
+                    # SBK-041 — was hardcoded "straight" and never
+                    # revisited. Derived from the walls the design's own
+                    # lines occupy.
+                    "layout_shape":          derived_shape,
                     "ceiling_height_mm":     int(round((design.room_height_in or 0) * IN_TO_MM)),
                     "unit_preference":       "imperial",
                     "sb_soffit_height_mm":   int(round((design.soffit_height_in or 0) * IN_TO_MM)),
@@ -176,33 +272,77 @@ class SouthbrookDesignReconcile(models.AbstractModel):
         else:
             # Refresh scalars — a designer editing the design after
             # a prior reconciliation must see updated room dims.
-            room.sudo().write({
+            room_vals = {
                 "ceiling_height_mm":     int(round((design.room_height_in or 0) * IN_TO_MM)),
                 "sb_soffit_height_mm":   int(round((design.soffit_height_in or 0) * IN_TO_MM)),
                 "sb_wall_cab_top_alignment": design.wall_cab_top_alignment or "fixed_gap",
                 "sb_filler_strategy":    design.filler_strategy or "split",
                 "sb_design_state":       design.state,
                 "x_kitchen_image":       design.x_kitchen_image or False,
-            })
+            }
+            # SBK-041 — the refresh branch previously left layout_shape
+            # alone, so a design that GREW into an L or a U after its
+            # first reconciliation stayed "straight" forever.
+            room_vals.update(_sb_shape_write_vals(room, derived_shape))
+            room.sudo().write(room_vals)
 
-        # 3) Ensure one synthetic wall spanning the design's room_width_in.
-        #    Sprint 2 introduces multi-wall room shapes (L/U/G/galley);
-        #    for Sprint 1 the design's flat room maps to a single wall.
+        # 3) Ensure one real wall per wall the design's lines occupy.
+        #    SBK-041 (2026-08-03) — this used to maintain a single
+        #    synthetic "Wall A" spanning room_width_in, with a comment
+        #    deferring multi-wall shapes to Sprint 2. Sprint 2 shipped the
+        #    reverse cron but never this, so every L and U kitchen in the
+        #    system was mirrored as a one-wall straight run.
+        #
+        #    Identity is wall_order, not name, so this is idempotent and
+        #    the historical "Wall A" (always order 10) is ADOPTED as the
+        #    back wall rather than duplicated — which keeps every existing
+        #    sale.order.line.wall_id pointing at a live record.
+        #
+        #    Walls that fall out of use are deliberately NOT deleted: they
+        #    may still carry cabinet lines or constraints from an earlier
+        #    revision, and destroying authoring data is exactly what this
+        #    cron's docstring promises never to happen. They are left in
+        #    place with their length refreshed.
         Wall = self.env["southbrook.room.wall"]
-        wall = room.wall_ids[:1]
-        wall_length_mm = int(round((design.room_width_in or 0) * IN_TO_MM))
-        if not wall:
-            wall = Wall.sudo().create({
-                "room_id":            room.id,
-                "name":               "Wall A",
-                "length_mm":          wall_length_mm,
-                "wall_order":         10,
-                "has_base_cabinets":  True,
-                "has_upper_cabinets": True,
-                "has_tall_cabinets":  True,
-            })
-        elif wall.length_mm != wall_length_mm:
-            wall.sudo().length_mm = wall_length_mm
+        width_mm = int(round((design.room_width_in or 0) * IN_TO_MM))
+        depth_mm = int(round((design.room_depth_in or 0) * IN_TO_MM))
+        span_mm = {"width": width_mm, "depth": depth_mm}
+
+        by_order = {w.wall_order: w for w in room.wall_ids}
+        walls_by_key = {}
+        for key in sorted(walls_used, key=lambda k: _WALL_META[k][1]):
+            name, order, span = _WALL_META[key]
+            length_mm = span_mm[span]
+            existing = by_order.get(order)
+            if existing:
+                wall_vals = {}
+                if existing.length_mm != length_mm:
+                    wall_vals["length_mm"] = length_mm
+                # Rename the legacy synthetic wall to what it actually is.
+                if existing.name != name and existing.name in ("Wall A", "Wall", False):
+                    wall_vals["name"] = name
+                if wall_vals:
+                    existing.sudo().write(wall_vals)
+                walls_by_key[key] = existing
+            else:
+                walls_by_key[key] = Wall.sudo().create({
+                    "room_id":            room.id,
+                    "name":               name,
+                    "length_mm":          length_mm,
+                    "wall_order":         order,
+                    "has_base_cabinets":  True,
+                    "has_upper_cabinets": True,
+                    "has_tall_cabinets":  True,
+                })
+                stats["created_walls"] = stats.get("created_walls", 0) + 1
+
+        # Every downstream write needs a wall even for a line whose own
+        # `wall` value is missing or unrecognised; the back wall is the
+        # design model's own default, so it is the honest fallback.
+        fallback_wall = (
+            walls_by_key.get("back")
+            or walls_by_key[sorted(walls_by_key, key=lambda k: _WALL_META[k][1])[0]]
+        )
 
         # 4) Mirror each configurator-origin design.line into a SO line.
         Line = self.env["sale.order.line"]
@@ -285,7 +425,11 @@ class SouthbrookDesignReconcile(models.AbstractModel):
                 "product_id":            dline.product_id.id,
                 "product_uom_qty":       dline.quantity,
                 "price_unit":            price_unit,
-                "wall_id":               wall.id,
+                # SBK-041 — was `wall.id`, the single synthetic wall, so
+                # every line on every quote claimed the same wall no
+                # matter where its cabinet actually stood. Now the line
+                # points at the wall it is really on.
+                "wall_id":               walls_by_key.get(dline.wall, fallback_wall).id,
                 "position_from_left_mm": int(round((dline.x_position_in or 0) * IN_TO_MM)),
                 "sb_layout_x_mm":        (dline.x_position_in or 0) * IN_TO_MM,
                 "sb_layout_y_mm":        (dline.y_position_in or 0) * IN_TO_MM,

@@ -2695,9 +2695,18 @@ class SouthbrookKitchenDesign(models.Model):
                 # the phrase every other quote-readiness message in this
                 # method uses; this one previously said "before it can
                 # become a quote", the same gate under a different name.
+                # SBK-047 (2026-08-03) — this told the designer to click a
+                # "Walk-in" button. There is no such button: the walk-in
+                # option is a quick action INSIDE the customer search
+                # dropdown, reachable only once the combobox is open. The
+                # copy was aligned on 2026-07-30 to a control that either
+                # never shipped or was later folded into the combobox.
+                # Describe the affordance that exists.
                 "message":  "This design needs a customer before quoting. "
-                            "Assign a Customer at the top of the form (or click the "
-                            "'Walk-in' button to one-click assign a walk-in customer).",
+                            "Use the customer box at the top of the form — "
+                            "search for a contact, or pick "
+                            "“+ Walk-in Customer” from the "
+                            "dropdown for a walk-in.",
             })
 
         # 3) Collision detection — grouped by (wall, zone), comparing REAL
@@ -3864,10 +3873,33 @@ class SouthbrookKitchenDesign(models.Model):
         parts.append("%g\"W x %g\"H x %g\"D" % (
             line.width_in or 0, line.height_in or 0, line.depth_in or 0,
         ))
-        # Door style + material from the product template.
+        # SBK-045 (2026-08-03) — door style now comes from the VARIANT,
+        # falling back to the template only when the variant carries no
+        # Door Style attribute at all.
+        #
+        # `tmpl.southbrook_door_style` is a template-level Selection with
+        # a default of "shaker", and it reads "shaker" for 116 of the 117
+        # saleable cabinet variants regardless of what each variant is
+        # actually configured as. That is how every line of a quotation
+        # came to say "Shaker" while its own attributes said "Thermofoil
+        # Slab — White": the description and the configuration were
+        # reading two different fields.
+        #
+        # This is the same lookup the 3D catalog payload already uses
+        # (controllers/main.py `_door_style_label`), which was fixed
+        # earlier the same day but only wired into the catalog tiles.
+        # Read the bare value off `product_attribute_value_id` — `ptav.name`
+        # renders as "Door Style: Shaker", not the bare value.
         door_sel = dict(tmpl._fields["southbrook_door_style"].selection or [])
         mat_sel  = dict(tmpl._fields["southbrook_material"].selection or [])
-        if tmpl.southbrook_door_style:
+        variant_door = line.product_id.product_template_attribute_value_ids.filtered(
+            lambda p: (p.attribute_id.name or "").strip().lower() == "door style"
+        )[:1]
+        if variant_door:
+            parts.append(
+                variant_door.product_attribute_value_id.name
+                or variant_door.name)
+        elif tmpl.southbrook_door_style:
             parts.append(door_sel.get(tmpl.southbrook_door_style,
                                        tmpl.southbrook_door_style))
         if tmpl.southbrook_material:
@@ -4250,6 +4282,24 @@ class SouthbrookKitchenDesign(models.Model):
             # template's nominal size. {} (no-op) when the line has no
             # real dims — never fabricated.
             **line._sb_dims_mm(),
+            # SBK-044 (2026-08-03) — this key was missing, and its absence
+            # is why every line on a template-built quote read "Base Run",
+            # wall cabinets and appliance spaces included.
+            #
+            # `sale.order.line.zone` has a plain default of "base_run" and
+            # no compute, so an omitted key is not "unset" — it is a
+            # confident, wrong answer. The design line already knows the
+            # right one (kitchen_template.action_instantiate sets it from
+            # the slot's cabinet_type), and the sibling mirror in
+            # reconcile.py step 4 has always copied it across.
+            #
+            # The two paths diverged because a freshly instantiated
+            # template has no partner, so reconcile's partner-gated
+            # branch never runs and THIS builder is the first writer.
+            # The cron did heal it within 15 minutes, which is precisely
+            # what made it hard to see: by the time anyone looked at the
+            # order again, the zones were right.
+            "zone": line.zone or False,
         }
         # T26 (corner remediation 2026-07-30, duplication-risk fix) —
         # stamp the SAME sb_layout_key/sb_layout_origin convention the
@@ -5324,7 +5374,39 @@ class SouthbrookKitchenDesignLine(models.Model):
                 # would silently disappear the very cabinet the user
                 # just changed. Refuse instead (raises inside the
                 # savepoint -> the whole action rolls back).
-                if not self.active:
+                #
+                # SBK-048 (2026-08-03) — this guard used to fire on
+                # `not self.active` alone, and that made moving a cabinet
+                # to the Left wall fail 100% of the time. Reproduced
+                # against the shipped U-Shape template: 12 of 12 cabinets
+                # moved onto `left` raised this error, at the template's
+                # own 120x96 room AND at an artificial 300x300 one, which
+                # rules out any genuine shortage of space.
+                #
+                # A canonical line goes inactive for two very different
+                # reasons, and this could not tell them apart:
+                #
+                #   1. it was ABSORBED into a corner unit. The engine
+                #      inserts a real corner at an inside junction and
+                #      supersedes the canonical cabinet it consumes. The
+                #      cabinet has not been dropped — it is part of the
+                #      corner now. This is ordinary cabinetry, and on the
+                #      left wall it is close to guaranteed, because the
+                #      back-left corner rule absorbs the lowest-run_seq
+                #      member of `left` and a freshly moved cabinet
+                #      always lands there.
+                #
+                #   2. it genuinely could not be placed.
+                #
+                # Case 2 is what this guard is for, and the engine already
+                # signals it a second way: LayoutCapacityExceeded, caught
+                # immediately below. So the narrowing is to also require
+                # that no corner was inserted to account for the line.
+                # `action_auto_arrange` returns a documented
+                # {corners, removed, inserted} contract, and the client's
+                # own summary reports those counts — so an absorption is
+                # reported to the designer rather than passing silently.
+                if not self.active and not (res or {}).get("inserted"):
                     raise UserError(
                         "That change does not fit this room — the "
                         "layout engine had to drop this cabinet to lay "

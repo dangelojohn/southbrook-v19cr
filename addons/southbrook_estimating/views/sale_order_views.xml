@@ -27,11 +27,16 @@
            Per OQ2 acked + commit-9 ask: discreet visual reminder for
            Phase-1 gate review so demo numbers don't get mistaken for
            production data. Hides automatically when mode flips to canonical. -->
+      <!-- SBK-046 (2026-08-03) — the gate below used to read
+           context.get('seed_mode_canonical'), a key nothing ever set, so
+           this banner could never hide. It now reads the same
+           southbrook.seed_mode parameter the printed report reads. -->
       <xpath expr="//sheet" position="before">
+        <field name="sb_seed_mode_illustrative" invisible="1"/>
         <div class="alert alert-warning text-center"
              role="alert"
              style="margin: 0; border-radius: 0;"
-             invisible="context.get('seed_mode_canonical', False)">
+             invisible="not sb_seed_mode_illustrative">
           <strong>ILLUSTRATIVE SEED</strong> — demo numbers; not production data.
           See PUNCHLIST OQ2 + Build Spec section 9.3.
         </div>

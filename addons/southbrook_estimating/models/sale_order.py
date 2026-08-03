@@ -341,16 +341,45 @@ class SaleOrder(models.Model):
             # keeps its own name-based SOFT checks (advisory, non-blocking)
             # where a false positive is harmless; a blocking guard cannot
             # afford them.
-            attr_tokens = []
+            # SBK-043 (2026-08-03) — these checks used to flatten EVERY
+            # attribute into one bag of lowercase strings and ask "does
+            # any of them contain 'maple'". That is how the shipped
+            # L-Shape and U-Shape templates became unsellable.
+            #
+            # SB-WALL-CORNER carries Box Material = "White Melamine",
+            # which is perfectly legal on the Contractor series. What it
+            # also carries is Wood Species = "Maple (Hard)" — a door and
+            # trim veneer descriptor added on 2026-06-09, unrelated to
+            # the carcass. The unscoped scan could not tell the two
+            # apart, so every corner-wall cabinet tripped the box rule,
+            # and both shaped templates instantiated to an order that
+            # could never be confirmed. Roughly 35 live designs.
+            #
+            # The rules in CLAUDE.md section 5 are each about ONE named
+            # attribute, so the check now reads that attribute by name.
+            # Exact names, not substrings: this catalog has four "Door *"
+            # attributes (Count, Edge Profile, Overlay, Style) and only
+            # Door Style is the door rule's subject.
+            #
+            # Also note `ptav.name` can render as "Attribute: Value"
+            # rather than the bare value, which is a second way a
+            # substring scan reaches the wrong conclusion. Read the
+            # value off product_attribute_value_id instead.
+            attr_index = {}
             for ptav in line.product_id.product_template_attribute_value_ids:
-                attr_tokens.append((ptav.name or "").lower())
+                attr_name = (ptav.attribute_id.name or "").strip().lower()
+                value_name = (
+                    ptav.product_attribute_value_id.name or "").strip().lower()
+                if attr_name and value_name:
+                    attr_index.setdefault(attr_name, set()).add(value_name)
 
-            def _has_token(*tokens):
-                return any(
-                    t in v for v in attr_tokens for t in tokens)
+            def _attr_has(attribute, *tokens):
+                """True when the named attribute's value matches a token."""
+                values = attr_index.get(attribute, ())
+                return any(t in v for v in values for t in tokens)
 
-            if _has_token("contractor") and _has_token(
-                    "five-piece", "5-piece", "woodgrain"):
+            if _attr_has("series", "contractor") and _attr_has(
+                    "door style", "five-piece", "5-piece", "woodgrain"):
                 issues.append({
                     "code": "series_door_incompatible",
                     "line_id": line.id,
@@ -359,7 +388,8 @@ class SaleOrder(models.Model):
                         "the white thermofoil slab door."
                     ),
                 })
-            if _has_token("elegance") and _has_token("slab", "thermofoil"):
+            if _attr_has("series", "elegance") and _attr_has(
+                    "door style", "slab", "thermofoil"):
                 issues.append({
                     "code": "series_door_incompatible",
                     "line_id": line.id,
@@ -368,7 +398,10 @@ class SaleOrder(models.Model):
                         "woodgrain doors only."
                     ),
                 })
-            if _has_token("maple") and _has_token("contractor"):
+            # The carcass rule is about Box Material only. Wood Species
+            # is a veneer descriptor and must never reach this check.
+            if _attr_has("box material", "maple") and _attr_has(
+                    "series", "contractor"):
                 issues.append({
                     "code": "box_series_incompatible",
                     "line_id": line.id,
@@ -415,6 +448,29 @@ class SaleOrder(models.Model):
         store=False,
         readonly=True,
     )
+
+    # SBK-046 (2026-08-03) — the backend "ILLUSTRATIVE SEED" banner was
+    # gated on `context.get('seed_mode_canonical')`, a context key that
+    # nothing in the codebase has ever set. Its own comment promised it
+    # "hides automatically when mode flips to canonical"; in fact it
+    # could never hide, so the banner — internal doc references and all
+    # — has been permanently pinned to the top of every sale order.
+    #
+    # Read the actual flag the printed report already reads.
+    sb_seed_mode_illustrative = fields.Boolean(
+        string="Illustrative Seed Data",
+        compute="_compute_sb_seed_mode_illustrative",
+        store=False,
+        readonly=True,
+        help="True while ir.config_parameter southbrook.seed_mode is "
+             "'illustrative'. Drives the demo-data banner.",
+    )
+
+    def _compute_sb_seed_mode_illustrative(self):
+        mode = self.env["ir.config_parameter"].sudo().get_param(
+            "southbrook.seed_mode", default="illustrative")
+        for order in self:
+            order.sb_seed_mode_illustrative = (mode == "illustrative")
 
     @api.depends(
         "order_line.product_id",
