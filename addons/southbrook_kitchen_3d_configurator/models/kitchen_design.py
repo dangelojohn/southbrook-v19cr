@@ -5400,18 +5400,40 @@ class SouthbrookKitchenDesignLine(models.Model):
                 #
                 # Case 2 is what this guard is for, and the engine already
                 # signals it a second way: LayoutCapacityExceeded, caught
-                # immediately below. So the narrowing is to also require
-                # that no corner was inserted to account for the line.
-                # `action_auto_arrange` returns a documented
-                # {corners, removed, inserted} contract, and the client's
-                # own summary reports those counts — so an absorption is
-                # reported to the designer rather than passing silently.
-                if not self.active and not (res or {}).get("inserted"):
-                    raise UserError(
-                        "That change does not fit this room — the "
-                        "layout engine had to drop this cabinet to lay "
-                        "out the run. Nothing was changed; the room is "
-                        "never grown automatically.")
+                # immediately below.
+                #
+                # SBK-048b — the first cut of this narrowing asked only
+                # "was ANY corner inserted", and that was too loose. The
+                # regression test written against it caught the hole
+                # immediately: `inserted` is a WHOLE-DESIGN count, not a
+                # statement about this particular line. Set a cabinet to
+                # 400 inches in a ten-foot room and the arranger wraps it
+                # onto an empty wall, where — being the only occupant —
+                # it satisfies both ends of a junction and a corner gets
+                # inserted. A 400-inch cabinet folded into a 36-inch
+                # corner cell is not an absorption; it is exactly the
+                # capacity failure this guard exists to refuse, and the
+                # loose check waved it through (breaking
+                # test_layout_manipulation's own capacity-honesty test).
+                #
+                # So an absorption also has to be geometrically possible:
+                # the superseded cabinet must at least fit along the wall
+                # it was assigned to. Room dimensions are known, so this
+                # is a fact we already have rather than a new heuristic.
+                if not self.active:
+                    wall_span_in = (
+                        self.design_id.room_width_in
+                        if self.wall in ("back", "front")
+                        else self.design_id.room_depth_in)
+                    absorbed_into_corner = (
+                        bool((res or {}).get("inserted"))
+                        and (self.width_in or 0.0) <= (wall_span_in or 0.0))
+                    if not absorbed_into_corner:
+                        raise UserError(
+                            "That change does not fit this room — the "
+                            "layout engine had to drop this cabinet to lay "
+                            "out the run. Nothing was changed; the room is "
+                            "never grown automatically.")
                 return res
         except kitchen_layout_engine.LayoutCapacityExceeded as e:
             raise UserError(
