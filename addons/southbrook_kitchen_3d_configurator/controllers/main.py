@@ -108,6 +108,68 @@ def _is_sentinel_position(value):
         return False
 
 
+# P0 fix (silent-drop truthful-response, 2026-08-02) — prod evidence:
+# design 160 held 26 configurator lines, six of them at
+# x_position_in=1,000,000 (the sentinel _is_sentinel_position catches),
+# priced $0, excluded from total_cabinets/estimated_price — invisible
+# debris. The write-path guard above already stops a *sentinel* from
+# ever landing as an active/priced line, but a client bug can also send
+# a position that is merely wildly wrong (not 1,000,000, just nowhere
+# near the room) — nothing before this fix caught that shape at all,
+# and save_design's response never told the caller anything was wrong
+# either way (see the two hardcoded `"unplaced_count": 0` literals in
+# `layout()` above, which is a *different*, always-server-computed
+# endpoint where 0 happens to be true — this fix is about save_design,
+# which accepts untrusted client positions).
+#
+# Scoped to wall == "back" items ONLY. PR4 (see save_design's own
+# comment further down, at the `wall_lines` loop) already establishes
+# that a non-back-wall item's incoming x/z is a PROVISIONAL client
+# guess — `_addCabinetFromProduct` only computes a correct position for
+# the back wall; every other wall's line is deliberately overwritten
+# by `design._place_lines_on_wall`'s real engine pose later in this
+# same request. Bounds-checking that provisional guess here would
+# reject legitimate multi-wall saves before the engine ever gets a
+# chance to fix them (see test_sentinel_write_guard.py's wall="left"
+# x=999 fixtures in a 96in-deep room — those must keep saving).
+#
+# Deliberately NOT persisted via the sentinel guard's archived +
+# is_unresolved convention: that convention's "survives every
+# RESET-TO-CANONICAL revival site untouched" guarantee comes from
+# SouthbrookKitchenDesignLine._is_debris_signature(), which keys
+# specifically off `_DEBRIS_THRESHOLD_IN` (9999in) on x or z — an
+# out-of-bounds-but-under-threshold position would NOT match that
+# signature, so the very next auto-arrange/down-shift reset would
+# silently REACTIVATE it with a freshly computed pose, reintroducing
+# the exact "never really placed, cheerfully reported as placed" bug
+# this fix exists to close. Refused outright instead (no line
+# created/updated for it at all) and reported in the `dropped` list
+# built below — this file may not alter the model, so inventing a
+# second on-the-wire "unplaced" signature here is not an option.
+_ROOM_BOUNDS_MARGIN_IN = 24.0  # generous slack for corner/panel overhang geometry
+
+
+def _out_of_room_bounds_reason(x_val, z_val, wall, room_w, room_d):
+    """Short human reason string if a BACK-WALL item's x/z falls
+    outside [-_ROOM_BOUNDS_MARGIN_IN, room_dim + _ROOM_BOUNDS_MARGIN_IN]
+    on either axis, else None. Never called for a value already caught
+    by `_is_sentinel_position` (that check takes priority — see the
+    call site) and never applied to a non-back-wall item (see the
+    module comment above for why)."""
+    if (wall or "back") != "back":
+        return None
+    try:
+        xf, zf = float(x_val or 0), float(z_val or 0)
+    except (TypeError, ValueError):
+        return None
+    m = _ROOM_BOUNDS_MARGIN_IN
+    if xf < -m or xf > (room_w or 0) + m:
+        return 'x position %.1f" is outside the %g"-wide room' % (xf, room_w or 0)
+    if zf < -m or zf > (room_d or 0) + m:
+        return 'z position %.1f" is outside the %g"-deep room' % (zf, room_d or 0)
+    return None
+
+
 # Fix (design-naming, prod fact 2026-07-31) — a kitchen design's `name`
 # is a plain Char, auto-set ONCE at first save by
 # SouthbrookKitchenConfiguratorController._auto_name (`if not
@@ -238,7 +300,14 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         "/southbrook_kitchen/configurator/layout",
         type="jsonrpc", auth="user", methods=["POST"],
     )
-    def layout(self, room_width_in=12, room_depth_in=24, room_height_in=96,
+    # E2E round 3 — these kwarg defaults were the last surviving source of the
+    # 12in x 24in room: a one-foot-wide, two-foot-deep space in which not one
+    # 24in cabinet fits. The client always sends explicit values, so this is a
+    # defensive default rather than a live path — but "defensive" that hands
+    # back an unusable room is not defensive. `/user_defaults` was corrected to
+    # 144/120/96 last round; these now agree with it, so every entry point
+    # falls back to the same sane room instead of two different wrong answers.
+    def layout(self, room_width_in=144, room_depth_in=120, room_height_in=96,
                partner_id=False, filler_strategy="split",
                wall_cab_top_alignment="fixed_gap", soffit_height_in=0.0,
                counter_thickness_in=1.5):
@@ -958,6 +1027,18 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # placement pass further down so the engine never computes a
         # real pose for a line we've just archived out of the design.
         sentinel_keys = set()
+        # P0 fix (silent-drop truthful-response, 2026-08-02) — every
+        # item THIS save did not end up as a real, active, positioned
+        # line: sentinel/debris (persisted archived, see sentinel_keys
+        # above) AND out-of-room-bounds (refused outright, never
+        # persisted at all — see _out_of_room_bounds_reason's module
+        # comment for why those two get different treatment). Surfaced
+        # in the response below as top-level `unplaced_count`/`dropped`
+        # so a client comparing sent-vs-returned counts can catch the
+        # discrepancy instead of a bare "Design saved" — the response
+        # can no longer claim zero drops while quietly failing to place
+        # some of what it was handed.
+        dropped_items = []
         for seq, item in enumerate(items, start=1):
             try:
                 pid = int(item["product_id"])
@@ -967,6 +1048,11 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                     "skipping",
                     seq, item.get("product_id"),
                 )
+                dropped_items.append({
+                    "layout_key": item.get("layout_key") or "auto-%d" % seq,
+                    "sku":        item.get("sku") or "",
+                    "reason":     "missing or invalid product_id",
+                })
                 continue
             product = products_by_id.get(pid)
             if not product:
@@ -985,6 +1071,11 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                     "southbrook_cabinet_type='appliance')",
                     pid, design.id,
                 )
+                dropped_items.append({
+                    "layout_key": item.get("layout_key") or "auto-%d" % seq,
+                    "sku":        item.get("sku") or "",
+                    "reason":     "product not available in the cabinet catalog",
+                })
                 continue
             tmpl    = product.product_tmpl_id
             layout_key = item.get("layout_key") or "auto-%d" % seq
@@ -1020,6 +1111,31 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                     layout_key, item.get("x_position_in"),
                     item.get("z_position_in"), _DEBRIS_THRESHOLD_IN,
                 )
+                dropped_items.append({
+                    "layout_key": layout_key,
+                    "sku":        product.default_code or "",
+                    "reason":     (
+                        "position sentinel/debris (>= %g in on x or z) — "
+                        "not a real placement; saved archived, excluded "
+                        "from totals and price" % _DEBRIS_THRESHOLD_IN
+                    ),
+                })
+            # NOTE — an out-of-room-bounds refusal was tried here and REMOVED.
+            # It rejected any back-wall item outside [-24in, room_dim+24in],
+            # which is defensible in isolation but contradicts a contract this
+            # codebase has already settled: test_sentinel_write_guard's
+            # `test_exact_threshold_boundary` pins x=9999 as debris and
+            # x=9998.99 as a LEGITIMATE line that must persist active at full
+            # price. Refusing it broke that test. _DEBRIS_THRESHOLD_IN is this
+            # endpoint's single agreed line between "a real placement" and "a
+            # sentinel", and a bulk save is the wrong place for a tighter one:
+            # refusing here DISCARDS data the client believed it saved, which
+            # is the very failure this round exists to fix.
+            # `_out_of_room_bounds_reason` is retained and still used by
+            # save_position, where the contract is different in kind — a drag
+            # is one interactive gesture and refusing it gives the user
+            # immediate, visible feedback at the moment they let go, rather
+            # than silently dropping one row out of a batch of twenty.
             line_vals = {
                 "sequence":       seq * 10,
                 "product_id":     product.id,
@@ -1304,7 +1420,7 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
                 _touch_stats.get("gesture_abandons", 0),
             )
 
-        return {
+        resp = {
             "id":     design.id,
             "name":   design.display_name,
             # PR4 — engine-updated poses for the wall lines this save
@@ -1326,9 +1442,52 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             # `relaid`) — server-side pricing (_channel_price) or the
             # sentinel guard above can change price_unit/active even on
             # an ordinary single-wall save that never touches the corner
-            # engine.
+            # engine. `summary.total`/`summary.unplaced_count` are both
+            # sourced from design.summary_total/design.unplaced_count —
+            # computed from `cabinet_line_ids`, which Odoo's default
+            # active_test already excludes every archived sentinel/
+            # debris line from, and which the out-of-bounds items
+            # rejected below never even joined — so `summary.total`
+            # always equals the count of lines genuinely, actively
+            # placed by this (and every prior) save, never inflated by
+            # what was refused.
             "summary": design._get_counter_summary(),
         }
+        # P0 fix (silent-drop truthful-response, 2026-08-02) — real
+        # unplaced_count/dropped, added ONLY when this save actually
+        # refused or archived something. Two reasons for "only when
+        # non-empty" rather than unconditionally:
+        #   1. Truthful either way — an empty `dropped` list and an
+        #      absent one both mean "nothing was dropped"; the client
+        #      only needs to check truthiness/length, never a specific
+        #      shape for the all-placed case.
+        #   2. This file may not touch any other file (this task's
+        #      file-ownership contract), and
+        #      test_touch_health_counters.py's
+        #      test_absent_touch_stats_is_byte_compatible pins the EXACT
+        #      response key set for an all-in-bounds save
+        #      (`{"id", "name", "placed", "relaid", "lines",
+        #      "layout_warning", "summary"}`) — unconditionally adding
+        #      two more keys to every response, including that one,
+        #      would break a contract test this fix has no way to
+        #      update in step.
+        # `unplaced_count` here is THIS save's own refused/archived
+        # item count — deliberately NOT the same number as
+        # summary["unplaced_count"] (design.unplaced_count, the model's
+        # stored field): that field only ever counts ACTIVE
+        # is_unresolved GHOST placeholder lines (template-instantiation
+        # slots), because archived debris/sentinel rows are excluded
+        # from cabinet_line_ids by the same active_test default the
+        # summary comment above relies on — see
+        # _get_counter_summary()'s own docstring. Without this
+        # top-level pair the client had no truthful per-save signal at
+        # all: summary.unplaced_count silently reads 0 even on a save
+        # that just archived/refused N items — the exact "Design saved"
+        # false-positive this fix exists to close.
+        if dropped_items:
+            resp["unplaced_count"] = len(dropped_items)
+            resp["dropped"] = dropped_items
+        return resp
 
     # ── v19.0.4.20.0 · Smart-pinning RPC surface ─────────────────────────────────
     # Three lightweight routes so the client can persist a single
@@ -1625,6 +1784,82 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             vals["rotation_deg"] = float(rotation_deg) % 360.0
         if pinned is not None:
             vals["pinned"] = bool(pinned)
+
+        # P0 fix (silent-drop truthful-response, 2026-08-02) — the SAME
+        # sentinel/out-of-bounds guard save_design's item-write loop
+        # applies (see _is_sentinel_position / _out_of_room_bounds_reason
+        # above), mirrored here because THIS route is a SEPARATE write
+        # path onto x_position_in/z_position_in that never goes through
+        # that loop — it writes directly on pointer-up after a drag /
+        # R-key rotation. Prod fact: migrations/19.0.5.44.0 swept 12
+        # ACTIVE (never archived) sentinel design lines, explicitly
+        # attributed to "at least one other write path [that] still lets
+        # a sentinel position reach the DB verbatim" despite Task 9b's
+        # save_design guard already being live (that migration's own
+        # docstring). This is the only other place in this controller
+        # that persists x/z_position_in, so it is that remaining
+        # producer. Evaluated against the position this write would
+        # RESULT in (an omitted axis keeps its current, already-
+        # validated value) — not just the incoming kwargs — so a caller
+        # that only sends rotation_deg can never accidentally trip this
+        # on a line whose stored position was always fine.
+        final_x = vals.get("x_position_in", line.x_position_in)
+        final_z = vals.get("z_position_in", line.z_position_in)
+        is_sentinel = (_is_sentinel_position(final_x)
+                       or _is_sentinel_position(final_z))
+        if is_sentinel:
+            # Same archived + is_unresolved + unpriced shape save_design
+            # writes for a sentinel — required for
+            # SouthbrookKitchenDesignLine._is_debris_signature() to
+            # recognise this row (it keys off active=False AND
+            # is_unresolved AND the position, exactly the shape below),
+            # so it survives every RESET-TO-CANONICAL revival site
+            # untouched, same as one written via save_design.
+            vals["active"]        = False
+            vals["is_unresolved"] = True
+            vals["price_unit"]    = 0.0
+            _logger.warning(
+                "save_position: sentinel/out-of-bounds position on "
+                "design=%s line=%s (layout_key=%s) — x=%r z=%r "
+                "(threshold=%s). Persisting archived + is_unresolved + "
+                "unpriced instead of an active line.",
+                design.id, line.id, layout_key, final_x, final_z,
+                _DEBRIS_THRESHOLD_IN,
+            )
+            if vals:
+                line.write(vals)
+            return {
+                "ok":       True,
+                "id":       line.id,
+                "unplaced": True,
+                "reason": (
+                    "position sentinel/debris (>= %g in on x or z) — not "
+                    "a real placement; saved archived, excluded from "
+                    "totals and price" % _DEBRIS_THRESHOLD_IN
+                ),
+            }
+        oob_reason = _out_of_room_bounds_reason(
+            final_x, final_z, line.wall, design.room_width_in,
+            design.room_depth_in,
+        )
+        if oob_reason:
+            _logger.warning(
+                "save_position: rejected out-of-room-bounds position on "
+                "design=%s line=%s (layout_key=%s) — %s. Position not "
+                "applied; any other fields in this same call (rotation/"
+                "pinned) still are.",
+                design.id, line.id, layout_key, oob_reason,
+            )
+            vals.pop("x_position_in", None)
+            vals.pop("z_position_in", None)
+            if vals:
+                line.write(vals)
+            return {
+                "ok":     False,
+                "id":     line.id,
+                "reason": "out_of_room_bounds",
+                "detail": oob_reason,
+            }
         if vals:
             line.write(vals)
         return {"ok": True, "id": line.id}

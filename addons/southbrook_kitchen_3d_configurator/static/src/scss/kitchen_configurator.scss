@@ -1991,6 +1991,19 @@ $sbk-amber:      var(--sb-status-warn-fg);
         flex: 1;
         min-width: 120px;
     }
+    // Fix 1 companion — this narrow layout is TWO columns with the controls
+    // spanning both as a top bar, so the desktop pins (scene->2, inventory->3)
+    // are wrong here: there is no track 3, and track 2 is the 240px rail.
+    // Those pins carry !important (they must, to beat the collapse rules), and
+    // !important wins inside a media query too, so without these the narrow
+    // layout would put the scene in the sidebar track and invent an implicit
+    // column for the inventory. Re-pin to this layout's real tracks.
+    .o_sbk_scene_panel {
+        grid-column: 1 !important;
+    }
+    .o_sbk_inventory {
+        grid-column: 2 !important;
+    }
 }
 
 // ─── Scroll / overflow fix (2026-06-30) ──────────────────────────────────────
@@ -2094,11 +2107,36 @@ $sbk-amber:      var(--sb-status-warn-fg);
 .o_sbk_scene_panel {
     height: 100% !important;
     min-height: 0 !important;
+    // Fix 1 (E2E P0, 2026-08-02) — see the grid-column note on
+    // .o_sbk_inventory below; this is the other half of the same pin.
+    grid-column: 2 !important;
 }
 
 .o_sbk_inventory {
     height: 100% !important;
     max-height: 100% !important;
+    // Fix 1 (E2E P0, 2026-08-02) — the collapse rules further down this
+    // file (.o_sbk_workspace.is-*-collapsed .o_sbk_controls/.o_sbk_inventory
+    // { display: none }) remove that aside as a grid item entirely, not
+    // just shrink its track to 0. With an item removed, CSS grid
+    // auto-placement re-flows the REMAINING items into the next open
+    // cell in source order — so with both asides collapsed on first
+    // load, .o_sbk_scene_panel (the only item left) auto-placed into
+    // track 1, which grid-template-columns still sizes at 0px. Measured
+    // in the browser: computed `grid-template-columns: 0px 1134px 0px`
+    // with the scene panel's canvas at 0x529 — a fully blank viewport
+    // even though the DOM (12 cabinets, rulers, view buttons) was fine.
+    // .o_sbk_controls already pins itself to track 1 (`grid-column: 1 /
+    // span 1 !important`, in the block above); pinning this panel to
+    // track 3 and .o_sbk_scene_panel (just above) to track 2 makes all
+    // three explicit, so auto-placement can never move the scene panel
+    // again regardless of which asides are display:none. Chosen over
+    // swapping the collapse mechanism to inline-size:0 — it survives any
+    // future change to how collapse is expressed, not just this one.
+    // The other half of this defect (ResizeObserver→renderer.setSize on
+    // the canvas, and narrowAtBoot defaulting both panels open for
+    // first-time users) is JS-side, out of scope for this file.
+    grid-column: 3 !important;
     // Fix 21 (E2E P2, "unreachable") — this grid item was the one sibling
     // in the .o_sbk_workspace row missing the min-height:0 guard its two
     // neighbours already carry (see .o_sbk_scene_panel just above, and
@@ -2127,17 +2165,24 @@ $sbk-amber:      var(--sb-status-warn-fg);
 .o_sbk_detail {
     overflow-y: auto !important;
     overflow-x: hidden !important;
-    max-height: 35% !important;     // was 45% — detail was starving product list at short heights
+    // Fix 6 (E2E P1, 2026-08-02) — 35% still measured only 79px against
+    // 638px of unscrolled content: the Wall dropdown that is the ONLY way
+    // to reassign a cabinet to another wall (load-bearing for a U-shape
+    // job) sat below the fold of this nested scroller, undiscoverable.
+    // Raised to 55% so the inspector gets a fair share of the column on
+    // normal/tall viewports instead of losing every tie to the product
+    // list's flex:1. was 45%, then 35% (Fix 21) — both still starved it.
+    max-height: 55% !important;
+    // NEW floor (Fix 6) — 55% of a short viewport can still compute
+    // smaller than is workable, so this guarantees the panel can never
+    // collapse to a sliver regardless of container height. Doubles as
+    // the min-height:0 override Fix 21 relied on (an explicit px value
+    // is not `auto` either), so .o_sbk_product_list — which keeps its
+    // own 160px floor unchanged — is still what yields space first via
+    // ordinary flex negotiation; this floor only stops that negotiation
+    // from ever pushing the detail panel below a usable height.
+    min-height: 240px !important;
     flex-shrink: 1 !important;      // was 0 — allow detail to shrink when product list has more items visible
-    // Fix 21 (E2E P2) — this flex item's own automatic min-height (content
-    // height, e.g. head + card + BOM warning + both edit grids incl. the
-    // Placement block's wall/offset/nudge controls + spec grid) is what the
-    // .o_sbk_inventory fix above guards against upstream; this local
-    // min-height:0 is the second half of the same fix, applied directly
-    // to the shrinking item itself so it reliably yields to max-height:35%
-    // and hands off to its own overflow-y:auto instead of ever depending
-    // on an ancestor's overflow:hidden to happen to exempt it.
-    min-height: 0 !important;
 }
 
 // Thin styled scrollbars so gutters don't eat layout width in the aside +

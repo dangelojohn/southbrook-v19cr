@@ -206,6 +206,11 @@ class SouthbrookKitchenConfigurator extends Component {
         // auto-arrange (_confirmedAutoArrange). Plain instance field,
         // not reactive state — nothing renders it directly.
         this._placementsDirty = true;
+        // P0 fix (2026-08 cold-run finding, Fix C) — once-per-gesture
+        // guard so the room width/depth drag handles push exactly ONE
+        // pre-op undo snapshot per drag (on its first tick), not one
+        // per in-flight tick. See _onCanvasResize's own comment.
+        this._roomResizeDragActive = false;
 
         // PR2.5 — Odoo 19 client-action components receive `props.action`
         // (the full ir.actions.client record); `_getActionInfo` in the
@@ -939,17 +944,22 @@ class SouthbrookKitchenConfigurator extends Component {
     // confirmed arrange is undoable").
     //
     // Scoping note (see task-35-report.md "Concerns" for the full
-    // writeup): this button is the ONLY auto-arrange call site gated
-    // behind the confirm dialog. The pre-existing IMPLICIT triggers
-    // (_changeRoom, the canvas width/depth drag
-    // handles) are left unguarded on purpose — those are routine,
-    // continuous room-dimension edits where re-deriving the layout
-    // through the engine is already the established, expected
-    // behavior (T7/PR4b), and popping a confirmation dialog on every
-    // drag-resize tick would make ordinary resizing unusable. "Auto-
-    // arrange" in the brief's sense — the thing worth a confirm gate —
-    // is this discrete, deliberate regenerate command (its dialog
-    // literally offers "Arrange"/"Cancel", not "keep resizing").
+    // writeup; UPDATED by the 2026-08 P0 cold-run fix — see
+    // _changeRoom): this button was originally the ONLY auto-arrange
+    // call site gated behind the confirm dialog, on the theory that the
+    // pre-existing IMPLICIT triggers (_changeRoom's typed width/depth/
+    // height fields, the canvas width/depth drag handles) were routine
+    // enough not to need one. Cold-run evidence proved that wrong for
+    // the TYPED fields specifically — a single 120"->132" edit silently
+    // dropped a corner cabinet and $450 with no warning — so
+    // _changeRoom now reuses this exact dialog too (see its own
+    // comment). The canvas drag handles remain deliberately unguarded:
+    // those are a CONTINUOUS gesture (many resize ticks per drag,
+    // committed only on release), and popping a confirmation dialog on
+    // every drag-resize release would make ordinary resizing unusable
+    // — the discrete/continuous distinction this note originally drew,
+    // just narrowed to the one case cold-run evidence showed it was
+    // wrong about.
     async _confirmedAutoArrange() {
         if (!this.state.designId || !this.state.items
                 || !this.state.items.length) return;
@@ -1821,6 +1831,7 @@ class SouthbrookKitchenConfigurator extends Component {
         // / `_placementsDirty = true` already start clean.
         this._undoStore.clear();
         this._placementsDirty = true;
+        this._roomResizeDragActive = false;   // P0 fix — don't leak a mid-drag gesture across a switch
         this.state.undoCount = 0;
         this.state.redoCount = 0;
     }
@@ -1976,6 +1987,26 @@ class SouthbrookKitchenConfigurator extends Component {
         height_in: { min: 84, max: 144 },
     };
 
+    // P0 fix (2026-08 cold-run finding) — shared by the confirmed and
+    // skip-the-dialog branches below: pushes the pre-op undo snapshot
+    // (Fix C — the FULL item array, room included, exactly what
+    // _snapshotState already captures; see its doc comment), THEN
+    // writes the new dimension, THEN runs the same rebuild _changeRoom
+    // always ran. Snapshot must happen before the room write so an
+    // Undo right after a resize restores the true pre-resize room AND
+    // item geometry — not just a summary the layout engine re-derives.
+    async _applyRoomResize(field, clamped) {
+        this._pushUndoSnapshot();
+        this._placementsDirty = true;
+        this.state.room[field] = clamped;
+        if (this._usesEngineResize()) {
+            await this._rearrangeOnServer();   // persists server-side; no auto-save needed
+            return;
+        }
+        await this._refreshLayout({ force: true });   // room resize regenerates, saved designs included
+        this._queueAutoSave();    // D5
+    }
+
     async _changeRoom(field, raw) {
         const v = parseFloat(raw);
         if (!Number.isFinite(v)) return;
@@ -1991,13 +2022,61 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.roomDimErrors[field] = (v < bounds.min || v > bounds.max)
             ? `Must be ${bounds.min}"–${bounds.max}".`
             : "";
-        this.state.room[field] = Math.min(bounds.max, Math.max(bounds.min, v));
-        if (this._usesEngineResize()) {
-            await this._rearrangeOnServer();   // persists server-side; no auto-save needed
+        const clamped = Math.min(bounds.max, Math.max(bounds.min, v));
+        if (clamped === this.state.room[field]) return;   // no real change — nothing to confirm/rebuild
+
+        // P0 fix (2026-08 cold-run finding) — a saved/hydrated design's
+        // resize (`_usesEngineResize()`) routes through the SAME layout
+        // engine the "Auto-arrange" toolbar command does
+        // (_rearrangeOnServer -> /rearrange -> action_auto_arrange),
+        // which can silently add, remove, or reposition cabinets —
+        // including dropping a corner unit — to fit the new size. Cold-
+        // run evidence: typing width 120"->132" changed base cabinets
+        // 4->6, deleted a lazy-susan corner (4->3), and dropped the
+        // price $450, with zero confirmation or explanation — the exact
+        // risk Auto-arrange already gates behind a confirmation dialog
+        // (_confirmedAutoArrange, above). Reuses that SAME affordance
+        // (ConfirmationDialog + shouldConfirmArrange — never a second
+        // dialog component) rather than leave resize as the one
+        // rebuild-triggering action in this file with no confirmation.
+        // A brand-new/generator-owned session (`!_usesEngineResize()`)
+        // is deliberately NOT gated — nothing canonical to lose yet,
+        // the same distinction _refreshLayout's own hydration guard
+        // already draws; and shouldConfirmArrange itself already
+        // short-circuits to "no dialog" whenever state.items is empty.
+        if (this._usesEngineResize()
+                && shouldConfirmArrange(this.state.items.length, this._placementsDirty)) {
+            // Where it's cheap — the CURRENT counts/price, before the
+            // engine touches anything — show it, so the dialog is
+            // informative rather than a bare scare (the true delta
+            // isn't knowable client-side without committing the resize
+            // first: the corner/run engine is server-only, per the
+            // Renderer Contract elsewhere in this file).
+            const beforeCount = (this.state.items || []).filter(
+                it => it.cabinet_type !== "filler").length;
+            const beforePrice = this.state.summary && this.state.summary.price;
+            this.dialogService.add(ConfirmationDialog, {
+                title: `Resize room to ${clamped}″?`,
+                body: `This re-arranges every cabinet using the layout `
+                    + `engine to fit the new size — cabinets (including `
+                    + `corner units) may be added, removed, or repositioned, `
+                    + `and the price may change. Currently: ${beforeCount} `
+                    + `cabinet${beforeCount === 1 ? "" : "s"}`
+                    + (typeof beforePrice === "number"
+                        ? `, ${this._money(beforePrice)}` : "")
+                    + `. You can Undo right after if the result isn't what `
+                    + `you expected.`,
+                confirmLabel: "Resize",
+                cancelLabel: "Cancel",
+                confirm: () => this._applyRoomResize(field, clamped),
+                // Cancel — deliberately a no-op: state.room[field] was
+                // never written, so the input's own t-att-value binding
+                // snaps back to the unchanged value on the next render.
+                cancel: () => {},
+            });
             return;
         }
-        await this._refreshLayout({ force: true });   // room resize regenerates, saved designs included
-        this._queueAutoSave();    // D5
+        await this._applyRoomResize(field, clamped);
     }
 
 
@@ -2474,6 +2553,53 @@ class SouthbrookKitchenConfigurator extends Component {
         return this._canvasApi?.computeDropWall(ev) ?? null;
     }
 
+    // P0 fix (2026-08 cold-run finding) — a REAL, non-overlapping
+    // x_position_in for a targetX-less add (see the call site's own
+    // comment for the sentinel defect this replaces). Deliberately
+    // mirrors packRow (canvas/pack_row.esm.js) rather than
+    // reimplementing placement: with no pinned item ahead of it,
+    // packRow appends a new unpinned item at the combined right edge
+    // of everything already in its row (`u.x_position_in = cursor`
+    // after walking every earlier item) — which is exactly "the
+    // rightmost edge of same-wall items in the same packing
+    // row-group", computed directly here so it stays correct even
+    // when packRow itself won't run to do the packing for us (the
+    // multiWall guard in _recomputeLayoutFromItems skips packRow
+    // entirely once a design spans 2+ walls or has a corner cabinet —
+    // precisely the condition under which the sentinel used to stick).
+    // Grouping matches _recomputeLayoutFromItems's three packRow calls:
+    // base cabinets pack together, wall cabinets pack together,
+    // tall/corner pack together. `panel` keeps its own existing
+    // host-relative computation just above this method's only caller;
+    // any other/unplaced-elsewhere type (e.g. filler, which normally
+    // only ever gets an X from the server /layout generator, never
+    // this button) safely falls back to 0 rather than a giant number.
+    // Non-back-wall geometry is ultimately server-engine-owned (PR4
+    // Renderer Contract) and gets overwritten by
+    // _applyServerPlacements/_applyRelaidResult on the very next save
+    // regardless — this only needs to be real, never the placeholder
+    // that could slip through unrepacked.
+    _computeAppendX(type, wall) {
+        const items = this.state.items || [];
+        const onWall = (it) => (it.wall || WALLS.BACK) === (wall || WALLS.BACK);
+        const rowGroup = (cabType) =>
+            (cabType === "tall" || cabType === "corner") ? "tail" : cabType;
+        const targetGroup = rowGroup(type);
+        // Defensive bound (P0 fix) — a design hydrated from a PRE-FIX
+        // corrupted save (design 99/160-style: an old sentinel row
+        // still sitting at x_position_in=1,000,000, pending the
+        // separate server-side/migration cleanup) must not poison this
+        // computation into handing out ANOTHER giant value. No real
+        // room exceeds ROOM_DIM_BOUNDS.width_in's 480in max, so
+        // anything absurdly past that is legacy garbage, not a real
+        // edge to append after.
+        return items
+            .filter(it => onWall(it) && rowGroup(it.cabinet_type) === targetGroup
+                && (it.x_position_in || 0) < 10000)
+            .reduce((max, it) =>
+                Math.max(max, (it.x_position_in || 0) + (it.width_in || 0)), 0);
+    }
+
     // Generic add — used by drop AND by the "+ Add" button.
     // D14 — `targetX` (inches) sets the new item's sort-key so it
     // slots in at the dropped position. _recomputeLayoutFromItems
@@ -2505,12 +2631,34 @@ class SouthbrookKitchenConfigurator extends Component {
         }
         // Unique layout_key (timestamp + random tail = collision-free).
         const layoutKey = `${type}-add-${Date.now()}-${Math.floor((performance.now() % 1) * 10000)}`;
-        // D14 — when a targetX is supplied, use it as the cascade
-        // sort-key so the new cabinet lands at that ordered position.
-        // No-target case retains the 1e6 sentinel so the cabinet
-        // appends at the end of its group.
+        // P0 fix (2026-08 cold-run finding) — computed ONCE, here, so
+        // both the no-target position fallback below AND newItem.wall
+        // (further down) use the identical precedence (previously the
+        // wall expression was duplicated at the newItem literal; a
+        // single source avoids the two ever drifting apart).
+        const targetWall = opts.wall || this.state.activeWall || wallOverride || WALLS.BACK;
+        // D14 — when a targetX is supplied (drag-drop's canvas
+        // raycast), use it as the cascade sort-key so the new cabinet
+        // lands at that ordered position.
+        //
+        // P0 fix (2026-08 cold-run finding, DB evidence: designs 99/160
+        // each carrying 6 invisible, $0, x_position_in=1,000,000 orphan
+        // rows) — the no-target case ("+ Add" button; see the template
+        // call site) used to retain a bare 1e6 SENTINEL here on the
+        // theory that _recomputeLayoutFromItems's packRow would always
+        // clean it up into a real appended position. That's only true
+        // while the design is still single-(back)-wall — the very same
+        // method's multiWall guard (see its own comment) SKIPS packRow
+        // entirely once a design spans 2+ walls or carries a corner
+        // cabinet, so the sentinel then persisted verbatim through
+        // autosave: an invisible row nothing renders, priced at $0,
+        // excluded from every count, accumulating on every "+ Add"
+        // click. Fixed by computing a REAL, non-overlapping append
+        // position directly (_computeAppendX — mirrors packRow's own
+        // append behaviour, see its doc comment; not a second
+        // placement algorithm) instead of ever emitting the sentinel.
         let sortX = (typeof targetX === "number" && !Number.isNaN(targetX))
-                    ? targetX : 1e6;
+                    ? targetX : this._computeAppendX(type, targetWall);
 
         // Panel-placement rule (2026-07-01): end cap decorative panels
         // (cabinet_type === "panel") must snap to the exposed side face
@@ -2569,8 +2717,9 @@ class SouthbrookKitchenConfigurator extends Component {
             // "Add anyway" on the stale toast would silently reroute
             // the add to the NEW active wall — dodging the very
             // condition the refusal was measuring and mislabeling the
-            // resulting "Added anyway" confirmation.
-            wall: opts.wall || this.state.activeWall || wallOverride || WALLS.BACK,
+            // resulting "Added anyway" confirmation. (Same precedence,
+            // computed once as `targetWall` above.)
+            wall: targetWall,
         };
 
         // SBK-030 — refuse-by-default over-length add. T7 already
@@ -4101,6 +4250,45 @@ class SouthbrookKitchenConfigurator extends Component {
         return null;
     }
 
+    // P0 fix (2026-08 cold-run finding) — a save/autosave RPC that
+    // returns 200 with no `error`/`ok:false` (so _saveErrorMessage
+    // above sees a clean success) can STILL have silently dropped an
+    // item server-side — the exact defect this round fixes: the
+    // 1e6-sentinel "+ Add" bug persisted invisible, $0 orphan rows
+    // while every prior save/autosave path reported plain success.
+    // Shared by _saveDesign and _autoSave (same sharing discipline as
+    // _saveErrorMessage/_applyServerPlacements/_applyRelaidResult
+    // above) so neither path can drift into trusting a response that
+    // disagrees with what was actually sent. Consumes the server's OWN
+    // truthful signals — `unplaced_count` and a `dropped`/`rejected`
+    // reasons array (whichever key name the server side lands on) —
+    // plus a summary.total-vs-sent-count cross-check as a
+    // belt-and-braces fallback for whenever neither field is present
+    // (e.g. an older server build, or a cause of desync those two
+    // fields don't happen to cover). Returns null on a clean match, or
+    // a human-readable message naming what didn't persist.
+    _savePersistenceMismatch(result, sentItemCount) {
+        if (!result) return null;
+        const dropped = result.dropped || result.rejected || [];
+        const unplacedCount = result.unplaced_count || dropped.length || 0;
+        if (unplacedCount > 0) {
+            const reasons = dropped
+                .map(d => d && (d.reason || d.name || d.sku))
+                .filter(Boolean);
+            const noun = unplacedCount === 1 ? "item" : "items";
+            return reasons.length
+                ? `${unplacedCount} ${noun} did not save: ${reasons.join("; ")}.`
+                : `${unplacedCount} ${noun} did not save.`;
+        }
+        const total = result.summary && result.summary.total;
+        if (typeof total === "number" && typeof sentItemCount === "number"
+                && total !== sentItemCount) {
+            return `Design saved ${total} of ${sentItemCount} items — `
+                + `${sentItemCount - total} did not persist.`;
+        }
+        return null;
+    }
+
     async _saveDesign() {
         // PR2.5a (Gap 2) — same rationale as the _queueAutoSave() guard:
         // a failed hydration means state doesn't reflect the saved
@@ -4115,6 +4303,12 @@ class SouthbrookKitchenConfigurator extends Component {
             return;
         }
         this.state.saving = true;
+        // P0 fix (2026-08 cold-run finding) — captured before the await,
+        // same discipline as _autoSave's _sentTouchStats: the count we
+        // compare the server's response against must be what THIS
+        // request actually sent, not whatever state.items has grown/
+        // shrunk to by the time the RPC resolves.
+        const _sentItemCount = (this.state.items || []).length;
         try {
             const result = await rpc("/southbrook_kitchen/configurator/save", {
                 name:       this.state.designName ||
@@ -4175,11 +4369,21 @@ class SouthbrookKitchenConfigurator extends Component {
             // Task 19 — brief: status chip "refreshed after save/
             // arrange". Fire-and-forget, same as every other call site.
             this._refreshValidation();
-            // Task #48 — quiet, non-sticky toast on the happy path.
-            // Previous format ("Saved: ${name}") leaked implementation
-            // detail into the message; the rep already sees the design
-            // title in the header pill.
-            this._toast("Design saved", { type: "success", sticky: false });
+            // P0 fix (2026-08 cold-run finding) — NEVER report success
+            // when the server disagreed with what was sent. Checked
+            // AFTER applying whatever the server DID place/relay above,
+            // so state stays in sync with server truth either way; only
+            // the toast differs.
+            const _mismatch = this._savePersistenceMismatch(result, _sentItemCount);
+            if (_mismatch) {
+                this._toast(_mismatch, { type: "danger", sticky: true });
+            } else {
+                // Task #48 — quiet, non-sticky toast on the happy path.
+                // Previous format ("Saved: ${name}") leaked implementation
+                // detail into the message; the rep already sees the design
+                // title in the header pill.
+                this._toast("Design saved", { type: "success", sticky: false });
+            }
         } catch (e) {
             // Task #48 — actionable error when the server rejects for
             // missing partner. Server-side validation raises with a
@@ -4487,6 +4691,10 @@ class SouthbrookKitchenConfigurator extends Component {
         // exactly what was sent, never a stats event that arrived
         // during the await (see the success-path comment below).
         const _sentTouchStats = this._touchStats;
+        // P0 fix (2026-08 cold-run finding) — same capture-before-await
+        // discipline as _sentTouchStats just above; see
+        // _savePersistenceMismatch's doc comment for why this exists.
+        const _sentItemCount = (this.state.items || []).length;
         try {
             const result = await rpc("/southbrook_kitchen/configurator/save", {
                 name:       this.state.designName || "Untitled Kitchen",
@@ -4566,6 +4774,27 @@ class SouthbrookKitchenConfigurator extends Component {
             // Task 19 — brief: status chip "refreshed after save/
             // arrange" — auto-save is a save. Fire-and-forget.
             this._refreshValidation();
+            // P0 fix (2026-08 cold-run finding) — NEVER report success
+            // when the server disagreed with what was sent, even on the
+            // SILENT auto-save path: a save-integrity mismatch is not
+            // the kind of failure "manual save will surface errors"
+            // (the catch block's rationale, below) covers — the RPC
+            // itself succeeded, so that catch never runs. Deduped the
+            // same way a hard rejection is (_autoSaveErrorShown),
+            // reusing that flag's own "resets the moment ANY save
+            // succeeds again" contract so a persistent mismatch doesn't
+            // spam a toast every 3s debounce.
+            const _mismatch = this._savePersistenceMismatch(result, _sentItemCount);
+            if (_mismatch) {
+                if (!this._autoSaveErrorShown) {
+                    this._autoSaveErrorShown = true;
+                    this._toast("Auto-save: " + _mismatch, { type: "danger", sticky: true });
+                }
+                console.warn(
+                    "[SouthbrookKitchenConfigurator] auto-save mismatch:", _mismatch);
+            } else {
+                this._autoSaveErrorShown = false;
+            }
         } catch (e) {
             // Silent on auto-save: manual save will surface errors. Log
             // for diagnostics only.
@@ -5997,9 +6226,26 @@ SouthbrookKitchenConfigurator.prototype._onCanvasMove = function ({ item, x_posi
     this._queueAutoSave();
 };
 SouthbrookKitchenConfigurator.prototype._onCanvasResize = function (newWidthIn, inFlight) {
+    // P0 fix (2026-08 cold-run finding, Fix C) — capture the TRUE
+    // pre-drag full item array (positions/wall/rotation/identity) once,
+    // on the FIRST tick of a NEW drag gesture, before state.room.width_in
+    // is ever written below — same once-per-gesture pre-op-snapshot
+    // pattern _onCanvasMoveStart already uses for cabinet drags.
+    // Capturing this at release time (the `!inFlight` branch) would be
+    // too late: width_in has already been live-written on every prior
+    // in-flight tick by the time release fires. The flag also covers a
+    // single-tick gesture (release with no prior in-flight ticks at
+    // all) since it's checked before EVERY write, not just in-flight
+    // ones.
+    if (!this._roomResizeDragActive) {
+        this._roomResizeDragActive = true;
+        this._pushUndoSnapshot();
+    }
     this.state.room.width_in = newWidthIn;
     if (!inFlight) {
+        this._roomResizeDragActive = false;
         this._markUserAction();   // T7 gate
+        this._placementsDirty = true;   // Task 35 — a subsequent Auto-arrange should confirm again
         // T7 — saved designs re-derive through the engine, never the
         // single-wall /layout generator (see _rearrangeOnServer).
         if (this._usesEngineResize()) {
@@ -6021,9 +6267,17 @@ SouthbrookKitchenConfigurator.prototype._onCanvasResize = function (newWidthIn, 
 // had no depth handler, so the child's guarded call was a silent no-op —
 // the "left/front puller does nothing" defect.
 SouthbrookKitchenConfigurator.prototype._onCanvasResizeDepth = function (newDepthIn, inFlight) {
+    // P0 fix (2026-08 cold-run finding, Fix C) — same once-per-gesture
+    // pre-op snapshot as the width puller above; see its comment.
+    if (!this._roomResizeDragActive) {
+        this._roomResizeDragActive = true;
+        this._pushUndoSnapshot();
+    }
     this.state.room.depth_in = newDepthIn;
     if (!inFlight) {
+        this._roomResizeDragActive = false;
         this._markUserAction();   // T7 gate
+        this._placementsDirty = true;   // Task 35 — same as the width puller above
         // T7 — same engine routing as the width puller above.
         if (this._usesEngineResize()) {
             this._rearrangeOnServer();

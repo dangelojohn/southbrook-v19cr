@@ -364,3 +364,27 @@ from . import test_manual_arrange_resolves
 # picker wizard's `cabinet_count or None` call sites in
 # models/kitchen_design.py, out of this task's scope).
 from . import test_wizard_coherence
+
+# P0 E2E remediation (2026-08-02) — sentinel/debris design-line sweep,
+# round 2 (migrations/19.0.5.44.0/post-migrate.py). Prod fact: 12 ACTIVE
+# rows parked at the client's 1,000,000in sort-key sentinel (6 on design
+# 160, 6 on design 99 — a recurrence of the exact class 19.0.5.34.1
+# already swept once on design 99, via a write path the Task 9b
+# save_design guard doesn't fully cover). Reuses the shared
+# DEBRIS_THRESHOLD_IN constant and the same archive-not-delete flag
+# shape; new in this round: the whole sweep runs inside cr.savepoint()
+# guarded by a broad try/except, so a mid-sweep failure rolls back
+# atomically and logs a warning instead of failing the upgrade.
+from . import test_sentinel_cleanup_migration
+
+# P0 fix (silent-drop truthful-response, 2026-08-02) — closes the
+# "remaining producer" migrations/19.0.5.44.0's own docstring flags as
+# still open after Task 9b: save_position (the drag-pointer-up/rotate
+# single-line write path) had NO sentinel/bounds guard at all, unlike
+# save_design's item-write loop. Also covers save_design's NEW out-of-
+# room-bounds detection (below the 9999in sentinel threshold, refused
+# outright rather than archived) and the truthful, real
+# unplaced_count/dropped response keys (added only when this save
+# actually refused/archived something, so an all-in-bounds save keeps
+# byte-compatible with test_touch_health_counters.py).
+from . import test_save_reports_truthfully
