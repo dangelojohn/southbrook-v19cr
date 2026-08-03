@@ -129,6 +129,36 @@ test("URL-restore fallback is model-gated: a non-design preceding frame is never
     );
 });
 
+test("URL-restore fallback STILL recovers the genuine model-less action-<id> shape", async () => {
+    // SBK-050 regression guard. The model-less check added alongside this
+    // test must not break the case the fallback exists for: a deep link to
+    // the persisted ir.actions.client record, e.g.
+    //   /odoo/action-1460/6/southbrook_kitchen_configurator
+    // router.js pushes THREE frames for that path and NONE carries a
+    // `model` key, because an `action-<id>` segment has no model of its own.
+    // Without a test for this, the guard could be "fixed" by deleting the
+    // fallback and everything would still look green.
+    const h = await mountConfigurator({
+        actionParams: {
+            actionStack: [
+                { action: 1460 },
+                { action: 1460, resId: 6 },
+                { active_id: 6, action: "southbrook_kitchen_configurator" },
+            ],
+        },
+        rpcRoutes: {
+            "/southbrook_kitchen/configurator/load_design_lines": (params) => {
+                assert.equal(params.design_id, 6);
+                return { lines: [] };
+            },
+        },
+    });
+    assert.equal(
+        h.component.state.designId, 6,
+        "the model-less action-<id> shape is exactly what this fallback is for",
+    );
+});
+
 test("URL-restore fallback never treats resId:'new' as a numeric design id", async () => {
     const h = await mountConfigurator({
         actionParams: {

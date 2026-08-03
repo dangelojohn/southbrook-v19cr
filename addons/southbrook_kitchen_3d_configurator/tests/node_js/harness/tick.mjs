@@ -11,38 +11,56 @@
  * failures (contracts/04_active_wall_indicator,
  * 23_made_to_order_availability, 31_panel_collapse_responsive,
  * 32_toast_and_panel_a11y, 33_undo_redo) to that fixed 10ms being a real
- * race, not just an ugly-but-safe margin:
+ * race, not just an ugly-but-safe margin — confirmed live via `ps`
+ * during a full-suite run: `node --test` forks one OS process PER TEST
+ * FILE, and on this 8-core box that's 7 concurrent `node` workers each
+ * pegged near 65-70% CPU. Under that genuine cross-process contention,
+ * the OS can suspend this process for stretches regardless of how
+ * "instant" the pending work normally is, so a fixed 10ms budget can
+ * expire before Owl's renderer ever gets to run — the test then reads
+ * stale, pre-patch DOM.
  *
- * owl.es.js's `ComponentNode.render()` does its own `await
- * Promise.resolve()` BEFORE calling `scheduler.flush()` — and `flush()`
- * is what actually calls `requestAnimationFrame(() =>
- * this.processTasks())`; `processTasks()` -> `RootFiber.complete()` ->
- * `node._patch()` is where the real DOM write happens. So a state
- * mutation needs (a) one microtask hop, THEN (b) one
- * requestAnimationFrame-scheduled macrotask, before the DOM reflects
- * it — and Owl doesn't even REGISTER that macrotask until partway
- * through (a).
+ * Why this isn't "flush exactly N microtasks, then one
+ * requestAnimationFrame": that was the first fix attempted here, and it
+ * made things WORSE — 20/505 deterministic failures instead of an
+ * occasional flake. Traced with a scratch instrumentation harness
+ * (polling `component.__owl__.fiber` / `component.__owl__.app.scheduler
+ * .{frame,tasks}` after each manually-awaited microtask): a plain state
+ * mutation goes through `useState`'s `batched()` wrapper (owl.es.js
+ * ~line 254, its own `await Promise.resolve()`) and THEN
+ * `ComponentNode.render()`'s own separate `await Promise.resolve()`
+ * before it calls `scheduler.flush()` (which is what actually calls
+ * `requestAnimationFrame(() => this.processTasks())` —
+ * `processTasks()` -> `RootFiber.complete()` -> `node._patch()` is the
+ * real DOM write) — but the REAL hop count observed for this
+ * component's actual render tree was 3, not the 2 that reading just
+ * those two functions predicts (this component's template renders
+ * multiple child components, and re-rendering the tree can involve
+ * their own lifecycle hooks, which add more chained microtask hops than
+ * a bare two-function reading suggests). Hard-coding 2 hops meant our
+ * OWN `requestAnimationFrame` call got registered — and therefore
+ * fired, same-delay timers being FIFO — BEFORE Owl ever registered its
+ * real one. Hard-coding any other specific N would be just as fragile:
+ * the true depth depends on which children a given state change
+ * happens to re-render, which varies per test.
  *
- * `node --test` forks one OS process PER TEST FILE — confirmed live via
- * `ps` during a full-suite run: 7 concurrent `node` workers on this
- * 8-core box, each pegged near 65-70% CPU. That's genuine cross-process
- * CPU contention, not a hypothetical. Under it, step (a)'s microtask can
- * itself take longer than a fixed 10ms wall-clock budget to actually
- * run (the OS can suspend this whole process for stretches regardless
- * of how "instant" the JS work inside a microtask normally is). When
- * that happens, Owl's rAF callback gets REGISTERED later than the old
- * fixed timer's deadline, so the fixed timer fires — and the test reads
- * the DOM — BEFORE Owl's callback ever ran: stale, pre-patch DOM.
- *
- * The fix is an ORDERING guarantee, not a bigger timing guess: flush
- * one microtask first (`Promise.resolve().then(...)`) so Owl's own
- * render continuation — if a render is pending — runs and registers ITS
- * requestAnimationFrame callback BEFORE we register ours. Node/libuv
- * fires same-delay timers in registration (FIFO) order, so our
- * `requestAnimationFrame(resolve)` is then guaranteed to fire strictly
- * after Owl's, however long either one actually takes in wall-clock
- * time — this holds regardless of CPU contention, which is exactly what
- * a fixed timeout can't promise.
+ * The fix that's actually robust doesn't count hops at all: it's the
+ * standard double-`requestAnimationFrame` wait. Node's microtask queue
+ * drains EXHAUSTIVELY before any macrotask runs — including microtasks
+ * that get newly enqueued mid-drain (i.e. chained `await`s, however
+ * many) — so by the time our FIRST `requestAnimationFrame` callback
+ * (itself a macrotask) fires, Owl's entire batched-render microtask
+ * chain has already run to completion, WHATEVER its length, and its own
+ * `requestAnimationFrame` macrotask (if the render needed one) is
+ * already registered. Our SECOND `requestAnimationFrame` call is then
+ * registered strictly after Owl's, so it's guaranteed to fire strictly
+ * after Owl's DOM patch — an ordering guarantee that holds regardless
+ * of CPU contention and regardless of how deep any particular render's
+ * child tree happens to be, which is exactly what made hop-counting
+ * unreliable. (Verified with a 5-trial repro of the exact scenario that
+ * broke under hop-counting: 5/5 correct with double-rAF, and 23
+ * consecutive full-suite runs afterwards with no new flakes — see
+ * README.md's "Flake audit" section for the run tables.)
  *
  * `tick(ms)` — an explicit `ms` is a request to wait out a REAL
  * application timer of that exact duration (e.g. the
@@ -51,16 +69,17 @@
  * `setTimeout(resolve, ms)`, unchanged. Those callers want wall-clock
  * time on purpose and already supply a wide margin; the flake audit's
  * 30-run baseline never once caught a failure on this path, so folding
- * it into the ordering-based wait above isn't needed and would just be
- * an untested behavior change for no benefit.
+ * it into the render-flush wait above isn't needed and would just be an
+ * untested behavior change for no benefit.
  */
 export function tick(ms) {
     if (ms !== undefined) {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
-    return new Promise((resolve) => {
-        Promise.resolve().then(() => {
-            requestAnimationFrame(() => resolve());
-        });
-    });
+    return flushPendingOwlRender();
+}
+
+async function flushPendingOwlRender() {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }

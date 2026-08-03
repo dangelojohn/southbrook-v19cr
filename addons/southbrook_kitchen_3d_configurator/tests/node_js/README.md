@@ -16,10 +16,82 @@ fully independent of the `docker compose` stack `make test` brings up.
 to match the vendored `web/static/lib/owl/owl.js` version in the local
 `sami-odoo` image — and `jsdom`) from `package-lock.json`.
 
+If you skip `npm ci` (or `node_modules` is stale/absent for any other
+reason), `npm test`'s `pretest` script (`harness/check_deps.mjs`) catches
+it up front and fails with the exact command to run, instead of the
+suite running partway in and failing 38 tests deep on a missing `jsdom`
+with no pointer back to the fix — which is exactly what used to happen
+here before this check existed.
+
 Wired into CI: `.forgejo/workflows/tests.yml`, job
 `kitchen-3d-configurator-node-tests` (runs on every push/PR to `main` and
 `feature/**`/`fix/**`/`chore/**`, in a plain `node:22-slim` container,
 independent of the `southbrook-tests` Odoo-stack job).
+
+## Flake audit (2026-08-03) — the suite is now deterministic, with one known exception
+
+The suite used to be flaky: three back-to-back runs against identical,
+pristine code produced 1, 3, and 1 failures. A 30-run baseline (full
+`npm test`, this box) nailed down exactly which:
+
+| test | file:line | seen failing |
+|---|---|---|
+| `URL-restore fallback is model-gated: ...` | `contracts/02_persistence_reload.test.mjs:109` | 30/30 (deterministic) |
+| `active-wall indicator reflects state.activeWall after a pick` | `contracts/04_active_wall_indicator.test.mjs:28` | 1/30 |
+| `_toggleControlsPanel flips ...` / `_toggleInventoryPanel flips ...` | `contracts/31_panel_collapse_responsive.test.mjs:100,119` | 2/30 |
+| `a sticky (blocking/...) toast gets role="alert"` / `the refuse-by-default over-length-add toast ...` | `contracts/32_toast_and_panel_a11y.test.mjs:51,73` | 4/30 |
+| `detail drawer: 'Availability' reads 'Made to order' ...` | `contracts/23_made_to_order_availability.test.mjs:106` | 2/30 |
+| `toolbar: undo/redo buttons enable/disable correctly ...` | `contracts/33_undo_redo.test.mjs:537` | not caught in the 30-run baseline itself, but confirmed same root cause (same tick()-then-assert shape); previously reported to fail once under full-suite load |
+
+Root cause for every intermittent one: `harness/tick.mjs`'s old
+`tick()` was a flat `setTimeout(resolve, 10)` racing Owl's own
+multi-hop, batched render-then-DOM-patch cycle (see `tick.mjs`'s doc
+comment for the exact mechanism). `node --test` forks one OS process
+per test file — confirmed live via `ps` during a run: 7 concurrent
+`node` workers on this 8-core box, each pegged near 65-70% CPU — and
+under that genuine cross-process CPU contention, Owl's render
+occasionally didn't finish patching the DOM within the fixed 10ms
+budget, so the assertion read stale, pre-patch DOM. Fixed by replacing
+the fixed wait with a double-`requestAnimationFrame` wait, which is an
+ordering guarantee (works no matter how many internal microtask hops
+Owl's batching needs, and no matter how long the OS suspends the
+process for) rather than a timing guess. Post-fix: 23 consecutive full
+`npm test` runs, same single deterministic failure every time, no
+others — see `tick.mjs` for the full account, including a first attempt
+at this fix (manually counting microtask hops) that made things worse
+(20/505 deterministic failures) before the double-rAF fix landed.
+
+**The one still-failing test is a confirmed PRODUCT bug, not a test
+bug, and is NOT fixed here** (out of scope: production code,
+`static/src/js/kitchen_configurator.js`). The bug is in the URL-restore
+fallback in `setup()` (`kitchen_configurator.js` lines ~350-364, the
+"FIX 6" comment block):
+its `restoredActionFrame` lookup matches ANY actionStack frame whose
+`action` equals the configurator's own tag, without checking that the
+stack is actually the model-less numeric-`action-<id>` URL shape the
+surrounding comment says justifies skipping the model check. Since the
+ordinary two-frame tag-string shape (used for a "bare" reload of ANY
+record — a room, a sale order, or a real design) ends in that exact
+same `{action: ownTag, active_id: N}` shape, "FIX 6" ends up re-adopting
+an `active_id` the FIRST branch (`restoredDesignFrame`, correctly
+model-gated) had already and deliberately rejected — e.g. a bare
+room-reload's room id gets silently treated as a design id. Proposed
+fix: require that no frame in the stack carries a `model` key at all
+before "FIX 6" runs (that absence is the actual structural signature of
+the numeric-`action-<id>` shape it was written for):
+
+```diff
+-        if (restoredDesignId === null && Array.isArray(restoredStack)) {
++        if (restoredDesignId === null && Array.isArray(restoredStack)
++            && !restoredStack.some((s) => s && "model" in s)) {
+             const ownTag = (this.props.action && this.props.action.tag)
+```
+
+No existing test covers the genuine numeric-`action-<id>` 3-frame shape
+`[{action:1460}, {action:1460, resId:6}, {active_id:6, action:tag}]`
+this fallback was actually written for — worth adding once the fix
+lands, as a regression guard that the model-key guard above doesn't
+also break the case it's meant to keep working.
 
 ## Why Node, not Hoot
 

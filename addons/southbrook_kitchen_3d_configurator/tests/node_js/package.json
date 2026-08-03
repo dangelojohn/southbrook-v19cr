@@ -4,6 +4,7 @@
   "type": "module",
   "description": "PR3a — Node-native regression harness for southbrook_kitchen_3d_configurator. NOT Hoot: this environment has no headless-Chromium binary (Ubuntu 24.04 ships chromium as a snap-only transitional package; no snapd). Mounts the REAL kitchen_configurator.js OWL component under jsdom + the real @odoo/owl package (pinned to the vendored 2.8.2), and exercises the real coordinate-math builders + KitchenCanvas._placeCabinetGroup with the real vendored r160 Three.js — no WebGL context needed for pure matrix math. See README.md.",
   "scripts": {
+    "pretest": "node harness/check_deps.mjs",
     "test": "node --import ./harness/register.mjs --test contracts/*.test.mjs"
   },
   "devDependencies": {

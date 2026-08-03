@@ -347,7 +347,28 @@ class SouthbrookKitchenConfigurator extends Component {
         // active_id found here cannot be a room/SO id in disguise.
         // Defensive throughout: `actionStack` on this path may be
         // absent, short, or missing keys entirely — never throw.
-        if (restoredDesignId === null && Array.isArray(restoredStack)) {
+        //
+        // SBK-050 (2026-08-03) — the paragraph above states the premise this
+        // fallback rests on: in the numeric `action-<id>` shape, NONE of the
+        // frames carry a `model` key. The code never actually checked that.
+        //
+        // It matched any frame whose `action` equals our own tag, and a bare
+        // reload of an ordinary record — a room, a sale order, a design —
+        // also ends in a frame of exactly that shape. So an id the
+        // model-gated branch above had already deliberately REJECTED got
+        // silently re-adopted one branch later: a room's id would be treated
+        // as a design id and sent into a hydration that could only fail.
+        // `contracts/02_persistence_reload.test.mjs` has been asserting this
+        // and failing 30 runs out of 30; nobody saw it because the suite's
+        // dependencies had never been installed.
+        //
+        // Requiring the whole stack to be model-less is the check the comment
+        // above always described. It cannot weaken the model-based branch,
+        // because that branch has already run and this one only executes when
+        // it declined.
+        const restoredStackIsModelless = Array.isArray(restoredStack)
+            && !restoredStack.some((s) => s && "model" in s);
+        if (restoredDesignId === null && restoredStackIsModelless) {
             const ownTag = (this.props.action && this.props.action.tag)
                 || "southbrook_kitchen_configurator";
             const restoredActionFrame = restoredStack.find(
