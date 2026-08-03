@@ -5762,9 +5762,67 @@ class SouthbrookKitchenDesignTemplatePicker(models.TransientModel):
             # agreement. Nothing left to say the fields don't already
             # say, so render nothing; the failure message (real, useful
             # information: why it doesn't fit) is unchanged.
-            rec.fit_summary = fit["message"] if not fit["ok"] else False
+            # SBK-052 (2026-08-03) — say so when a chosen appliance has
+            # nowhere to go.
+            #
+            # `_appliance_widths()` hands every dropdown selection to
+            # parametric_fit, but the ONLY consumer is `_slot_fixed_width`,
+            # which is called while iterating the template's OWN authored
+            # slots. A width whose appliance_type has no matching slot is
+            # therefore never looked up by any code path — not dropped,
+            # not reserved, simply never read.
+            #
+            # Nothing said so. The instantiation chatter reports
+            # "0 dropped", which is technically true (an appliance that
+            # never became a slot cannot be a dropped slot) and reads to a
+            # designer as "everything you asked for was honoured". A
+            # reviewer selected a 36in refrigerator and a 24in dishwasher,
+            # got neither, and was told nothing.
+            #
+            # This is not one bad template: NO active template carries a
+            # dishwasher slot at all, and four of six carry no fridge slot.
+            # Whether a given shape SHOULD have them is a template-design
+            # decision and is deliberately not made here — but the wizard
+            # can at least stop accepting a choice it can never apply.
+            unseatable = rec._unseatable_appliances(fit)
+            messages = [fit["message"]] if not fit["ok"] else []
+            if unseatable:
+                messages.append(
+                    "%s has no %s slot, so that selection will not be used. "
+                    "Pick a different shape, or add the cabinet by hand "
+                    "after the layout is generated." % (
+                        rec.template_id.name,
+                        " or ".join(unseatable),
+                    ))
+            rec.fit_summary = "\n\n".join(messages) if messages else False
             rec.template_preview = Markup(
                 rec.template_id._generate_thumbnail_svg())
+
+    def _unseatable_appliances(self, fit=None):
+        """Labels of appliances the user chose that this shape cannot seat.
+
+        Compares the wizard's requested appliance types against the
+        `appliance_type` values the template actually authors. Returns []
+        when there is nothing to warn about, so callers can treat it as a
+        plain falsy check.
+        """
+        self.ensure_one()
+        if not self.template_id:
+            return []
+        requested = set(self._appliance_widths())
+        available = {
+            (line.appliance_type or "").strip()
+            for line in self.template_id.line_ids
+            if line.cabinet_type == "appliance"
+        }
+        labels = {
+            "range": "range", "fridge": "refrigerator",
+            "dishwasher": "dishwasher", "hood": "range hood",
+        }
+        return [
+            labels.get(atype, atype)
+            for atype in sorted(requested - available)
+        ]
 
     @api.onchange("template_id", "cabinet_count", "module_width_in",
                   "range_width_in", "fridge_width_in", "dishwasher_width_in")

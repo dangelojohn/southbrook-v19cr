@@ -806,6 +806,24 @@ class SouthbrookKitchenTemplateResolve(models.Model):
             if leftover_run_in > 0.5:
                 honesty_notes.append(
                     "%.1fin of wall run left unused" % leftover_run_in)
+            # SBK-052 (2026-08-03) — an appliance the caller asked for that
+            # this template has no slot for was never mentioned anywhere.
+            # It cannot show up as "dropped" above, because a request that
+            # never became a slot is not a dropped slot — so the note read
+            # "0 dropped" while a refrigerator and a dishwasher had both
+            # been discarded. Technically true, and read by a designer as
+            # confirmation that everything was honoured.
+            available_appliances = {
+                (line.appliance_type or "").strip()
+                for line in self.line_ids
+                if line.cabinet_type == "appliance"
+            }
+            unseatable = sorted(
+                set(appliance_widths or {}) - available_appliances)
+            if unseatable:
+                honesty_notes.append(
+                    "no slot for %s in this shape, so %s selection(s) were "
+                    "not used" % (", ".join(unseatable), len(unseatable)))
             note_suffix = (
                 " (%s)" % "; ".join(honesty_notes) if honesty_notes else "")
             design.message_post(body=(

@@ -2166,7 +2166,32 @@ $sbk-amber:      var(--sb-status-warn-fg);
     // last child, so first to fall off the bottom) went unreachable,
     // taking the Placement block's wall picker/nudge buttons with it.
     min-height: 0 !important;
-    overflow: hidden !important;
+    // SBK-053 (2026-08-03) — this was `overflow: hidden`, and the comment
+    // directly above already describes the exact failure it causes:
+    // .o_sbk_detail, the last child, falls off the bottom and there is no
+    // scrollbar to reach it. Fix 21 and Fix 6 added min/max-height floors
+    // to stop the panel collapsing, but the clip happens at THIS boundary,
+    // so the panel's own overflow-y:auto never gets a chance to matter.
+    //
+    // Measured on a 1366x768 laptop (690px usable): the panel sits at
+    // top 635px, height 240px — exactly its min-height floor — putting its
+    // bottom at 875px, so 185px of Product / Width / Wall / Position
+    // controls is unreachable. On the most common business laptop, once
+    // the toolbar wraps to two rows, per-cabinet editing is impossible.
+    //
+    // The same declaration is why a mouse wheel over the filter chips does
+    // nothing: `hidden` clips content but gives the browser no scrollable
+    // region to hand the gesture to, which is why the reviewer could only
+    // move it by setting scrollTop from the console. One property, two
+    // reported defects.
+    //
+    // overflow-x stays hidden — the original intent was to stop sideways
+    // bleed, and only the vertical axis needs to become reachable. This
+    // touches no media query and no grid/flex structure, so it cannot
+    // resurrect the 2026-07-25 DevTools split-screen regression, which was
+    // a width-triggered grid restructure.
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
     display: flex !important;
     flex-direction: column !important;
 }
