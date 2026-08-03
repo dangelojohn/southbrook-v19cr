@@ -440,11 +440,36 @@ class TestFitSummaryHappyPath(TransactionCase):
         ])
 
     def test_success_renders_nothing(self):
+        # SBK-052 — the appliance selectors default to a range, a fridge
+        # and a dishwasher, and this fixture template authors no appliance
+        # slot at all, so all three would now (correctly) be reported as
+        # unseatable. That notice is real information, not the restatement
+        # of cabinet_count/count_max this test was written to forbid — so
+        # the happy path is asserted with nothing requested.
         picker = self.env["kitchen.design.template.picker"].create({
             "template_id": self.tpl.id, "module_width_in": "24",
+            "range_width_in": "0", "fridge_width_in": "0",
+            "dishwasher_width_in": "0",
         })
         self.assertGreater(picker.count_max, 0)
         self.assertFalse(picker.fit_summary)
+
+    def test_success_still_reports_an_appliance_it_cannot_seat(self):
+        """SBK-052 — a fit can succeed and still lose the designer their
+        refrigerator. This template has no appliance slots, so a requested
+        fridge is never looked up by any code path; before this it was
+        discarded in silence and the chatter said "0 dropped"."""
+        picker = self.env["kitchen.design.template.picker"].create({
+            "template_id": self.tpl.id, "module_width_in": "24",
+            "range_width_in": "0", "fridge_width_in": "36",
+            "dishwasher_width_in": "0",
+        })
+        self.assertGreater(picker.count_max, 0)
+        self.assertTrue(
+            picker.fit_summary,
+            "an appliance that cannot be seated must be reported even when "
+            "the layout itself fits")
+        self.assertIn("refrigerator", picker.fit_summary)
 
     def test_failure_still_carries_the_real_message(self):
         picker = self.env["kitchen.design.template.picker"].create({

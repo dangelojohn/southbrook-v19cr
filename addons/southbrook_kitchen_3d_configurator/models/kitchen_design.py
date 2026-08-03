@@ -3777,6 +3777,62 @@ class SouthbrookKitchenDesign(models.Model):
                          nominal_w) + _line_ref(line),
                 })
 
+        # SBK-055 (2026-08-03) — say when a kitchen has more than one door
+        # style. Mismatched doors are the most visible defect cabinetry can
+        # ship, and this one was invisible: the 3D scene renders every
+        # cabinet identically regardless of door style, so nothing on screen
+        # showed it, and the quote listed the two styles many lines apart.
+        #
+        # It is not a designer's mistake. Two resolution paths never
+        # reconcile — corner geometry is hardcoded to the SB-CORNER family,
+        # which carries the real nine-style attribute set, while every
+        # un-pinned base and wall slot falls through a cabinet_type+width
+        # fallback onto legacy templates that have NO attribute lines at all
+        # and simply report the template-level default of "shaker". 49 of 55
+        # designs in production carry two or more styles.
+        #
+        # Deliberately a WARNING, not a blocker. A professional may have a
+        # real reason to mix styles (a contrasting island is a normal thing
+        # to want), and this product's standing direction is to inform
+        # rather than refuse. What was wrong was the silence, not the mix.
+        styles = {}
+        for line in self.cabinet_line_ids:
+            if not line.product_id or line.cabinet_type == "appliance":
+                continue
+            ptav = line.product_id.product_template_attribute_value_ids.filtered(
+                lambda p: (p.attribute_id.name or "").strip().lower()
+                == "door style"
+            )[:1]
+            label = (
+                (ptav.product_attribute_value_id.name or "").strip()
+                if ptav else
+                (dict(line.product_id.product_tmpl_id._fields[
+                    "southbrook_door_style"].selection or []).get(
+                        line.product_id.product_tmpl_id.southbrook_door_style)
+                 or "")
+            )
+            if label:
+                styles.setdefault(label, []).append(line)
+
+        if len(styles) > 1:
+            summary = "; ".join(
+                "%s on %d cabinet%s" % (name, len(lines),
+                                        "" if len(lines) == 1 else "s")
+                for name, lines in sorted(
+                    styles.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+            )
+            issues.append({
+                "code":     "MIXED_DOOR_STYLE",
+                "severity": "warning",
+                "message":  (
+                    "This kitchen quotes %d different door styles — %s. The "
+                    "3D view draws them identically, so this will not be "
+                    "visible on screen. Deliberate contrast is fine; if it "
+                    "is not deliberate, swap the odd cabinets before "
+                    "quoting."
+                ) % (len(styles), summary),
+            })
+
         return issues
 
     # ── Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) ────────────
