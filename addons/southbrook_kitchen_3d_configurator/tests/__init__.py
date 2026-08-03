@@ -401,3 +401,10 @@ from . import test_save_reports_truthfully
 from . import test_width_price_and_sku_integrity
 from . import test_template_determinism
 from . import test_reconcile_multiwall_shape
+
+# SBK-048 (2026-08-03) — _write_then_rearrange's corner-absorption guard
+# fix: a canonical line going inactive because the engine absorbed it
+# into a real corner unit (case 1) must SUCCEED, not raise; a genuine
+# no-fit (case 2) must still refuse via LayoutCapacityExceeded and roll
+# back completely. Covers all four walls (left was previously untested).
+from . import test_send_to_wall_corner_absorption

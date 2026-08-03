@@ -151,6 +151,39 @@ export function isNarrowViewportAtBoot(win) {
     }
 }
 
+// H-02 fix — every catch block in this file used to render `e.message
+// || String(e)` straight into a toast/error banner. Confirmed against
+// the Odoo image this runs on: the JSON-RPC error envelope ALWAYS sets
+// the top-level `message` to the literal string "Odoo Server Error"
+// for every server exception, UserError included — the real, human-
+// written text (e.g. "Maple box not available on Contractor series",
+// or a corner-swap refusal reason) lives one level down, at
+// `error.data.message`. Reading `e.message` first meant every server
+// refusal reached the rep as a bare, useless "Odoo Server Error" toast
+// with the actual reason silently discarded. This is the ONE funnel
+// every catch site routes through now — prefer `data.message`, then a
+// non-placeholder top-level `message`, then a last-resort String(e).
+// Exported (like `isNarrowViewportAtBoot` above) so it's independently
+// unit-testable without constructing a real RPC failure.
+const ODOO_SERVER_ERROR_PLACEHOLDER = "Odoo Server Error";
+export function serverErrorText(e, fallback) {
+    const dataMessage = e && e.data && e.data.message;
+    if (typeof dataMessage === "string" && dataMessage.trim()) {
+        return dataMessage;
+    }
+    const topMessage = e && e.message;
+    if (typeof topMessage === "string" && topMessage.trim()
+            && topMessage.trim() !== ODOO_SERVER_ERROR_PLACEHOLDER) {
+        return topMessage;
+    }
+    const raw = String(e == null ? "" : e).trim();
+    if (raw && raw !== ODOO_SERVER_ERROR_PLACEHOLDER
+            && raw !== "[object Object]") {
+        return raw;
+    }
+    return fallback || ODOO_SERVER_ERROR_PLACEHOLDER;
+}
+
 // ─── P2 icons-everywhere — synthetic counter-strip family icons ────────────
 // Design-system rule (southbrook-design-system skill, "Cabinet
 // iconography — one source"): cabinetThumbSVG() is the ONLY cabinet icon
@@ -351,8 +384,8 @@ class SouthbrookKitchenConfigurator extends Component {
 
         // Task 34 (SBK-019) — sidebar collapse default. Decided ONCE
         // here, at boot, from the viewport width — deliberately NOT a
-        // live-updating media-query watcher. A few sections up in this
-        // file, the 2026-07-25 overflow fix exists specifically
+        // live-COLLAPSING media-query watcher. A few sections up in
+        // this file, the 2026-07-25 overflow fix exists specifically
         // because a continuously-enforced width rule on this same
         // workspace grid used to fire off a false-narrow signal from
         // the HOST backend window (DevTools split-screen), silently
@@ -363,8 +396,32 @@ class SouthbrookKitchenConfigurator extends Component {
         // below) that works regardless of how the host window is
         // sized. See `isNarrowViewportAtBoot` (pure, exported below)
         // for the guarded matchMedia check itself.
+        //
+        // C-01 fix (2026-08-03) — that one-shot decision left a real
+        // hole: a rep who loads the page narrow (both panels
+        // auto-collapsed here) and then WIDENS the window — no
+        // DevTools involved, a genuine width change — got no Summary
+        // panel and no Cabinet Inventory back, ever, short of finding
+        // the topbar toggle buttons. `onMounted` below now attaches an
+        // EXPAND-ONLY `matchMedia` "change" listener that clears an
+        // auto-collapsed panel once the viewport crosses back ABOVE
+        // the breakpoint. It never collapses anything on narrowing —
+        // the exact behaviour the paragraph above forbids stays
+        // forbidden — so a DevTools split-screen session mid-use still
+        // can't yank a panel out from under a rep. `_controlsAutoCollapsed`/
+        // `_inventoryAutoCollapsed` (below) distinguish "collapsed
+        // because of this boot heuristic" from "collapsed because the
+        // rep clicked the toggle" — only the former is ever reopened by
+        // the listener; `_toggleControlsPanel`/`_toggleInventoryPanel`
+        // clear their flag on every explicit click so an explicit
+        // choice (collapse OR reopen) is never silently overridden.
         const narrowAtBoot = isNarrowViewportAtBoot(
             typeof window !== "undefined" ? window : null);
+        // C-01 fix — plain (non-reactive) instance flags; nothing in
+        // the template reads these, only the matchMedia listener and
+        // the two toggle methods below.
+        this._controlsAutoCollapsed  = narrowAtBoot;
+        this._inventoryAutoCollapsed = narrowAtBoot;
 
         // ── Reactive state ────────────────────────────────────────────────────
         this.state = useState({
@@ -770,6 +827,52 @@ class SouthbrookKitchenConfigurator extends Component {
             // 24e — scene bring-up is <KitchenCanvas>'s job. Parent
             // only wires window-scoped keyboard shortcuts here.
             window.addEventListener("keydown", this._onKeyDown);
+            // C-01 fix (2026-08-03) — expand-only panel recovery. See
+            // narrowAtBoot's comment in setup() for the full contract:
+            // this listener may only WIDEN — clear an auto-collapsed
+            // panel back open once the viewport crosses back ABOVE the
+            // breakpoint — and must NEVER collapse anything. That
+            // asymmetry is exactly what keeps this safe from the
+            // 2026-07-25 regression (DevTools split-screen narrowing
+            // the host backend window mid-session must not be able to
+            // silently hide a panel a rep is actively using); a plain
+            // two-way "sync state to matchMedia" listener would
+            // reintroduce that. Guarded like isNarrowViewportAtBoot —
+            // some embedders/older browsers have no matchMedia at all.
+            if (typeof window !== "undefined"
+                    && typeof window.matchMedia === "function") {
+                this._narrowMql = window.matchMedia("(max-width: 1023px)");
+                this._onNarrowMqlChange = (ev) => {
+                    if (ev.matches) return;   // narrower — never auto-act
+                    // Only a panel THIS heuristic collapsed is ever
+                    // reopened here — see _toggleControlsPanel/
+                    // _toggleInventoryPanel, which clear these flags on
+                    // every explicit click so a rep's own choice
+                    // (either direction) is never silently overridden.
+                    if (this._controlsAutoCollapsed
+                            && this.state.controlsCollapsed) {
+                        this.state.controlsCollapsed = false;
+                    }
+                    this._controlsAutoCollapsed = false;
+                    if (this._inventoryAutoCollapsed
+                            && this.state.inventoryCollapsed) {
+                        this.state.inventoryCollapsed = false;
+                    }
+                    this._inventoryAutoCollapsed = false;
+                };
+                // addEventListener is the modern MediaQueryList API;
+                // addListener is the deprecated fallback a couple of
+                // older WebKit builds in the supported-browser matrix
+                // still need. Same dual-path guard convention as the
+                // rest of this method; removed the same way in
+                // onWillUnmount below.
+                if (typeof this._narrowMql.addEventListener === "function") {
+                    this._narrowMql.addEventListener(
+                        "change", this._onNarrowMqlChange);
+                } else if (typeof this._narrowMql.addListener === "function") {
+                    this._narrowMql.addListener(this._onNarrowMqlChange);
+                }
+            }
             // T7 — read-only automation/diagnostics hook. Deep-copied
             // snapshot with a FIXED key contract; never a mutation
             // surface.
@@ -829,6 +932,19 @@ class SouthbrookKitchenConfigurator extends Component {
                 this._toastTimer = null;
             }
             window.removeEventListener("keydown", this._onKeyDown);
+            // C-01 fix — detach the expand-only panel-recovery listener
+            // mounted above; same addEventListener/addListener dual
+            // path, mirrored on the way out.
+            if (this._narrowMql) {
+                if (typeof this._narrowMql.removeEventListener === "function") {
+                    this._narrowMql.removeEventListener(
+                        "change", this._onNarrowMqlChange);
+                } else if (typeof this._narrowMql.removeListener === "function") {
+                    this._narrowMql.removeListener(this._onNarrowMqlChange);
+                }
+                this._narrowMql = null;
+                this._onNarrowMqlChange = null;
+            }
             if (window.__sbk) {
                 delete window.__sbk.getLayout;   // T7 — hook dies with us
             }
@@ -1395,7 +1511,10 @@ class SouthbrookKitchenConfigurator extends Component {
             }
         } catch (e) {
             this._toast(
-                "Couldn't create customer: " + (e.message || e),
+                // H-02 fix — see serverErrorText's own header for why
+                // `e.message` alone is always the useless "Odoo Server
+                // Error" placeholder.
+                "Couldn't create customer: " + serverErrorText(e),
                 { type: "danger", sticky: true }
             );
         } finally {
@@ -1431,7 +1550,8 @@ class SouthbrookKitchenConfigurator extends Component {
             }
         } catch (e) {
             this._toast(
-                "Couldn't set walk-in customer: " + (e.message || e),
+                // H-02 fix — see serverErrorText's own header.
+                "Couldn't set walk-in customer: " + serverErrorText(e),
                 { type: "danger", sticky: true }
             );
         } finally {
@@ -1754,7 +1874,8 @@ class SouthbrookKitchenConfigurator extends Component {
             }
             // Rebuild 3D after data refresh
             } catch (e) {
-            this.state.error = "Layout error: " + (e.message || e);
+            // H-02 fix — see serverErrorText's own header.
+            this.state.error = "Layout error: " + serverErrorText(e);
         }
     }
 
@@ -1899,12 +2020,21 @@ class SouthbrookKitchenConfigurator extends Component {
     // for how each state maps to the grid layout. Both stay reachable
     // from the topbar regardless of viewport width or which panel is
     // currently hidden.
+    //
+    // C-01 fix — this IS an explicit user choice, whichever way it
+    // flips the panel, so it always clears the corresponding
+    // `_XAutoCollapsed` flag: the matchMedia "change" listener
+    // (onMounted) must never later reopen a panel the rep just chose
+    // to collapse themselves, nor treat a panel they just chose to
+    // open as still "the boot default" needing anything done to it.
     _toggleControlsPanel() {
         this.state.controlsCollapsed = !this.state.controlsCollapsed;
+        this._controlsAutoCollapsed = false;
     }
 
     _toggleInventoryPanel() {
         this.state.inventoryCollapsed = !this.state.inventoryCollapsed;
+        this._inventoryAutoCollapsed = false;
     }
 
     // ─── Templates (T3): top-frame entry to the four-dropdown picker ────────────
@@ -2870,11 +3000,59 @@ class SouthbrookKitchenConfigurator extends Component {
     // wall's and grew room.width_in to fit (measured: 120in -> 240in
     // for a single added left-wall run) — the C5 defect.
     //
+    // H-12 investigation (2026-08-03) — a corner cabinet's extent along
+    // the back/front (X) axis. Shared with _recomputeLayoutFromItems's
+    // near-identical need further down this file (that method's own
+    // comment cites the full server-model source: kitchen_design.py's
+    // `_place_lines_on_wall`, the M2 per-leg `wall_start_offsets`
+    // reservation) — hoisted here so BOTH client-side computations of
+    // "how much of this wall's run does this corner really occupy"
+    // agree with each other, instead of silently drifting apart the
+    // way _currentRunWidthIn (below) and the remainder calc used to.
+    // At rot 0/180 this returns width_in unchanged — a corner's HOST
+    // wall genuinely reserves its full nominal width per the server's
+    // own M2 comment ("an asymmetric blind corner reserves 45/24 — not
+    // 45/45"); only a corner already ROTATED 90/270 (via the rotate
+    // control, or hydrated from a saved design) swaps in depth_in
+    // instead. IMPORTANT — this is NOT the fix for the reported "run
+    // needs 165in, room is 120in" case: that arithmetic was correct.
+    // See _currentRunWidthIn's own comment for why.
+    _alongBackWallExtentIn(it) {
+        if (it.cabinet_type !== "corner") return (it.width_in || 0);
+        const rot = Math.round(it.rotation_deg || 0) % 360;
+        return (rot === 0 || rot === 180)
+            ? (it.width_in || 0)
+            : (it.depth_in || 0);
+    }
+
     // SBK-030 — takes an optional `candidate` item so the over-length
     // gate in _addCabinetFromProduct can ask "what WOULD the run be if
     // this were added" BEFORE mutating state.items, instead of the old
     // push-then-measure-then-warn order. `_currentRunWidthIn()` (no
     // arg) reduces to exactly the prior behavior.
+    //
+    // H-12 investigation (2026-08-03) — audited against a report that
+    // this gate "double-counts" a corner's width. It does not: per
+    // kitchen_design.py's own M2 comment, a corner's HOST wall (the one
+    // its `wall` field names) genuinely reserves its full width_in (at
+    // rot 0/180) — the OTHER leg it bridges is a DIFFERENT wall this
+    // function never measures (it only ever sums the back-wall subset,
+    // see the C5 comment above). So "45in corner + 120in of existing
+    // back-wall cabinets needs 165in in a 120in room" is a TRUE
+    // refusal, not an arithmetic bug — a straight run that already
+    // fills the room has no space left for anything more on that same
+    // wall, corner or not. The real gap this exposes is that "+ Add"
+    // always targets ONE wall (activeWall) with no way to say "place
+    // this AT the junction where two walls meet" — true junction-aware
+    // placement, which needs geometry (where does the OTHER leg go?)
+    // this client does not have before a server round-trip. That is
+    // deliberately out of scope here (see the module brief); this
+    // method only picks up the one adjacent, genuinely-clean
+    // improvement available without it — sharing _alongBackWallExtentIn
+    // above with the remainder calculation so a ROTATED corner's
+    // contribution to this gate is computed the same way in both
+    // places, instead of this function using raw width_in unconditionally
+    // while the summary panel already knew better.
     _currentRunWidthIn(candidate = null) {
         const items = (this.state.items || []).filter(
             it => (it.wall || "back") === "back"
@@ -2885,7 +3063,10 @@ class SouthbrookKitchenConfigurator extends Component {
         const by = {};
         for (const it of items) {
             const t = it.cabinet_type || "other";
-            by[t] = (by[t] || 0) + (it.width_in || 0);
+            const w = (t === "corner")
+                ? this._alongBackWallExtentIn(it)
+                : (it.width_in || 0);
+            by[t] = (by[t] || 0) + w;
         }
         // Bases + extras pack on the floor row; walls pack on the upper row.
         const floorRow = (by.base || 0) + (by.filler || 0) + (by.tall || 0)
@@ -3103,8 +3284,9 @@ class SouthbrookKitchenConfigurator extends Component {
             // exact corner-governance gap this task closes. Fail
             // CLOSED instead, exactly like the action_swap_product hop
             // below: toast the failure, abort, leave state untouched.
-            const msg = e && (e.message || String(e))
-                || "Couldn't verify this cabinet with the server — swap refused.";
+            // H-02 fix — see serverErrorText's own header.
+            const msg = serverErrorText(
+                e, "Couldn't verify this cabinet with the server — swap refused.");
             this._toast(msg, { type: "danger", sticky: true });
             // Review Finding 2 — see the identical revert below for
             // the full rationale; this fail-closed path leaves
@@ -3138,7 +3320,8 @@ class SouthbrookKitchenConfigurator extends Component {
             // this file (_saveDesign/_createAndConfirm). Nothing above
             // this point mutated state.items, so a refused swap leaves
             // state completely unchanged.
-            const msg = e && (e.message || String(e)) || "Swap refused.";
+            // H-02 fix — see serverErrorText's own header.
+            const msg = serverErrorText(e, "Swap refused.");
             this._toast(msg, { type: "danger", sticky: true });
             // Review Finding 2 — the native <select> already flipped
             // to the refused option visually (a browser applies a
@@ -3405,19 +3588,16 @@ class SouthbrookKitchenConfigurator extends Component {
         // (read-only reference, not duplicated logic) uses width_in for
         // rot 0/180 but depth_in for rot 90/270 (the corner pivots 90°,
         // swapping which dimension spans the back/front axis vs. the
-        // left/right axis). Mirror that read here so a rotated corner
-        // doesn't under/over-count back-wall occupancy.
-        const backWallExtentIn = (it) => {
-            if (it.cabinet_type !== "corner") return (it.width_in || 0);
-            const rot = Math.round(it.rotation_deg || 0) % 360;
-            return (rot === 0 || rot === 180)
-                ? (it.width_in || 0)
-                : (it.depth_in || 0);
-        };
+        // left/right axis). H-12 investigation (2026-08-03) — this used
+        // to be a local closure duplicating exactly what
+        // _alongBackWallExtentIn (above, near _currentRunWidthIn) now
+        // does; hoisted to that one shared method so this display and
+        // the add-cabinet fit gate can never silently disagree on the
+        // same quantity again.
         const backRunOccupiedIn = items
             .filter(it => (it.wall || "back") === "back"
                 && (it.cabinet_type === "base" || it.cabinet_type === "corner"))
-            .reduce((sum, it) => sum + backWallExtentIn(it), 0);
+            .reduce((sum, it) => sum + this._alongBackWallExtentIn(it), 0);
         const roomWidthIn = (this.state.room && this.state.room.width_in) || 0;
         const remainderIn = hasCabinets
             ? Math.max(0, roomWidthIn - backRunOccupiedIn)
@@ -4012,8 +4192,9 @@ class SouthbrookKitchenConfigurator extends Component {
                 kwargs: { limit: 1 },
             });
         } catch (e) {
-            const msg = e && (e.message || String(e))
-                || "Couldn't verify this cabinet with the server — move refused.";
+            // H-02 fix — see serverErrorText's own header.
+            const msg = serverErrorText(
+                e, "Couldn't verify this cabinet with the server — move refused.");
             this._toast(msg, { type: "danger", sticky: true });
             return;
         }
@@ -4040,7 +4221,8 @@ class SouthbrookKitchenConfigurator extends Component {
             // action_move raises UserError (savepoint-rolled-back) when
             // the move doesn't fit — the "refused: doesn't fit" path
             // T2's note calls for, distinct from success below.
-            const msg = e && (e.message || String(e)) || "That move doesn't fit — refused.";
+            // H-02 fix — see serverErrorText's own header.
+            const msg = serverErrorText(e, "That move doesn't fit — refused.");
             this._toast(msg, { type: "danger", sticky: true });
             return;
         }
@@ -4421,7 +4603,8 @@ class SouthbrookKitchenConfigurator extends Component {
             // missing partner. Server-side validation raises with a
             // message that includes "partner" or "customer"; sniff for
             // that so the CTA is only added on the exact case.
-            const msg = e && (e.message || String(e)) || "Save failed";
+            // H-02 fix — see serverErrorText's own header.
+            const msg = serverErrorText(e, "Save failed");
             const missingPartner = !this.state.partnerId
                 && !this.state.portalUser
                 && /partner|customer/i.test(msg);
@@ -4504,7 +4687,8 @@ class SouthbrookKitchenConfigurator extends Component {
                 return this.action.doAction(actionToDispatch);
             }
         } catch (e) {
-            const msg = e && (e.message || String(e)) || "Quotation failed";
+            // H-02 fix — see serverErrorText's own header.
+            const msg = serverErrorText(e, "Quotation failed");
             const missingPartner = !this.state.partnerId
                 && !this.state.portalUser
                 && /partner|customer/i.test(msg);
@@ -4581,7 +4765,8 @@ class SouthbrookKitchenConfigurator extends Component {
             }
         } catch (e) {
             this._toast(
-                "Validate failed: " + (e && (e.message || String(e)) || "unknown error"),
+                // H-02 fix — see serverErrorText's own header.
+                "Validate failed: " + serverErrorText(e, "unknown error"),
                 { type: "danger", sticky: true }
             );
         }
@@ -5005,7 +5190,12 @@ SouthbrookKitchenConfigurator.template = xml`
         </div>
         <div>
           <div class="o_sbk_brand_label">SOUTHBROOK KITCHEN</div>
-          <h1 class="o_sbk_title">3D Room Configurator</h1>
+          <!-- Copy fix (2026-08-03) — was "3D Room Configurator", which
+               matched neither the menu entry nor the module name
+               (both "Kitchen 3D Configurator" — see
+               views/kitchen_configurator_views.xml and __manifest__.py).
+               Same rename mirrored below for the workspace header. -->
+          <h1 class="o_sbk_title">Kitchen 3D Configurator</h1>
         </div>
       </div>
     </header>
@@ -5052,7 +5242,7 @@ SouthbrookKitchenConfigurator.template = xml`
       </div>
       <div>
         <div class="o_sbk_brand_label">SOUTHBROOK KITCHEN</div>
-        <h1 class="o_sbk_title">3D Room Configurator</h1>
+        <h1 class="o_sbk_title">Kitchen 3D Configurator</h1>
       </div>
     </div>
     <!-- Room dimensions moved into the topbar (2026-06-30) so the
@@ -5119,13 +5309,23 @@ SouthbrookKitchenConfigurator.template = xml`
            + cabinet selections (the four-dropdown picker dialog).
            P0 (E2E fix) — label renamed "Start Custom" -> "New Kitchen":
            this is the single most important control on a bare/new
-           session and the old label didn't say so (it opens a dialog
-           titled "Start from a Sample Kitchen" — that dialog's own XML
-           title is unchanged here, still owned by another file). Also
-           disabled while state.loading, same rationale as the room-dim
-           inputs above. -->
+           session and the old label didn't say so (it opens the "Start
+           from Template" dialog — that dialog's own XML title is
+           unchanged here, still owned by another file, see
+           view_kitchen_design_template_picker_form). Also disabled
+           while state.loading, same rationale as the room-dim inputs
+           above.
+           Copy fix (2026-08-03, professional-audience pass) — the
+           title used to read "Start from a prebuilt sample kitchen",
+           implying a fixed demo design gets dropped in. What the
+           dialog actually does (see its own "Start a New Kitchen"
+           copy) is generate a parametric starting layout from a picked
+           shape, cabinet count, module size, and appliance sizes —
+           worth saying plainly to a rep deciding whether this is the
+           right control, rather than describing a "sample" that isn't
+           what's on the other side of the click. -->
       <button class="o_sbk_btn o_sbk_btn_template" type="button"
-              title="Start from a prebuilt sample kitchen"
+              title="Pick a kitchen shape and cabinet counts to generate a starting layout"
               t-att-disabled="state.loading"
               t-on-click="_openTemplatePicker">New Kitchen</button>
     </div>
