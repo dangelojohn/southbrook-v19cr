@@ -4,7 +4,13 @@ import math
 import re
 import time
 
-from odoo import api, fields, models
+# SBK-051 (2026-08-03) — `_` was missing from this import while
+# _onchange_parametrics used it twice, so the ONLY branch that fires is the
+# one that raises NameError. The guard rail meant to say "not enough wall for
+# that many" was itself the crash: a new user typing an over-large cabinet
+# count got a full-screen Python traceback on their second interaction.
+# Nothing caught it because that branch has no test.
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError, ValidationError
 # The pure layout engine (source of truth for spatial arrangement). Imported
 # here so the auto-arrange SERVICE lives on the model, not the HTTP

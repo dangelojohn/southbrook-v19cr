@@ -409,3 +409,4 @@ from . import test_reconcile_multiwall_shape
 # back completely. Covers all four walls (left was previously untested).
 from . import test_send_to_wall_corner_absorption
 from . import test_all_tests_are_imported
+from . import test_template_picker_onchange
