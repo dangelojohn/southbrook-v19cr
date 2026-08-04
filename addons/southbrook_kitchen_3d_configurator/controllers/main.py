@@ -1298,6 +1298,22 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             }
             if layout_key in existing_by_key:
                 line = existing_by_key[layout_key]
+                # SBK-056 (2026-08-04) — never let a MISSING key relocate an
+                # existing cabinet.
+                #
+                # "back" is the right default for a brand-new line, and the
+                # wrong one for a line that already lives on a wall. A client
+                # bug that dropped `wall` from the payload (see
+                # _applyClientSwap) therefore did not fail loudly — it was
+                # laundered into a valid, confident, wrong value, and a
+                # right-wall cabinet silently became a back-wall one.
+                #
+                # An omitted key means "unchanged", not "back". Only an
+                # explicitly supplied wall may move an existing line. This is
+                # defence in depth: the client bug is fixed, but the server
+                # should not have been capable of amplifying it.
+                if not item.get("wall"):
+                    line_vals["wall"] = line.wall or "back"
                 line.write(line_vals)
             else:
                 line = Line.create({"design_id": design.id, **line_vals})

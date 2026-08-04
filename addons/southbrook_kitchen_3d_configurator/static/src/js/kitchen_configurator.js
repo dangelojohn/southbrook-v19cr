@@ -380,6 +380,26 @@ class SouthbrookKitchenConfigurator extends Component {
                     : restoredActionFrame.resId;
                 if (typeof candidate === "number") {
                     restoredDesignId = candidate;
+                    // SBK-057 (2026-08-04) — remember that this id came from
+                    // the URL rather than from an explicit open, because it
+                    // carries no provenance.
+                    //
+                    // The action stack can hold frames from an EARLIER,
+                    // unrelated navigation. A rep who lost their session this
+                    // way had `.../action-1460/10/11/...` in the address bar,
+                    // and 10/11 turned out to be ROOM ids belonging to a
+                    // different quotation entirely — not designs at all. This
+                    // branch trusted 11 as a design id, the load returned
+                    // NOT_FOUND, and the app hard-failed to a dead-end error
+                    // screen reading "This design no longer exists", which is
+                    // a frightening thing to tell someone whose work is fine.
+                    //
+                    // A guessed id that misses should fail SOFT — back to the
+                    // picker, where the rep can choose their design — not
+                    // present as data loss. An id passed explicitly still
+                    // hard-fails, because there the caller really did mean
+                    // that record.
+                    this._designIdWasGuessedFromUrl = true;
                 }
             }
         }
@@ -1222,10 +1242,25 @@ class SouthbrookKitchenConfigurator extends Component {
             });
             this._userDefaults = d;
             const params = this._actionParams || {};
+            // SBK-057 (2026-08-04) — a design restored from the URL must
+            // count as "explicit" too.
+            //
+            // This gate only looked at `params.design_id`, which is set when
+            // the configurator is opened by clicking through from a record.
+            // On a URL restore there are no params at all — the id is
+            // recovered into `state.designId` and never written back to
+            // params — so `hasExplicitProps` was false even though a real
+            // design was being opened, and this rep's sticky room preference
+            // (144x120x96) overwrote the design's own dimensions.
+            //
+            // It runs inside the same Promise.all as the hydrate, and wins,
+            // so nothing corrected it afterwards. That is why a reload of a
+            // 120x96 kitchen came back showing someone's saved defaults.
             const hasExplicitProps = !!(params.room_width_in
                                     || params.room_depth_in
                                     || params.room_height_in
-                                    || params.design_id);
+                                    || params.design_id
+                                    || this.state.designId);
             if (!hasExplicitProps && d) {
                 if (d.width  > 0) this.state.room.width_in  = d.width;
                 if (d.depth  > 0) this.state.room.depth_in  = d.depth;
@@ -1684,6 +1719,21 @@ class SouthbrookKitchenConfigurator extends Component {
             // design bug this task closes (the generator would run
             // over an id that was never a real, readable design).
             if (resp && resp.error_code === "NOT_FOUND") {
+                // SBK-057 — an id GUESSED from the URL that misses is not
+                // evidence that anything was deleted; it usually means the
+                // address bar is carrying a stale frame from an earlier,
+                // unrelated navigation. Fall back to the picker instead of
+                // accusing the rep of having lost their work.
+                if (this._designIdWasGuessedFromUrl) {
+                    this.state.designId = null;
+                    this._hydratedFromDesign = false;
+                    this.state.screen = "landing";
+                    this._toast(
+                        "Couldn't restore that design from the address bar — "
+                        + "pick it from the list below. Nothing was lost.",
+                        { type: "warning" });
+                    return;
+                }
                 this._failHydration(
                     resp.error || "This design no longer exists.",
                     "NOT_FOUND");
@@ -3233,6 +3283,30 @@ class SouthbrookKitchenConfigurator extends Component {
         const merged = {
             ...product,
             layout_key:    oldItem.layout_key,
+            // SBK-056 (2026-08-04) — `wall` MUST be preserved here.
+            //
+            // `product` is a row from state.products, built by the catalog
+            // endpoint's _product_payload(), which has no `wall` key at all —
+            // correctly, since a catalog entry describes a product, not a
+            // placement. Every other placement field is carried over from
+            // oldItem explicitly; `wall` was simply forgotten, so the merged
+            // item came out with wall === undefined.
+            //
+            // That looked like a display bug (the Wall <select> matched no
+            // option and went blank, and the Active Wall indicator read
+            // "None"), but it did not stay one. The autosave three seconds
+            // later posts state.items, and save_design's `item.get("wall") or
+            // "back"` laundered the missing key into a valid, WRONG value —
+            // silently moving the cabinet from the right wall to the back
+            // wall in the database.
+            //
+            // Everything downstream followed from that single dropped field:
+            // the wall-placement pass skips non-back lines, so the cabinet
+            // kept its real right-wall coordinates while labelled "back",
+            // and the footprint check — which compares by elevation layer,
+            // not by wall — then correctly reported a genuine overlap
+            // between two cabinets it named as being on different walls.
+            wall:          oldItem.wall,
             x_position_in: oldItem.x_position_in,
             y_position_in: oldItem.y_position_in,
             z_position_in: oldItem.z_position_in,
