@@ -916,7 +916,21 @@ export class CabinetViewport extends Component {
         if (view === "front") {
             pos = [cx, cy, cz + span * 2.5];
         } else if (view === "top") {
-            pos = [cx, cy + span * 2.5, cz + 0.01];
+            // 2026-08-05 fix: [cx, cy + span*2.5, cz + 0.01] put the
+            // camera 0.01mm off the up-axis from its target — the
+            // degenerate OrbitControls/lookAt case where the view
+            // direction is (numerically) parallel to camera.up. The
+            // cross product OrbitControls/lookAt use to derive the
+            // camera's "right" vector collapses toward zero length in
+            // that case, corrupting the basis; every frame after
+            // clicking Top rendered nothing until an unrelated full
+            // refresh happened to reset the camera. A real oblique
+            // z-offset (15% of the framing span) keeps the view
+            // direction well clear of camera.up while still reading as
+            // "top-down" — the same fix as nudging camera.up, but
+            // without touching shared camera state other presets rely
+            // on.
+            pos = [cx, cy + span * 2.5, cz + span * 0.15];
         } else {
             // "three_quarter" — match the get_3d_payload default vibe.
             pos = [cx + w * 1.4, cy + h * 0.6, cz + d * 1.8];

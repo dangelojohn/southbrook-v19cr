@@ -282,9 +282,21 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         # though it accepts them in domains. Sort by sortable column-
         # local fields here; the JS layer groups by cabinet_type on
         # display.
+        # C-1 (appliance visibility) — widen to include appliance stand-in
+        # products (SBK-APPL-* from template_support_products.xml). These
+        # carry southbrook_cabinet_type='appliance' with southbrook_is_cabinet=False
+        # by design, so they never showed up in the drag catalog before. Now
+        # exposed here with cabinet_type='appliance' in the payload so the
+        # customer + rep can find & place them by hand when a template slot
+        # was not auto-generated (common case: template has no dishwasher
+        # slot, design needs one). Pricing stays $0.0 (hard-pinned in
+        # save_design's appliance branch) — never routed through
+        # _channel_price.
         products = request.env["product.product"].search([
-            ("product_tmpl_id.southbrook_is_cabinet", "=", True),
             ("sale_ok", "=", True),
+            "|",
+                ("product_tmpl_id.southbrook_is_cabinet", "=", True),
+                ("product_tmpl_id.southbrook_cabinet_type", "=", "appliance"),
         ], order="default_code, name")
         partner = self._browse_partner(partner_id)
         pricelist = self._resolve_pricelist(partner)
@@ -1720,6 +1732,17 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
             # leaving it at the boot placeholder until the client's own
             # first local recompute runs.
             "summary": design._get_counter_summary(),
+            # Item 9 (contract: partner/state/quotation hydration) — additive
+            # fields so the client can render "No customer assigned" warnings,
+            # gate "Create & Confirm" on draft state, and surface "you
+            # already have S01432" duplicate-detection. All read from the
+            # persisted design record; _hydrateFromDesign() in the client
+            # consumes these keys exactly.
+            "partner_id":      design.partner_id.id or False,
+            "partner_name":    design.partner_id.display_name or False,
+            "design_state":    design.state,
+            "sale_order_id":   design.sale_order_id.id or False,
+            "sale_order_name": design.sale_order_id.name or False,
         }
 
     # ─── Task 19 (corner-remediation 2026-07-30, SBK-032 + C9 UX) ───────────────

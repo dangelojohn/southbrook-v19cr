@@ -90,3 +90,7 @@ from . import test_attribute_rule_scoping
 # gate.py, fixed 2026-07-30).
 from . import test_sale_order_line_bom_rollup
 from . import test_all_tests_are_imported
+# C-2/H-10 (2026-08-05) — wall-aware 3D kitchen-preview placement.
+from . import test_kitchen_3d_wall_placement
+# H-6/H-9 (2026-08-05) — BoM Preview renders the real resolved BOM.
+from . import test_bom_preview_real_counts

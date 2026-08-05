@@ -45,9 +45,71 @@ class SaleOrder(models.Model):
         store=False,
     )
 
-    @api.depends("order_line", "order_line.product_id", "order_line.sb_bom_id",
-                 "order_line.sb_panel_count", "order_line.sb_door_count",
-                 "order_line.product_uom_qty")
+    # ------------------------------------------------------------------
+    # H-6 / H-9 (2026-08-05) — the BoM Preview must report the REAL BOM.
+    #
+    # This used to render sale.order.line.sb_panel_count / sb_door_count
+    # — a SYNTHETIC geometry formula (southbrook_dims.panel_cut_list,
+    # sale_order_line.py's _compute_sb_panel_rollup) that never reads the
+    # resolved mrp.bom at all. Every line showed "8 Panels / 1 Door",
+    # including an appliance-space void whose real BOM has zero lines.
+    #
+    # sb_panel_count/sb_door_count FIELDS are left completely untouched
+    # (still computed exactly as before) — grep confirms other real
+    # consumers read them directly and must keep working:
+    #   - southbrook_estimating/reports/door_order.xml (shop-facing Door
+    #     Order report; per-series door-count totals)
+    #   - southbrook_estimating/models/southbrook_order_analytics.py
+    #     (order-level panel_count/door_count rollup capture)
+    #   - southbrook_room_capture (QR scan part/staff lookups + its
+    #     qr_scan.xml display)
+    #   - southbrook_estimating_website/controllers/main.py +
+    #     portal_boot.esm.js (customer portal per-line display) and its
+    #     own test (test_bom_payload_per_line.py)
+    # Only THIS preview (the Order Builder "BoM Preview" tab) changes
+    # what it renders.
+    # ------------------------------------------------------------------
+
+    # Cabinet-type flags meaning "this line is not manufactured" — an
+    # appliance-space stand-in, a filler, or a decorative panel. The
+    # field lives on southbrook_kitchen_3d_configurator (optional dep,
+    # same guarded-getattr pattern get_kitchen_3d_payload already uses
+    # for southbrook_is_cabinet below) — southbrook_estimating must stay
+    # installable without that module.
+    _SB_NOT_MANUFACTURED_CABINET_TYPES = {"appliance", "filler", "panel"}
+
+    # Known auto-generated BoM code prefixes (southbrook_kitchen_mrp's
+    # mrp_bom_catalog.py generator) — a shop-facing preview must never
+    # surface these verbatim ("CatalogAutoBOM-Variant-SB-BASE-2DR..."
+    # reads as internal plumbing, not a part number).
+    _SB_BOM_AUTOGEN_CODE_PREFIXES = ("CatalogAutoBOM-", "KitchenAutoSeed-")
+
+    def _sb_bom_shop_label(self, bom):
+        """Shop-facing label for a resolved mrp.bom.
+
+        Core mrp's own display_name mixes the raw `code` field into the
+        name (which is how "CatalogAutoBOM-Variant-SB-BASE-2DR..." ends
+        up on screen) — format our own label instead: the manufactured
+        product's name, with the BoM's own code appended in parentheses
+        ONLY when that code doesn't look like one of this codebase's
+        known auto-generated stub prefixes.
+        """
+        if not bom:
+            return ""
+        name = (
+            bom.product_id.display_name if bom.product_id
+            else (bom.product_tmpl_id.display_name
+                  if bom.product_tmpl_id else "")
+        ) or "Unnamed BoM"
+        code = (bom.code or "").strip()
+        if code and not code.startswith(self._SB_BOM_AUTOGEN_CODE_PREFIXES):
+            return "%s (%s)" % (name, code)
+        return name
+
+    @api.depends(
+        "order_line", "order_line.product_id", "order_line.sb_bom_id",
+        "order_line.sb_bom_id.bom_line_ids", "order_line.product_uom_qty",
+    )
     def _compute_sb_bom_preview_html(self):
         for order in self:
             if not order.order_line:
@@ -59,30 +121,66 @@ class SaleOrder(models.Model):
                 )
                 continue
             rows = []
-            for line in order.order_line:
-                bom_name = (
-                    line.sb_bom_id.display_name if line.sb_bom_id
-                    else "<em class='text-muted'>no BoM defined</em>"
-                )
+            for idx, line in enumerate(order.order_line, start=1):
                 product_name = (
                     line.product_id.display_name if line.product_id
                     else "(unassigned)"
                 )
+                tmpl = (
+                    line.product_id.product_tmpl_id
+                    if line.product_id else False
+                )
+                not_manufactured = bool(tmpl) and (
+                    getattr(tmpl, "southbrook_cabinet_type", False)
+                    in self._SB_NOT_MANUFACTURED_CABINET_TYPES
+                )
+                bom = line.sb_bom_id
+                if not_manufactured:
+                    # H-6/H-9: an appliance-space / filler / decorative-
+                    # panel line is CORRECTLY not manufactured — zero
+                    # components is the honest answer, not a data gap.
+                    # Render it as its own thing, never as a cutlist row.
+                    rows.append(
+                        "<tr class='text-muted'>"
+                        "<td>%(idx)d</td>"
+                        "<td>%(product)s</td>"
+                        "<td class='text-end'>%(qty).2f</td>"
+                        "<td colspan='2'>"
+                        "<em>Not manufactured</em> — appliance space / "
+                        "filler / decorative panel"
+                        "</td>"
+                        "</tr>" % dict(
+                            idx=idx,
+                            product=html.escape(product_name),
+                            qty=line.product_uom_qty or 0.0,
+                        )
+                    )
+                    continue
+                bom_lines = bom.bom_line_ids if bom else bom
+                if not bom or not bom_lines:
+                    # Empty/missing BoM is a real data gap — align with
+                    # the tab's existing footnote language, never a
+                    # fabricated count.
+                    bom_cell = "<em class='text-muted'>no BoM defined yet</em>"
+                    components_cell = "&mdash;"
+                else:
+                    n = len(bom_lines)
+                    bom_cell = html.escape(order._sb_bom_shop_label(bom))
+                    components_cell = "%d component%s" % (
+                        n, "" if n == 1 else "s")
                 rows.append(
                     "<tr>"
-                    "<td>%(seq)d</td>"
+                    "<td>%(idx)d</td>"
                     "<td>%(product)s</td>"
-                    "<td>%(bom)s</td>"
                     "<td class='text-end'>%(qty).2f</td>"
-                    "<td class='text-end'>%(panels)d</td>"
-                    "<td class='text-end'>%(doors)d</td>"
+                    "<td>%(bom)s</td>"
+                    "<td class='text-end'>%(components)s</td>"
                     "</tr>" % dict(
-                        seq=line.sequence or 0,
-                        product=product_name,
-                        bom=bom_name,
+                        idx=idx,
+                        product=html.escape(product_name),
                         qty=line.product_uom_qty or 0.0,
-                        panels=line.sb_panel_count or 0,
-                        doors=line.sb_door_count or 0,
+                        bom=bom_cell,
+                        components=components_cell,
                     )
                 )
             order.sb_bom_preview_html = (
@@ -90,10 +188,9 @@ class SaleOrder(models.Model):
                 "<thead><tr>"
                 "<th>#</th>"
                 "<th>Product</th>"
-                "<th>Manufacturing BoM</th>"
                 "<th class='text-end'>Qty</th>"
-                "<th class='text-end'>Panels</th>"
-                "<th class='text-end'>Doors</th>"
+                "<th>Manufacturing BoM</th>"
+                "<th class='text-end'>Components</th>"
                 "</tr></thead>"
                 "<tbody>%s</tbody>"
                 "</table>" % "".join(rows)
@@ -630,16 +727,225 @@ class SaleOrder(models.Model):
     # backwards-compat with any test that grew up against commit 6.
     _ZONE_FLOOR_Y = {z: l[1] for z, l in _ZONE_LAYOUT.items()}
 
+    # ------------------------------------------------------------------
+    # C-2 / H-10 (2026-08-05) — wall-aware placement.
+    #
+    # get_kitchen_3d_payload used to place EVERY cabinet from the flat
+    # _ZONE_LAYOUT X-cursor above and NEVER read order_line.wall_id
+    # (grep confirmed zero references) — so a genuine 3-wall U-shape
+    # room collapsed onto two straight runs sharing one X axis. The
+    # wall data has been present and correct on every line since the
+    # 2026-08-03 reconcile fix (wall_id -> southbrook.room.wall, with
+    # name / wall_order / length_mm).
+    #
+    # Wall roles — back / left / right / front — are derived per-room
+    # by _classify_room_walls: a wall literally named "Back Wall" /
+    # "Left Wall" / etc. wins by name; every other wall (the actual
+    # common case — southbrook_estimating_website's room_setup_wizard
+    # and the room_templates.xml seeds only ever generate "Wall A" /
+    # "Wall B" / "Wall C") fills the remaining roles in wall_order
+    # sequence: back, then left, then right, then front. A room's 5th+
+    # wall gets no role.
+    #
+    # Placement per role is a genuine 90/180-degree rotation about the
+    # vertical (Y) axis — realized WITHOUT a mesh-level rotation field.
+    # At cardinal angles, rotating an axis-aligned box is exactly
+    # equivalent to (a) permuting which local axis feeds which world
+    # axis and (b) swapping width<->depth in the panel's own dims (and,
+    # for the rare cylinder hardware panel, swapping its "axis" name);
+    # see _wall_panel_transform. cabinet_viewport.esm.js DOES read a
+    # per-panel `rot` field (used today only for the cylinder handle
+    # axis defaults), but composing that with the axis-default rotation
+    # already applied to bar-pull cylinders would need quaternion
+    # composition the client doesn't do — so this fix deliberately
+    # reorients via geometry placement (position + dims permutation)
+    # rather than emitting `rot`. That is a genuine physical
+    # reorientation (doors/handles end up facing INTO the room on every
+    # wall, not just repositioned while still facing the old way) — not
+    # a fallback — achieved with zero client-side changes.
+    #
+    # Lines with no wall_id — or a wall_id whose role can't be resolved
+    # (a room's 5th+ wall, or a wall with no room) — fall back to the
+    # ORIGINAL _ZONE_LAYOUT cursor scheme byte-for-byte: older orders
+    # with no Room-First wall data must not regress. Worktops are
+    # DELIBERATELY excluded from wall-based placement even when
+    # wall_id happens to be set on a worktop line — they are countertop
+    # slabs that already share the ground cursor with the base run they
+    # sit on (a true per-wall mitred worktop run is a separate,
+    # materially bigger geometry problem this task does not cover).
+    # ------------------------------------------------------------------
+    _WALL_ROLE_TOKENS = {
+        "back": ("back",),
+        "front": ("front",),
+        "left": ("left",),
+        "right": ("right",),
+    }
+    _WALL_ROLE_SEQUENCE = ("back", "left", "right", "front")
+
+    def _classify_room_walls(self, room):
+        """Assign each of `room`'s walls a role: back / left / right /
+        front. Name substrings win first; every remaining wall fills
+        the remaining roles in wall_order sequence. Returns
+        {wall_id: role}; a wall with no assignable role (a room's 5th+
+        wall) is simply absent — callers fall back to zone placement.
+        """
+        ordered = room.wall_ids.sorted(key=lambda w: (w.wall_order, w.id))
+        roles = {}
+        used = set()
+        unmatched = []
+        for w in ordered:
+            nm = (w.name or "").lower()
+            role = next(
+                (r for r, tokens in self._WALL_ROLE_TOKENS.items()
+                 if r not in used and any(t in nm for t in tokens)),
+                None,
+            )
+            if role:
+                roles[w.id] = role
+                used.add(role)
+            else:
+                unmatched.append(w)
+        remaining = iter(
+            [r for r in self._WALL_ROLE_SEQUENCE if r not in used])
+        for w in unmatched:
+            role = next(remaining, None)
+            if role:
+                roles[w.id] = role
+            # else: no role left (5th+ wall in this room) — line stays
+            # unclassified, caller falls back to zone placement.
+        return roles
+
+    @api.model
+    def _room_wall_extents(self, room, roles):
+        """room_width (back/front wall length_mm) + room_depth (left/
+        right wall length_mm), derived from the classified walls. 0
+        when the relevant wall is absent — a degenerate but non-
+        crashing input to the Right/Front wall anchor calc, only
+        reachable for a room missing a Back or a Left/Right wall."""
+        by_role = {}
+        for w in room.wall_ids:
+            role = roles.get(w.id)
+            if role and role not in by_role:
+                by_role[role] = w
+        width_wall = by_role.get("back") or by_role.get("front")
+        depth_wall = by_role.get("left") or by_role.get("right")
+        return {
+            "width": float(width_wall.length_mm or 0) if width_wall else 0.0,
+            "depth": float(depth_wall.length_mm or 0) if depth_wall else 0.0,
+        }
+
+    @api.model
+    def _wall_panel_transform(self, role, room_width, room_depth,
+                               w_cab, d_cab, cursor):
+        """Return (transform_fn, dims_swapped, axis_map) for one
+        cabinet placed by wall `role`.
+
+        `cursor` is the running along-wall offset (mm) for THIS wall
+        BEFORE this cabinet is placed — the caller advances it by
+        w_cab afterwards, mirroring the pre-existing zone-cursor
+        accumulation.
+
+        transform_fn(local_x, local_y, local_z) -> (world_x, world_y,
+        world_z). local_y always passes through UNCHANGED — elevation
+        is applied by the caller via y_floor, exactly like the
+        pre-existing zone path, so "wall" zone cabinets keep their
+        elevated Y regardless of which wall placed them. Local frame:
+        front face at local z ~= 0, back at local z = -d_cab, width
+        centered on local x in [-w_cab/2, w_cab/2] — the same cabinet-
+        local convention product_config_line.py's
+        _cut_list_to_3d_payload already builds.
+        """
+        if role == "back":
+            return (
+                lambda x, y, z: (x + cursor + w_cab / 2, y, z),
+                False, {},
+            )
+        if role == "front":
+            # Opposite the back wall: back-of-cabinet touches the front
+            # wall (Z = room_depth); door faces back toward Z = 0.
+            anchor_z = room_depth - d_cab
+            return (
+                lambda x, y, z: (-x + cursor + w_cab / 2, y, -z + anchor_z),
+                False, {},
+            )
+        if role == "left":
+            # 90 degrees: local width axis (x) -> world Z (along the
+            # wall); local depth axis (z) -> world X (away from the
+            # wall, at X=0, into the room).
+            return (
+                lambda x, y, z: (z + d_cab, y, -x + cursor + w_cab / 2),
+                True, {"x": "z", "z": "x"},
+            )
+        if role == "right":
+            # Mirror of "left": back-of-cabinet touches X = room_width.
+            anchor_x = room_width - d_cab
+            return (
+                lambda x, y, z: (-z + anchor_x, y, x + cursor + w_cab / 2),
+                True, {"x": "z", "z": "x"},
+            )
+        return None, False, {}
+
+    # ------------------------------------------------------------------
+    # H-10 companion — Finish-driven door material.
+    #
+    # cab_inputs used to never pass "finish", so product_config_line.py's
+    # _cut_list_to_3d_payload always fell through to the generic brown
+    # "door" material — even for a White Melamine kitchen. Extract the
+    # variant's real Finish (fallback: Box Material) attribute value and
+    # normalize it the SAME way product_config_line.py's own
+    # _extract_cabinet_inputs() does for the single-cabinet wizard
+    # preview, so both viewports render the same door color for the
+    # same variant. ptav.name renders as "Attribute: Value" — read the
+    # bare value off product_attribute_value_id, not ptav.name itself.
+    # ------------------------------------------------------------------
+    def _sb_finish_slug(self, variant):
+        """Best-effort Finish/Box Material slug for the door_<slug>
+        material lookup (door_white/_maple_stain/_cherry_stain/
+        _walnut_stain — the exact _KNOWN_FINISHES set product_config_
+        line.py's _cut_list_to_3d_payload gates on). Empty string when
+        neither attribute is set or neither value maps to a known
+        slug — callers fall back to the generic "door" material, same
+        as today."""
+        if not variant:
+            return ""
+        finish_val = ""
+        box_material_val = ""
+        for ptav in variant.product_template_attribute_value_ids:
+            attr_name = (ptav.attribute_id.name or "").strip().lower()
+            value_name = (
+                ptav.product_attribute_value_id.name or "").strip().lower()
+            if not value_name:
+                continue
+            if attr_name == "finish" and not finish_val:
+                finish_val = value_name
+            elif attr_name == "box material" and not box_material_val:
+                box_material_val = value_name
+        for name in (finish_val, box_material_val):
+            if not name:
+                continue
+            if "white" in name:
+                return "white"
+            if "maple" in name:
+                return "maple_stain"
+            if "cherry" in name:
+                return "cherry_stain"
+            if "walnut" in name:
+                return "walnut_stain"
+        return ""
+
     def get_kitchen_3d_payload(self):
         """Multi-cabinet 3D payload for the OWL kitchen viewport.
 
         Loop over self.order_line in display order. For each line whose
         product matches an SB-* SKU, compute its single-cabinet panels at
-        the origin (via the existing config_session pipeline), then
-        translate every panel by (x_offset, y_floor, 0):
-          • x_offset accumulates as cabinets are placed — cumulative
-            X grows by the cabinet's width per placement.
-          • y_floor comes from _ZONE_FLOOR_Y[line.zone].
+        the origin (via the existing config_session pipeline), then place
+        every panel in world space:
+          • a line WITH a resolvable wall_id places along that wall's own
+            axis, right-angled per its room role (back/left/right/front —
+            see _wall_panel_transform);
+          • a line with no wall_id, or an unclassifiable one, falls back
+            to the original per-zone X cursor (x_offset accumulates as
+            cabinets are placed; y_floor comes from _ZONE_FLOOR_Y[line.zone]).
 
         Concatenates all per-cabinet panels into one list with prefixed
         names so the OWL component can address each line's panels
@@ -659,9 +965,19 @@ class SaleOrder(models.Model):
         # share a cursor name when they belong on the same horizontal
         # axis (e.g. base_run, tall, accessory all advance "ground").
         cursors = {"ground": 0, "wall": 0, "island": 0, "other": 0}
+        # C-2/H-10 — per-wall along-wall cursors, keyed by wall.id.
+        wall_cursors = {}
+        # Per-room wall-role / extent caches — computed once per room,
+        # not per line.
+        wall_role_cache = {}
+        room_extent_cache = {}
         max_h = 0             # tallest cabinet's top, for camera framing
-        max_d = 0             # deepest cabinet, for camera framing
-        max_z_back = 0        # most negative Z reached (for camera + bounds)
+        # Genuine world-space X/Z bounding box across every placed
+        # cabinet (replaces the old single-run "widest cursor" +
+        # doubled-depth approximation, which only ever framed a flat
+        # X-axis run and silently cropped a second/third wall out of
+        # camera range).
+        gmin_x = gmax_x = gmin_z = gmax_z = None
         all_panels = []
         # T1C8 — per-line index for hover tooltip in the OWL component.
         # The frontend reads this map by line.id (extracted from panel
@@ -727,17 +1043,52 @@ class SaleOrder(models.Model):
             fam, doors, drawers, w, h, d = row
 
             # T1C7 dispatch: worktops sit on the counter (Y=762) and
-            # share the ground X cursor regardless of zone. Everything
-            # else dispatches by zone via _ZONE_LAYOUT.
+            # share the ground X cursor regardless of zone — NEVER
+            # wall-based (see method docstring / class comment above).
+            # Everything else: wall_id wins when it resolves to a role;
+            # otherwise dispatch by zone via _ZONE_LAYOUT, exactly as
+            # before.
+            zone = line.zone or "base_run"
+            wall_role = None
+            wall = False if fam == "worktop" else line.wall_id
+            if wall and wall.room_id:
+                room = wall.room_id
+                if room.id not in wall_role_cache:
+                    wall_role_cache[room.id] = self._classify_room_walls(room)
+                roles = wall_role_cache[room.id]
+                wall_role = roles.get(wall.id)
+
             if fam == "worktop":
                 cursor_name = self._WORKTOP_CURSOR
                 y_floor = self._WORKTOP_Y_FLOOR
-                z_offset = 0
+                x_offset = cursors[cursor_name] + w / 2
+                fn = lambda x, y, z, _xo=x_offset: (x + _xo, y, z)  # noqa: E731
+                dims_swapped = False
+                axis_map = {}
+                advance = ("zone", cursor_name)
+            elif wall_role:
+                if room.id not in room_extent_cache:
+                    room_extent_cache[room.id] = self._room_wall_extents(
+                        room, roles)
+                extents = room_extent_cache[room.id]
+                wall_cursor = wall_cursors.get(wall.id, 0.0)
+                y_floor = self._ZONE_LAYOUT.get(
+                    zone, ("ground", 0, 0))[1]
+                fn, dims_swapped, axis_map = self._wall_panel_transform(
+                    wall_role, extents["width"], extents["depth"],
+                    w, d, wall_cursor,
+                )
+                advance = ("wall", wall.id)
             else:
-                zone = line.zone or "base_run"
                 cursor_name, y_floor, z_offset = self._ZONE_LAYOUT.get(
                     zone, ("ground", 0, 0),
                 )
+                x_offset = cursors[cursor_name] + w / 2
+                fn = lambda x, y, z, _xo=x_offset, _zo=z_offset: (  # noqa: E731
+                    x + _xo, y, z + _zo)
+                dims_swapped = False
+                axis_map = {}
+                advance = ("zone", cursor_name)
 
             cab_inputs = {
                 "width_mm":   w,
@@ -747,6 +1098,10 @@ class SaleOrder(models.Model):
                 "door_count": doors,
                 "drawer_count": drawers,
                 "finished_sides": "none",
+                # H-10 companion — real Finish/Box Material pick, so the
+                # door renders the actual configured color instead of
+                # always falling back to the generic brown material.
+                "finish": self._sb_finish_slug(line.product_id),
             }
             cut = Bom._compute_panel_dimensions(
                 width_mm=w, height_mm=h, depth_mm=d,
@@ -755,27 +1110,56 @@ class SaleOrder(models.Model):
             )
             single = Session._cut_list_to_3d_payload(cab_inputs, cut)
 
-            x_offset = cursors[cursor_name] + w / 2
             line_tag = f"L{line.id}_"
             for panel in single["panels"]:
                 p = dict(panel)
-                p["pos"] = {
-                    "x": panel["pos"]["x"] + x_offset,
-                    "y": panel["pos"]["y"] + y_floor,
-                    "z": panel["pos"]["z"] + z_offset,
-                }
+                wx, wy, wz = fn(
+                    panel["pos"]["x"], panel["pos"]["y"], panel["pos"]["z"])
+                p["pos"] = {"x": wx, "y": wy + y_floor, "z": wz}
+                if dims_swapped:
+                    pd = panel["dims"]
+                    p["dims"] = {
+                        "width": pd["depth"],
+                        "height": pd["height"],
+                        "depth": pd["width"],
+                    }
+                if axis_map and panel.get("shape") == "cylinder":
+                    p["axis"] = axis_map.get(
+                        panel.get("axis", "y"), panel.get("axis"))
                 p["name"] = line_tag + panel["name"]
                 all_panels.append(p)
 
-            cursors[cursor_name] += w
+            if advance[0] == "zone":
+                cursors[advance[1]] += w
+            else:
+                wall_cursors[advance[1]] = wall_cursors.get(advance[1], 0.0) + w
+
             cabinet_top = (h if fam != "worktop" else 25) + y_floor
             max_h = max(max_h, cabinet_top)
-            max_d = max(max_d, d)
-            # Z bounds — most-negative z (back of farthest cabinet) used
-            # for camera framing + scene bounds.
-            cabinet_back_z = z_offset - d
-            if cabinet_back_z < max_z_back:
-                max_z_back = cabinet_back_z
+
+            # World-space X/Z footprint of THIS cabinet — evaluated at
+            # its own local corners through the same fn used for its
+            # panels, so back/front/left/right/zone placements all fold
+            # into one genuine bounding box (fn is always an axis-
+            # aligned permutation/reflection at these cardinal angles,
+            # so evaluating just the 4 (x,z) corner combinations is
+            # exact, not an approximation).
+            corner_xs, corner_zs = [], []
+            for lx in (-w / 2, w / 2):
+                for lz in (-d, 0):
+                    cx, _cy, cz = fn(lx, 0, lz)
+                    corner_xs.append(cx)
+                    corner_zs.append(cz)
+            cab_min_x, cab_max_x = min(corner_xs), max(corner_xs)
+            cab_min_z, cab_max_z = min(corner_zs), max(corner_zs)
+            if gmin_x is None:
+                gmin_x, gmax_x, gmin_z, gmax_z = (
+                    cab_min_x, cab_max_x, cab_min_z, cab_max_z)
+            else:
+                gmin_x = min(gmin_x, cab_min_x)
+                gmax_x = max(gmax_x, cab_max_x)
+                gmin_z = min(gmin_z, cab_min_z)
+                gmax_z = max(gmax_z, cab_max_z)
 
             # T1C8 — line index entry.
             sequence += 1
@@ -793,12 +1177,10 @@ class SaleOrder(models.Model):
                 ),
             }
 
-        # Widest cursor determines the camera framing width.
-        widest = max(cursors.values())
-        cumulative_x = widest
-
-        # Frame the camera around the full kitchen run.
-        if cumulative_x == 0:
+        # C-2/H-10 — genuine world-space bounding box (gmin_x is None
+        # iff no cabinet was ever placed — equivalent to the old
+        # "widest cursor == 0" empty check).
+        if gmin_x is None:
             # No SB cabinets on this order — return an empty scene with
             # a sane default camera so the viewport still renders the
             # floor and shadow without errors.
@@ -817,21 +1199,17 @@ class SaleOrder(models.Model):
                 "bounds": {"min": [-500, 0, -500], "max": [500, 800, 0]},
             }
 
-        kitchen_w = cumulative_x
-        # Z extent — from the farthest-back cabinet (negative Z) to
-        # the front of the deepest cabinet at the main row (~0).
-        scene_z_back = max_z_back - max_d
-        scene_z_front = 0
-        scene_z_centre = (scene_z_back + scene_z_front) / 2
+        kitchen_w = gmax_x - gmin_x
+        kitchen_d = gmax_z - gmin_z
 
-        cam_target = [kitchen_w / 2, max_h / 2, scene_z_centre]
-        # Camera distance scales with kitchen footprint so wide runs
-        # still frame cleanly without manual zoom.
-        cam_dist = max(kitchen_w, max_h, abs(scene_z_back)) * 1.8
+        cam_target = [(gmin_x + gmax_x) / 2, max_h / 2, (gmin_z + gmax_z) / 2]
+        # Camera distance scales with kitchen footprint so wide/multi-
+        # wall runs still frame cleanly without manual zoom.
+        cam_dist = max(kitchen_w, max_h, kitchen_d, 1) * 1.8
         cam_position = [
-            kitchen_w / 2,
+            (gmin_x + gmax_x) / 2,
             max_h * 1.4,
-            scene_z_front + cam_dist,
+            gmax_z + cam_dist,
         ]
 
         return {
@@ -851,14 +1229,17 @@ class SaleOrder(models.Model):
                 ]),
                 "kitchen_width_mm":  kitchen_w,
                 "kitchen_height_mm": max_h,
-                "kitchen_depth_mm":  max_d,
+                "kitchen_depth_mm":  kitchen_d,
                 "cursors": dict(cursors),  # diagnostic: per-zone X totals
+                # C-2/H-10 — diagnostic: per-wall along-wall totals.
+                "wall_cursors": {
+                    str(k): v for k, v in wall_cursors.items()},
                 "lines": lines_index,      # T1C8 — per-line lookup for hover
             },
             "camera": {"target": cam_target, "position": cam_position},
             "bounds": {
-                "min": [0, 0, scene_z_back],
-                "max": [kitchen_w, max_h, scene_z_front],
+                "min": [gmin_x, 0, gmin_z],
+                "max": [gmax_x, max_h, gmax_z],
             },
         }
 

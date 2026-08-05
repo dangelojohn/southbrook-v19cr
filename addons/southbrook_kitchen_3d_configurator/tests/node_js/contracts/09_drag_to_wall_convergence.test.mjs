@@ -35,14 +35,31 @@
  * walls stay click-selectable without enclosing the open-cutaway view).
  * A drop over open floor near the room boundary could land on one of
  * those invisible strips and resolve to a wall the rep never intended,
- * silently overriding their actual Active Wall pick. The precedence is
- * now inverted — `this.state.activeWall || wallOverride || WALLS.BACK`
- * — so a deliberate selection always wins; the drop-raycast override
- * only matters when nothing is actively selected. None of the tests
- * below needed to change: they only ever exercise `wallOverride` when
- * `activeWall` is null/absent, which behaves identically under both
- * orderings. The dedicated conflict case — both set, to DIFFERENT
- * walls — is covered by the new test at the bottom of this file.
+ * silently overriding their actual Active Wall pick. The precedence was
+ * inverted to `this.state.activeWall || wallOverride || WALLS.BACK` —
+ * a deliberate selection always won; the drop-raycast override only
+ * mattered when nothing was actively selected.
+ *
+ * C-3 fix (2026-08-05, per-wall fit check — three independent E2E
+ * rounds) — flipped BACK to `wallOverride || this.state.activeWall ||
+ * WALLS.BACK`. F7's OWN fix, `_raycastDropWall` (see contracts/
+ * 11_drop_wall_kick_strip_gate.test.mjs), already filters kick-strip
+ * meshes out of the drop-raycast candidate list before F7 ever reaches
+ * kitchen_configurator.js — a `wallOverride` this component receives
+ * can only be a genuine full-height-wall hit, never the kick-strip
+ * ghost F7 was actually worried about. Meanwhile `activeWall` is a
+ * REMEMBERED value from whenever the rep last clicked a wall —
+ * possibly minutes and several drops ago, and the "Active Wall"
+ * indicator can silently disagree with it (see kitchen_configurator.js's
+ * `_displayActiveWall` — the DISPLAYED value falls back to the selected
+ * cabinet's wall while `state.activeWall` itself keeps whatever it was
+ * last explicitly set to). A rep who drags a cabinet and drops it
+ * squarely on a wall deserves THAT wall, not a stale click from before
+ * — the drop is the more explicit, more current signal. The "F7 fix"
+ * test below (conflict case: both set, to DIFFERENT walls) is updated
+ * to assert the new winner; every other test in this file is
+ * unaffected — they only ever exercise `wallOverride` when `activeWall`
+ * is null/absent, which behaves identically under both orderings.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -166,22 +183,26 @@ test("INVARIANT: drag-onto-left and select-left-then-Add produce an identical re
     assert.equal(recordB.wall, "left");
 });
 
-test("F7 fix: a deliberately-selected Active Wall wins over a CONFLICTING drop-wall override", async () => {
-    // The precedence conflict none of the tests above exercise: activeWall
-    // and the drop-raycast override disagree. Before the F7 fix
-    // (`wallOverride || activeWall || BACK`) the drop override would have
-    // won here — exactly the defect (an accidental ray, e.g. hitting the
-    // low kick-strip wall room_shell.esm.js renders for right/front, could
-    // silently beat a rep's deliberate Active Wall click). After the fix
-    // (`activeWall || wallOverride || BACK`) the deliberate selection
-    // always wins.
+test("C-3 fix (was 'F7 fix'): an explicit drop-wall override wins over a CONFLICTING, possibly-stale Active Wall", async () => {
+    // The precedence conflict none of the other tests above exercise:
+    // activeWall and the drop-raycast override disagree. F7 (2026-07-27)
+    // made activeWall win here, on the theory that wallOverride might be
+    // an accidental kick-strip ray. That theory doesn't hold up: F7's OWN
+    // fix (_raycastDropWall, see contracts/11_drop_wall_kick_strip_gate
+    // .test.mjs) already filters kick-strip meshes out of the drop
+    // raycast BEFORE it ever reaches this component — a wallOverride
+    // arriving here is always a genuine full-height-wall hit. Meanwhile
+    // activeWall can be stale (set by a click minutes/several drops ago).
+    // C-3 (2026-08-05) flips this: the rep just dragged a cabinet and
+    // dropped it squarely on a wall — that explicit, in-the-moment
+    // gesture now wins over a remembered click.
     const h = await freshConfigurator();
-    h.component.state.activeWall = "left";     // deliberately selected
-    stubCanvas(h.component, "right");          // conflicting drop-raycast hit
+    h.component.state.activeWall = "left";     // a stale earlier selection
+    stubCanvas(h.component, "right");          // the CURRENT, genuine drop
 
     h.component._onCanvasDrop(dropEvent(PRODUCT.product_id));
     clearTimeout(h.component._autoSaveTimer);
 
-    assert.equal(newestItem(h.component).wall, "left",
-        "the deliberately-selected Active Wall must win over a conflicting drop override");
+    assert.equal(newestItem(h.component).wall, "right",
+        "an explicit drop onto a wall must win over a conflicting, possibly-stale Active Wall");
 });

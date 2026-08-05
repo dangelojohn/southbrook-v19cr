@@ -547,6 +547,19 @@ class SouthbrookKitchenConfigurator extends Component {
             // meta is populated by the first /products + /layout RPC
             // response and drives the topbar badge.
             partnerId: params.partner_id || null,
+            // H-4/H-01 fix (2026-08-05) — mirror of the design record's
+            // own state field ('draft'/'confirmed'/etc — see
+            // kitchen_design.py) plus the linked sale.order identity,
+            // once one exists. Backfilled from load_design_lines's new
+            // response fields in _hydrateFromDesign (see that method's
+            // own comment for the precedence rule); stay at these safe
+            // "nothing yet" defaults for a brand-new, never-hydrated
+            // session. saleOrderName is what _createAndConfirm's button
+            // label consumes to tell the truth about whether a
+            // quotation already exists (see that button's own comment).
+            designState:   "",
+            saleOrderId:   false,
+            saleOrderName: "",
             channel:   {
                 partner_name:    "",
                 channel:         "retail",
@@ -559,6 +572,18 @@ class SouthbrookKitchenConfigurator extends Component {
             // <Xs> ago" hint.
             autoSaving:      false,
             lastAutoSaveAt:  0,
+            // C-12 fix (2026-08-05) — "does state.items/state.room
+            // disagree with what the server last confirmed persisted".
+            // See _markPlacementsDirty's own doc comment (near
+            // _pushUndoSnapshot) for the full contract, including why
+            // this is a SEPARATE flag from `_placementsDirty` (Task 35)
+            // rather than a reuse of it. Two readers: the auto-save pill
+            // (a third "unsaved changes" chip state, below `autoSaving`/
+            // `lastAutoSaveAt` in the template — also doubles as the
+            // visible signal for a silently-failing background retry)
+            // and `_runValidateAction`'s force-save-before-validating
+            // gate.
+            unsavedChanges:  false,
             // D7 — filler placement strategy. Drives /layout on each
             // refresh; default matches the controller default ("split"
             // — half-width fillers at both ends, most common spec).
@@ -1031,6 +1056,41 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.redoCount = this._undoStore.redoCount;
     }
 
+    // C-12 fix (2026-08-05) — `this._placementsDirty` (Task 35, above)
+    // means ONE specific thing: "changed since the last explicit
+    // auto-arrange", and is deliberately cleared ONLY on a successful
+    // arrange (see `_confirmedAutoArrange`'s `.then((ok) => …)`) — that
+    // is exactly right for its one job (deciding whether re-arranging
+    // needs a confirm-you-might-lose-this dialog) and must not change.
+    // It is NOT, and must not become, a "has this been SAVED yet" flag:
+    // audited every call site below, and save success never clears it —
+    // an edit immediately followed by a successful save left
+    // `_placementsDirty` sitting `true` even though nothing was actually
+    // unsaved, which would make a save-gate keyed off it fire on every
+    // single Validate click, forever, even right after a clean save.
+    //
+    // `state.unsavedChanges` (reactive; declared in setup()'s useState)
+    // is the SEPARATE, correctly-scoped flag this fix needs: "does
+    // state.items/state.room disagree with what the server last
+    // confirmed persisted". Set true at the exact same mutation call
+    // sites as `_placementsDirty` (this helper — replaces the bare
+    // `this._placementsDirty = true;` those sites used to write
+    // directly); cleared false only where a save/arrange round-trip
+    // actually SUCCEEDS (_saveDesign, _autoSave, _rearrangeOnServer) or
+    // where there is verifiably nothing to save yet
+    // (_resetForNewSession, a fresh/just-hydrated session). Two
+    // consumers: `_runValidateAction`'s force-save-before-validating
+    // gate (this fix's actual bug), and the auto-save status pill,
+    // which gets a third "unsaved changes" state out of this for free —
+    // it doubles as the visible signal for a SILENTLY-failing background
+    // auto-save (the retry itself stays silent by design; see
+    // `_autoSave`'s catch block), since a failed save never clears it
+    // either.
+    _markPlacementsDirty() {
+        this._placementsDirty = true;
+        this.state.unsavedChanges = true;
+    }
+
     // Shared by _undo/_redo — replaces state.room/state.items wholesale
     // with a stored snapshot and re-derives everything downstream of
     // them exactly like every other full-replace path in this file
@@ -1064,7 +1124,7 @@ class SouthbrookKitchenConfigurator extends Component {
         // A restored-to state is, by definition, a placement change
         // relative to whatever the design last had auto-arranged —
         // the next explicit Auto-arrange should confirm again.
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         // Brief: "Undo restores client state AND triggers the normal
         // autosave so the server converges" — the NORMAL (debounced)
         // path, not the synchronous flush-then-save variant
@@ -1083,7 +1143,7 @@ class SouthbrookKitchenConfigurator extends Component {
         if (!snapshot) return;
         this._applyHistorySnapshot(snapshot);
         this._syncHistoryCounts();
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         this._queueAutoSave();
     }
 
@@ -1786,9 +1846,43 @@ class SouthbrookKitchenConfigurator extends Component {
             // function runs once, before any user customer-picker
             // action, so an already-truthy partnerName here can only
             // have come from params).
+            //
+            // H-4/H-01 fix (2026-08-05) — this backfill was dead code
+            // until now: load_design_lines never actually sent
+            // `partner_name` (a parallel server-side fix adds it, along
+            // with `partner_id`/`design_state`/`sale_order_id`/
+            // `sale_order_name`, to the SAME response — see the sibling
+            // brief for the exact contract). It ALSO never backfilled
+            // `state.partnerId` at all — only the display name — so a
+            // direct-URL reload of a design that already had a customer
+            // showed the name pill but `state.partnerId` stayed null,
+            // meaning every partner-gated action downstream (save's
+            // `partner_id` payload, `_openCustomerForm`, the "missing
+            // partner" toast heuristic in _saveDesign/_createAndConfirm)
+            // silently behaved as if no customer were assigned. Fixed
+            // the same additive way as every other field in this
+            // function: only fills a field that isn't ALREADY set
+            // locally (params, in the live-open case, always win).
+            if (resp && resp.partner_id && !this.state.partnerId) {
+                this.state.partnerId = resp.partner_id;
+            }
             if (resp && resp.partner_name && !this.state.partnerName) {
                 this.state.partnerName = resp.partner_name;
             }
+            // H-4/H-01 fix (2026-08-05) — the three new identity fields
+            // from the same server contract. Unlike partner_id/name
+            // above, nothing else in this component ever sets these
+            // before hydration runs, so there's no "only when not
+            // already set locally" precedence question — always take
+            // the server's value, falling back to a safe empty/false
+            // default so older cached responses (before the server-side
+            // fix ships) or a stubbed test fixture that omits them never
+            // leave these as `undefined` (see _createAndConfirm's
+            // button-label consumer, which guards defensively on
+            // exactly that).
+            this.state.designState   = (resp && resp.design_state) || "";
+            this.state.saleOrderId   = (resp && resp.sale_order_id) || false;
+            this.state.saleOrderName = (resp && resp.sale_order_name) || "";
             // Task 7 (SBK-033) — seed state.summary from the server's
             // authoritative _get_counter_summary() before the local
             // recompute below runs. Belt-and-suspenders: _recomputeLayout
@@ -2003,6 +2097,18 @@ class SouthbrookKitchenConfigurator extends Component {
         this.state.activeWall = null;
         this.state.warnings = [];
         this.state.designName = "";
+        // H-4/H-01 fix (2026-08-05) — without this, switching from a
+        // design that already had a linked quotation to a brand-new one
+        // (or a different, quotation-less one) via _startNewDesign/
+        // _continueDesign would leave the OLD design's saleOrderName
+        // sitting in state, and _createAndConfirm's button would keep
+        // reading "Open quotation S01434" for a design that has no such
+        // thing. _hydrateFromDesign (_continueDesign's own next step)
+        // re-backfills these from the NEW design's own response right
+        // after this reset runs.
+        this.state.designState   = "";
+        this.state.saleOrderId   = false;
+        this.state.saleOrderName = "";
         this.state.hydratedFromDesign = false;
         this._hydratedFromDesign = false;
         this._hydrationFailed = false;
@@ -2023,6 +2129,17 @@ class SouthbrookKitchenConfigurator extends Component {
         // / `_placementsDirty = true` already start clean.
         this._undoStore.clear();
         this._placementsDirty = true;
+        // C-12 fix (2026-08-05) — a fresh/about-to-be-reopened session has
+        // nothing local yet to disagree with the server: unlike
+        // `_placementsDirty` just above (deliberately left `true` — "no
+        // arrange has happened yet, assume dirty is the safe default" —
+        // see this flag's own setup() comment), `state.unsavedChanges`
+        // means "does state disagree with the last confirmed save", which
+        // is false here by construction. _hydrateFromDesign (for
+        // _continueDesign) and _refreshLayout (for _startNewDesign) run
+        // immediately after this and don't themselves mark anything
+        // dirty, so this stays accurate through the boot sequence.
+        this.state.unsavedChanges = false;
         this._roomResizeDragActive = false;   // P0 fix — don't leak a mid-drag gesture across a switch
         this.state.undoCount = 0;
         this.state.redoCount = 0;
@@ -2155,6 +2272,14 @@ class SouthbrookKitchenConfigurator extends Component {
                 this.state.room = { ...this.state.room, ...res.room };
             }
             this._recomputeLayoutFromItems();
+            // C-12 fix (2026-08-05) — a successful arrange IS a
+            // server round-trip that fully replaced state.items/room
+            // with what the server just persisted (see the assignment
+            // just above) — local state agrees with the server again.
+            // Cleared BEFORE _refreshValidation() below so that
+            // fire-and-forget call's own dirty-check (if any call site
+            // ever adds one) sees a clean flag, not a stale one.
+            this.state.unsavedChanges = false;
             // Task 19 — brief: status chip "refreshed after save/
             // arrange". Arranging can add/drop corner-derived lines and
             // change wall-run coordination, so the readiness picture
@@ -2198,7 +2323,7 @@ class SouthbrookKitchenConfigurator extends Component {
     // item geometry — not just a summary the layout engine re-derives.
     async _applyRoomResize(field, clamped) {
         this._pushUndoSnapshot();
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         this.state.room[field] = clamped;
         if (this._usesEngineResize()) {
             await this._rearrangeOnServer();   // persists server-side; no auto-save needed
@@ -2780,9 +2905,27 @@ class SouthbrookKitchenConfigurator extends Component {
     // _applyServerPlacements/_applyRelaidResult on the very next save
     // regardless — this only needs to be real, never the placeholder
     // that could slip through unrepacked.
+    //
+    // C-3 fix (2026-08-05) — axis-aware. This used to read/compare
+    // `it.x_position_in` unconditionally, which is the correct
+    // along-run coordinate for a back/front-wall item but NOT for a
+    // left/right one — those run along Z (`_alongWallAxisField`, near
+    // `_nudgeSelected` below; the SAME convention `_applyServerPlacements`
+    // already writes real server-computed z_position_in values into).
+    // A left/right-wall "+ Add" used to compute its append edge from
+    // whatever those items' (largely irrelevant) x_position_in happened
+    // to hold — typically ~0, since the engine anchors a wall's OWN
+    // axis coordinate near the wall itself — so a second, third, fourth
+    // cabinet on an already-occupied side wall kept landing back near
+    // the start of the run (visually: on top of whatever's already
+    // there, including a corner cell) instead of after it. Now reads
+    // (and the caller now writes) whichever field is that wall's real
+    // along-run axis.
     _computeAppendX(type, wall) {
+        const targetWall = wall || WALLS.BACK;
+        const axisField = this._alongWallAxisField(targetWall);
         const items = this.state.items || [];
-        const onWall = (it) => (it.wall || WALLS.BACK) === (wall || WALLS.BACK);
+        const onWall = (it) => (it.wall || WALLS.BACK) === targetWall;
         const rowGroup = (cabType) =>
             (cabType === "tall" || cabType === "corner") ? "tail" : cabType;
         const targetGroup = rowGroup(type);
@@ -2793,12 +2936,13 @@ class SouthbrookKitchenConfigurator extends Component {
         // computation into handing out ANOTHER giant value. No real
         // room exceeds ROOM_DIM_BOUNDS.width_in's 480in max, so
         // anything absurdly past that is legacy garbage, not a real
-        // edge to append after.
+        // edge to append after. (Applies identically to z_position_in —
+        // no real room exceeds that same bound on depth either.)
         return items
             .filter(it => onWall(it) && rowGroup(it.cabinet_type) === targetGroup
-                && (it.x_position_in || 0) < 10000)
+                && (it[axisField] || 0) < 10000)
             .reduce((max, it) =>
-                Math.max(max, (it.x_position_in || 0) + (it.width_in || 0)), 0);
+                Math.max(max, (it[axisField] || 0) + (it.width_in || 0)), 0);
     }
 
     // Generic add — used by drop AND by the "+ Add" button.
@@ -2819,9 +2963,13 @@ class SouthbrookKitchenConfigurator extends Component {
         // canonical mount-height/elevation field, z_position_in is the
         // depth axis per COORDINATE_CONTRACT.md. Default mount height:
         // walls track the configured wall Y; everything else sits on
-        // the floor (y=0). z stays 0 for every new item (flush to the
-        // back wall) — this was the "z-as-height" convention flagged as
-        // the riskiest finding in the PR3 coordinate-contract matrix.
+        // the floor (y=0). z stays 0 for a BACK/FRONT-wall item (flush
+        // to the back wall) — this was the "z-as-height" convention
+        // flagged as the riskiest finding in the PR3 coordinate-contract
+        // matrix. C-3 fix (2026-08-05) — a LEFT/RIGHT-wall item now gets
+        // the mirror-image treatment on ITS OWN along-run axis instead;
+        // see the newItem literal below (`axisField`) for where that's
+        // decided and why.
         let mountY = 0;
         if (type === "wall") {
             // Use the most recent y_position_in we saw from the server
@@ -2837,7 +2985,13 @@ class SouthbrookKitchenConfigurator extends Component {
         // (further down) use the identical precedence (previously the
         // wall expression was duplicated at the newItem literal; a
         // single source avoids the two ever drifting apart).
-        const targetWall = opts.wall || this.state.activeWall || wallOverride || WALLS.BACK;
+        //
+        // C-3 fix (2026-08-05, three independent E2E rounds) — order
+        // flipped from `activeWall || wallOverride`. See the long
+        // comment on `wall: targetWall,` below (in the newItem literal)
+        // for the full incident history and why the OLD order was also
+        // wrong, just in a different way than PR4b's original bug.
+        const targetWall = opts.wall || wallOverride || this.state.activeWall || WALLS.BACK;
         // D14 — when a targetX is supplied (drag-drop's canvas
         // raycast), use it as the cascade sort-key so the new cabinet
         // lands at that ordered position.
@@ -2858,7 +3012,20 @@ class SouthbrookKitchenConfigurator extends Component {
         // position directly (_computeAppendX — mirrors packRow's own
         // append behaviour, see its doc comment; not a second
         // placement algorithm) instead of ever emitting the sentinel.
-        let sortX = (typeof targetX === "number" && !Number.isNaN(targetX))
+        //
+        // C-3 fix (2026-08-05) — `targetX` (the D14 floor-X raycast) is
+        // only a meaningful along-run coordinate when the target wall's
+        // run actually spans the X axis (back/front — see
+        // _alongWallAxisField, near _nudgeSelected below). A left/right
+        // wall's run spans Z instead; an X floor-drop coordinate has
+        // nothing to do with where the cabinet lands along THAT run
+        // (same reasoning the F6 fix below already established for the
+        // "Added at X″" toast), so a left/right-wall add always
+        // appends — exactly like the no-target case — regardless of
+        // whether a drop supplied a (meaningless, for that axis) X.
+        const axisField = this._alongWallAxisField(targetWall);
+        let sortX = (axisField === "x_position_in"
+                     && typeof targetX === "number" && !Number.isNaN(targetX))
                     ? targetX : this._computeAppendX(type, targetWall);
 
         // Panel-placement rule (2026-07-01): end cap decorative panels
@@ -2886,9 +3053,22 @@ class SouthbrookKitchenConfigurator extends Component {
         const newItem = {
             ...product,
             layout_key:    layoutKey,
-            x_position_in: sortX,
+            // C-3 fix (2026-08-05) — `sortX` is an along-RUN value, not
+            // literally always an X coordinate: it lands in whichever
+            // field this wall's run actually uses (`axisField`, computed
+            // above). Back/front unchanged from before this fix
+            // (x_position_in: sortX, z_position_in: 0 — "z stays 0...
+            // flush to the back wall", per the PR3.0 comment above).
+            // Left/right now gets the SAME treatment on ITS OWN axis
+            // instead of always hardcoding z_position_in to 0 regardless
+            // of how many cabinets already occupy that wall — the exact
+            // "lands at the origin, on top of a corner" defect Fix 1
+            // item 5 closes (a new side-wall cabinet used to always
+            // start at z=0, the wall's own corner end, no matter what
+            // was already there).
+            x_position_in: axisField === "z_position_in" ? 0 : sortX,
             y_position_in: mountY,
-            z_position_in: 0,
+            z_position_in: axisField === "z_position_in" ? sortX : 0,
             width_in:      product.width_in || 24,
             height_in:     product.height_in || (type === "wall" ? 30 : 34.5),
             depth_in:      product.depth_in  || (type === "wall" ? 12 : 24),
@@ -2897,17 +3077,43 @@ class SouthbrookKitchenConfigurator extends Component {
             // pure kitchen_layout_engine server-side (_place_lines_on_wall)
             // so a non-back wall gets its canonical engine pose applied
             // back onto state.items immediately (_applyServerPlacements).
-            // Precedence (F7 fix, 2026-07-27 — was PR4b's wallOverride ||
-            // activeWall || BACK): a DELIBERATELY selected Active Wall
-            // now always wins over a drop-raycast override; the ray only
-            // decides the wall when nothing is actively selected. PR4b's
-            // original ordering let an accidental ray (see room_shell.esm
-            // .js's low kick-strip walls for right/front — F7) silently
-            // beat an explicit click-to-select, overriding a wall the rep
-            // deliberately picked. The drop path (_onCanvasDrop) and the
-            // select-then-add path still converge on the SAME persisted
-            // record whenever they agree on a wall — locked by
-            // tests/node_js/contracts/09_drag_to_wall_convergence.test.mjs.
+            // Precedence — PR4b originally used `wallOverride ||
+            // activeWall || BACK`. The F7 fix (2026-07-27) flipped that to
+            // `activeWall || wallOverride || BACK` because PR4b's raw
+            // raycast covered ALL FOUR wall meshes, including the low
+            // 12" "kick-strip" walls room_shell.esm.js renders for
+            // right/front — an accidental ray near the room boundary
+            // could silently beat an explicit click-to-select, overriding
+            // a wall the rep deliberately picked.
+            //
+            // C-3 fix (2026-08-05, three independent E2E rounds) —
+            // flipped BACK to `wallOverride || activeWall || BACK`. F7's
+            // own fix (`_raycastDropWall`, see contracts/
+            // 11_drop_wall_kick_strip_gate.test.mjs) already filters
+            // kick-strip meshes out of the DROP raycast candidate list
+            // entirely — a `wallOverride` reaching this function can only
+            // ever be a genuine full-height-wall hit, never the
+            // kick-strip ghost F7 was actually worried about. Meanwhile
+            // `activeWall` is a REMEMBERED value from whenever the rep
+            // last clicked a wall — possibly minutes and several drops
+            // ago — and the "Active Wall" indicator can silently disagree
+            // with it (see `_displayActiveWall`'s own comment: the
+            // DISPLAYED value falls back to the selected cabinet's wall,
+            // while `state.activeWall` itself keeps whatever it was last
+            // explicitly set to). A rep who drags a cabinet and drops it
+            // squarely on the left wall, with a stale activeWall="back"
+            // sitting unnoticed from an earlier click, deserves the wall
+            // they just pointed at — that is a MORE explicit signal, at
+            // THIS moment, than a remembered click from before. A bare
+            // "+ Add" click (no drop, wallOverride always null — see the
+            // template call site) is completely unaffected either way:
+            // it still resolves to activeWall exactly as before. The drop
+            // path (_onCanvasDrop) and the select-then-add path still
+            // converge on the SAME persisted record whenever they agree
+            // on a wall — locked by tests/node_js/contracts/
+            // 09_drag_to_wall_convergence.test.mjs (updated alongside
+            // this fix — see that file's own header for what changed and
+            // why the old F7 conflict-case test necessarily flips too).
             //
             // SBK-030 review fix (Finding 1) — `opts.wall`, when set,
             // PINS the wall instead of re-deriving it from live state.
@@ -2933,17 +3139,29 @@ class SouthbrookKitchenConfigurator extends Component {
         // state.items, and refuse the mutation entirely unless the rep
         // explicitly opts in via the toast's "Add anyway" action
         // (which re-calls this method with opts.force = true).
-        // Scoped to the BACK wall only — _currentRunWidthIn (C5) only
-        // ever measures the back run; a side-wall add can't trip it.
-        const required = this._currentRunWidthIn(newItem);
-        const overflowsRoom = newItem.wall === WALLS.BACK
-            && required > this.state.room.width_in;
+        // C-3 fix (2026-08-05, per-wall fit check — reported by three
+        // independent E2E rounds) — was scoped to the BACK wall only
+        // (_currentRunWidthIn/C5 only ever measured the back run), so a
+        // left/right/front add got ZERO validation, and — even when the
+        // gate DID fire — the refusal text always named room.width_in,
+        // which is meaningless for a wall whose run is bounded by
+        // room.depth_in instead. Now evaluates the cabinet's ACTUAL
+        // target wall against THAT wall's own run length
+        // (_runWidthIn/_wallRunLengthIn, near _alongBackWallExtentIn
+        // above) and names the wall in the message. _runWidthIn(BACK, …)
+        // is byte-identical to the old _currentRunWidthIn(…) for a
+        // back-wall candidate — this is a strict generalization, not a
+        // behavior change for the case the existing tests already pin.
+        const required = this._runWidthIn(newItem.wall, newItem);
+        const wallLimitIn = this._wallRunLengthIn(newItem.wall);
+        const overflowsRoom = required > wallLimitIn;
         if (overflowsRoom && !force) {
             this._toast(
-                `${product.name} won't fit — run needs ` +
-                `${Math.ceil(required)}″, room is ` +
-                `${this.state.room.width_in}″. Remove a cabinet, widen ` +
-                `the room, or add it anyway.`,
+                `${product.name} won't fit on the ` +
+                `${this._wallLabel(newItem.wall).toLowerCase()} wall — its ` +
+                `run needs ${Math.ceil(required)}″, the wall is ` +
+                `${Math.ceil(wallLimitIn)}″. Remove a cabinet, or add it ` +
+                `anyway.`,
                 {
                     type: "warning",
                     sticky: true,
@@ -2964,7 +3182,7 @@ class SouthbrookKitchenConfigurator extends Component {
         // Pushed only once we KNOW the add will proceed (past the
         // refusal-gate return above), never for a refused add.
         this._pushUndoSnapshot();
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         this.state.items = [...(this.state.items || []), newItem];
         this.state.selected = newItem;
         this._recomputeLayoutFromItems();
@@ -3012,12 +3230,15 @@ class SouthbrookKitchenConfigurator extends Component {
         // SBK-030 — the force=true path (explicit "Add anyway" opt-in)
         // gets its own honest confirmation instead of the generic
         // "Added X" — the rep just overrode a refusal and should see
-        // the overflow acknowledged, not silently dropped.
+        // the overflow acknowledged, not silently dropped. C-3 fix
+        // (2026-08-05) — names the wall the refusal actually evaluated,
+        // matching the refusal toast above.
         if (overflowsRoom && force) {
             this._toast(
                 `Added ${product.name} anyway — run needs ` +
-                `${Math.ceil(required)}″, room is ` +
-                `${this.state.room.width_in}″.`,
+                `${Math.ceil(required)}″ on the ` +
+                `${this._wallLabel(newItem.wall).toLowerCase()} wall, ` +
+                `the wall is ${Math.ceil(wallLimitIn)}″.`,
                 { type: "warning" }
             );
         } else if (newItem.wall !== WALLS.BACK) {
@@ -3096,6 +3317,30 @@ class SouthbrookKitchenConfigurator extends Component {
             : (it.depth_in || 0);
     }
 
+    // C-3 fix (2026-08-05, per-wall fit check) — generalizes
+    // _alongBackWallExtentIn (above) to ANY wall. That method's own
+    // arithmetic is UNCHANGED and still the source of truth for
+    // back/front (delegated to, not reimplemented, below) — this only
+    // adds the mirror-image case for left/right, whose run spans Z
+    // instead of X. Mirrors kitchen_design.py's own per-leg reservation
+    // math (_place_lines_on_wall's M2 comment): "rot 0/180 -> width_in
+    // spans X and depth_in spans Z; rot 90/270 -> width spans Z, depth
+    // spans X" — `ext_x` (back/front) is exactly _alongBackWallExtentIn;
+    // `ext_z` (left/right) is the swapped case added here. A non-corner
+    // item is unaffected by which wall it's on either way — width_in
+    // already IS the along-run extent regardless (same assumption
+    // _alongWallAxisField/_computeAppendX/_nudgeSelected all make).
+    _alongWallExtentIn(it, wall) {
+        if (wall === WALLS.BACK || wall === WALLS.FRONT) {
+            return this._alongBackWallExtentIn(it);
+        }
+        if (it.cabinet_type !== "corner") return (it.width_in || 0);
+        const rot = Math.round(it.rotation_deg || 0) % 360;
+        return (rot === 0 || rot === 180)
+            ? (it.depth_in || 0)
+            : (it.width_in || 0);
+    }
+
     // SBK-030 — takes an optional `candidate` item so the over-length
     // gate in _addCabinetFromProduct can ask "what WOULD the run be if
     // this were added" BEFORE mutating state.items, instead of the old
@@ -3124,19 +3369,44 @@ class SouthbrookKitchenConfigurator extends Component {
     // contribution to this gate is computed the same way in both
     // places, instead of this function using raw width_in unconditionally
     // while the summary panel already knew better.
+    //
+    // C-3 fix (2026-08-05) — now a thin, back-wall-scoped convenience
+    // wrapper around the generalized `_runWidthIn(wall, candidate)`
+    // just below (which every wall's own fit gate now uses). Every
+    // paragraph above still describes exactly how the back-wall number
+    // is derived — only the "which wall" indirection moved; for a
+    // back-wall candidate this is byte-identical to the pre-fix
+    // implementation (same filter, same per-type bucketing, same
+    // floor-row/wall-row max).
     _currentRunWidthIn(candidate = null) {
+        return this._runWidthIn(WALLS.BACK, candidate);
+    }
+
+    // C-3 fix (2026-08-05, per-wall fit check — reported by three
+    // independent E2E rounds) — generalizes _currentRunWidthIn (above)
+    // to any wall. _addCabinetFromProduct's over-length refusal gate
+    // used to measure ONLY the back run (see _currentRunWidthIn's own
+    // "Scoped to the BACK wall only" history above) regardless of which
+    // wall the candidate actually targeted — left/right/front adds got
+    // no validation at all, and a refusal that DID fire on those items
+    // (a non-back item still landed in the back-wall bucket if `wall`
+    // was ever missing/misread) named room.width_in even though that
+    // wall's real bound is room.depth_in. Same per-type bucketing and
+    // floor-row/wall-row max as the original; only the wall filter and
+    // the corner-extent lookup (_alongWallExtentIn, above) are
+    // wall-aware now.
+    _runWidthIn(wall, candidate = null) {
+        const targetWall = wall || WALLS.BACK;
         const items = (this.state.items || []).filter(
-            it => (it.wall || "back") === "back"
+            it => (it.wall || WALLS.BACK) === targetWall
         );
-        if (candidate && (candidate.wall || "back") === "back") {
+        if (candidate && (candidate.wall || WALLS.BACK) === targetWall) {
             items.push(candidate);
         }
         const by = {};
         for (const it of items) {
             const t = it.cabinet_type || "other";
-            const w = (t === "corner")
-                ? this._alongBackWallExtentIn(it)
-                : (it.width_in || 0);
+            const w = this._alongWallExtentIn(it, targetWall);
             by[t] = (by[t] || 0) + w;
         }
         // Bases + extras pack on the floor row; walls pack on the upper row.
@@ -3144,6 +3414,18 @@ class SouthbrookKitchenConfigurator extends Component {
                        + (by.panel || 0) + (by.corner || 0) + (by.other || 0);
         const wallRow  = (by.wall || 0);
         return Math.max(floorRow, wallRow);
+    }
+
+    // C-3 fix (2026-08-05) — which room dimension bounds a given wall's
+    // run. Mirrors _alongWallAxisField's own back/front-vs-left/right
+    // split (below, near _nudgeSelected): a back/front run spans
+    // room.width_in (the room's X extent); a left/right run spans
+    // room.depth_in (the room's Z extent) instead. Shared by the
+    // per-wall fit gate above.
+    _wallRunLengthIn(wall) {
+        return (wall === WALLS.LEFT || wall === WALLS.RIGHT)
+            ? ((this.state.room && this.state.room.depth_in) || 0)
+            : ((this.state.room && this.state.room.width_in) || 0);
     }
 
     // ─── D2 — Inline cabinet edit drawer ────────────────────────────────────────
@@ -3185,7 +3467,7 @@ class SouthbrookKitchenConfigurator extends Component {
         if (idx < 0) return;
         this._markUserAction();   // T7 gate
         this._pushUndoSnapshot();   // Task 35 — pre-op, before the in-place mutation below
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         const it = this.state.items[idx];
         // C3 (money-integrity fix, 2026-08-03) — this used to be the
         // WHOLE handler: mutate width_in, repack, autosave — and NEVER
@@ -3313,7 +3595,7 @@ class SouthbrookKitchenConfigurator extends Component {
             width_in:      oldItem.width_in,
         };
         this._pushUndoSnapshot();   // Task 35 — pre-op, before the replace below
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         this.state.items[idx] = merged;
         this.state.selected = merged;
         this._recomputeLayoutFromItems();
@@ -3462,7 +3744,7 @@ class SouthbrookKitchenConfigurator extends Component {
             // succeeded in the caller; a refusal/network failure never
             // gets here), so no snapshot is wasted on a no-op refusal.
             this._pushUndoSnapshot();
-            this._placementsDirty = true;
+            this._markPlacementsDirty();
             this.state.items[freshIdx] = merged;
             if (this.state.selected
                     && this.state.selected.layout_key === layoutKey) {
@@ -3497,7 +3779,7 @@ class SouthbrookKitchenConfigurator extends Component {
         const idx = this.state.items.findIndex(it => it.layout_key === sel.layout_key);
         if (idx < 0) return;
         this._pushUndoSnapshot();   // Task 35 — pre-op, before the splice below
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         this.state.items.splice(idx, 1);
         // Pick a neighbour as the new selection (or null if empty).
         this.state.selected = this.state.items[idx] || this.state.items[idx - 1] || null;
@@ -4087,7 +4369,7 @@ class SouthbrookKitchenConfigurator extends Component {
         // a burst of quick rotations the same way it absorbs a burst
         // of any other op.
         this._pushUndoSnapshot();
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         const cur = ((item.rotation_deg || 0) + deltaDeg) % 360;
         item.rotation_deg = (cur + 360) % 360;
         item.pinned = true;
@@ -4157,7 +4439,7 @@ class SouthbrookKitchenConfigurator extends Component {
         if (!getPadAffordances(item).nudge) return;
         this._markUserAction();
         this._pushUndoSnapshot();
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         const axisField = this._alongWallAxisField(item.wall || WALLS.BACK);
         const alongZ = axisField === "z_position_in";
         const roomBoundIn = alongZ
@@ -4425,7 +4707,7 @@ class SouthbrookKitchenConfigurator extends Component {
         if (!Number.isFinite(parsed)) return;
         this._markUserAction();
         this._pushUndoSnapshot();
-        this._placementsDirty = true;
+        this._markPlacementsDirty();
         const axisField = this._alongWallAxisField(item.wall || WALLS.BACK);
         const alongZ = axisField === "z_position_in";
         const roomBoundIn = alongZ
@@ -4670,6 +4952,11 @@ class SouthbrookKitchenConfigurator extends Component {
             this.state.designId       = result.id;
             this.state.designName     = result.name;
             this.state.lastAutoSaveAt = Date.now();
+            // C-12 fix (2026-08-05) — the save just succeeded (past the
+            // structured-rejection check above); local state matches the
+            // server copy again. Cleared here, BEFORE _refreshValidation()
+            // below, so that fire-and-forget call sees a clean flag.
+            this.state.unsavedChanges = false;
             // PR4 (2026-07-12) — the server may have re-placed any
             // non-back-wall cabinets via the pure kitchen_layout_engine
             // (southbrook.kitchen.design._place_lines_on_wall),
@@ -4780,6 +5067,23 @@ class SouthbrookKitchenConfigurator extends Component {
                     actionToDispatch = action;
                 }
             }
+            // H-13 fix (2026-08-05, half — the button-truth half; see
+            // the button's own comment below) — when this call succeeds
+            // WITHOUT dispatching away (the bare {order_name, order_id}
+            // shape — the rep stays on this screen), update state
+            // immediately so the button relabels to "Open quotation …"
+            // right now, not only after the next reload/hydrate. When an
+            // actionToDispatch IS returned below, this write is
+            // harmless-but-moot: doAction() navigates the rep off this
+            // screen (see Item 25's own comment elsewhere in this file
+            // on doAction's default "replace current controller"
+            // behavior), so there's nothing left here to relabel.
+            if (orderName) {
+                this.state.saleOrderName = orderName;
+            }
+            if (action && typeof action === "object" && action.order_id) {
+                this.state.saleOrderId = action.order_id;
+            }
             this._toast(
                 orderName
                     ? `Quotation created (${orderName}) — check the Sale Order form`
@@ -4854,8 +5158,45 @@ class SouthbrookKitchenConfigurator extends Component {
     // (Task 19's own /validate polling, already in the toolbar) — this
     // is the one-shot form-parity action the E2E report specifically
     // asked for.
+    //
+    // C-12 fix (2026-08-05) — "Validate must never bless stale server
+    // state". action_validate_production runs entirely server-side
+    // against the DB record; before this fix, clicking Validate right
+    // after an edit that hadn't saved yet (or, worse, right after a
+    // SILENTLY-FAILED auto-save — see `_autoSave`'s catch block) fetched
+    // a clean bill of health for whatever the server last had, while the
+    // screen showed something different (the exact reported shape: "the
+    // stale 14-line copy while the screen shows 15"). Now: if local
+    // state disagrees with the server (`state.unsavedChanges` —
+    // see `_markPlacementsDirty`'s doc comment for why this is a
+    // SEPARATE flag from Task 35's `_placementsDirty`), force a save
+    // FIRST and await it. If the save succeeds, `_saveDesign` clears the
+    // flag itself (same place `_saveDesign`'s own success path already
+    // does for every other caller) and this proceeds to validate the
+    // now-current copy. If the save FAILS, `_saveDesign` already
+    // toasted the reason (sticky danger) — checking the flag again
+    // afterward is how this method finds out, without `_saveDesign`
+    // needing to return a value just for this one caller: validating a
+    // copy we already know disagrees with the screen would just repeat
+    // the exact bug this gate exists to close, so it's skipped entirely.
+    //
+    // Deliberately NOT applied to `_refreshValidation` (the passive,
+    // fire-and-forget chip poller — see that method's own comment: "the
+    // chip updating a beat after the action that triggered it is fine,
+    // gating anything on it is not"). That method already runs again
+    // after every save/autosave/arrange succeeds; forcing a save inside
+    // a background poller would fight its own fire-and-forget design and
+    // risks recursion through _saveDesign's own trailing
+    // `_refreshValidation()` call. This method is the one place a rep
+    // explicitly asks "is this ready" and expects a real, current answer.
     async _runValidateAction() {
         if (!this.state.designId || this.state.loading) return;
+        if (this.state.unsavedChanges) {
+            await this._saveDesign();
+            if (this.state.unsavedChanges) {
+                return;   // save failed — its own toast already said why
+            }
+        }
         try {
             const result = await rpc("/web/dataset/call_kw", {
                 model:  "southbrook.kitchen.design",
@@ -5068,6 +5409,15 @@ class SouthbrookKitchenConfigurator extends Component {
             this.state.designId       = result.id;
             this.state.designName     = result.name;
             this.state.lastAutoSaveAt = Date.now();
+            // C-12 fix (2026-08-05) — same as _saveDesign's own success
+            // path: the auto-save just succeeded, local state matches
+            // the server copy again. This is also what makes the
+            // catch block's SILENCE (below) safe — a repeatedly-
+            // failing background retry simply never reaches this line,
+            // so `state.unsavedChanges` stays true and the toolbar pill
+            // keeps showing "Unsaved changes" the whole time, even
+            // though no toast is firing on every retry.
+            this.state.unsavedChanges = false;
             // Touch editing v1 — net out exactly the counters this
             // request sent (never a flat reset-to-zero): a gesture
             // event that accumulated DURING the await must survive for
@@ -5118,6 +5468,20 @@ class SouthbrookKitchenConfigurator extends Component {
         } catch (e) {
             // Silent on auto-save: manual save will surface errors. Log
             // for diagnostics only.
+            //
+            // C-12 fix (2026-08-05) — this silence stays exactly as-is
+            // for background retries (no new toast added here), but it
+            // is no longer TOTALLY silent: `state.unsavedChanges` was
+            // already true before this attempt started (nothing schedules
+            // an auto-save without a prior `_markPlacementsDirty()`) and
+            // this catch block, by design, never clears it — so the
+            // toolbar's auto-save pill keeps showing "Unsaved changes"
+            // for as long as the retries keep failing, without spamming a
+            // toast on every 3s debounce. This is also exactly the state
+            // `_runValidateAction` checks before validating, so a rep who
+            // clicks Validate while auto-save is silently failing gets a
+            // forced save attempt (and its error surfaced) instead of a
+            // green light on a stale server copy.
             console.warn("[SouthbrookKitchenConfigurator] auto-save failed:", e);
         } finally {
             this.state.autoSaving = false;
@@ -5223,25 +5587,28 @@ class SouthbrookKitchenConfigurator extends Component {
     }
 
     // Item 16 (E2E fix) — "Active Wall" used to read state.activeWall
-    // ONLY, which is real, load-bearing state (F7 precedence just above
-    // in _addCabinetFromProduct: it decides which wall a NEW cabinet
-    // drops onto) — but its ONLY setter is a direct click on a bare
-    // wall SURFACE in the 3D scene (_onWallSelect, "PR1" comment
-    // above), an easy-to-miss gesture most reps never discover. The
-    // indicator read "None" for an entire session as a result —
-    // "permanent, unexplained, unsettable" per the E2E report.
+    // ONLY, which is real, load-bearing state (the add-flow's wall
+    // precedence in _addCabinetFromProduct reads it as one of several
+    // signals for which wall a NEW cabinet drops onto — see that
+    // literal's own comment, updated by the C-3 fix, for the current
+    // ordering) — but its ONLY setter is a direct click on a bare wall
+    // SURFACE in the 3D scene (_onWallSelect, "PR1" comment above), an
+    // easy-to-miss gesture most reps never discover. The indicator read
+    // "None" for an entire session as a result — "permanent,
+    // unexplained, unsettable" per the E2E report.
     //
     // Decision: keep state.activeWall exactly as-is (removing it would
-    // regress the F7 add-flow precedence it drives) but make the
-    // DISPLAYED value fall back to the SELECTED cabinet's own wall —
-    // now that the Placement block's wall picker (_setSelectedWall)
-    // makes a placed cabinet's wall a first-class, visible/settable
-    // thing — whenever no wall has been explicitly clicked yet. A
-    // deliberate wall click still wins once made (same F7 ordering).
-    // This is the far more common case in a real session (a rep has
-    // almost always selected SOME cabinet), so the row is only ever
-    // "None" for a genuinely empty, nothing-selected canvas — where
-    // "None" is honest, not confusing.
+    // regress the add-flow precedence it feeds) but make the DISPLAYED
+    // value fall back to the SELECTED cabinet's own wall — now that the
+    // Placement block's wall picker (_setSelectedWall) makes a placed
+    // cabinet's wall a first-class, visible/settable thing — whenever
+    // no wall has been explicitly clicked yet. A deliberate wall click
+    // still wins once made (this method's OWN fallback order below,
+    // unrelated to — and unaffected by — the separate add-flow
+    // precedence discussed above). This is the far more common case in
+    // a real session (a rep has almost always selected SOME cabinet),
+    // so the row is only ever "None" for a genuinely empty,
+    // nothing-selected canvas — where "None" is honest, not confusing.
     _displayActiveWall() {
         return this.state.activeWall
             || (this.state.selected && this.state.selected.wall)
@@ -5714,8 +6081,22 @@ SouthbrookKitchenConfigurator.template = xml`
       </div>
       <!-- D5 — Background auto-save status pill. Quiet by default;
            pops "Saving..." during a debounced save and a green
-           checkmark for ~3s after success. -->
+           checkmark for ~3s after success.
+           C-12 fix (2026-08-05) — this used to have only two states
+           (saving / saved-at-some-point-ever — state.lastAutoSaveAt
+           stays greater than zero forever once it has ever fired once,
+           even if the MOST RECENT attempt since then failed). A third
+           state now renders whenever state.unsavedChanges is true —
+           covers both the ordinary "you just typed something and the
+           debounce hasn't fired yet" case AND a silently-failing
+           background retry (see _autoSave's catch block comment: the
+           flag is deliberately never cleared by a failed attempt, so
+           this pill keeps showing "Unsaved changes" instead of a stale
+           green checkmark from the last time it DID succeed). Ordered
+           before the "Auto-saved" branch so a currently-dirty state
+           always wins over a stale success memory. -->
       <span t-if="state.autoSaving" class="o_sbk_autosave">Saving…</span>
+      <span t-elif="state.unsavedChanges" class="o_sbk_autosave is-dirty">● Unsaved changes</span>
       <span t-elif="state.lastAutoSaveAt &gt; 0" class="o_sbk_autosave is-ok">✓ Auto-saved</span>
       <button class="o_sbk_btn o_sbk_btn_primary"
               t-att-disabled="state.saving || (!state.items.length &amp;&amp; !state.portalUser)"
@@ -5734,13 +6115,34 @@ SouthbrookKitchenConfigurator.template = xml`
            against a KNOWN blocking issue is refused inside
            _createAndConfirm itself (see that guard) rather than here,
            so the click still surfaces a toast pointing at Production
-           check instead of just staying inert. -->
+           check instead of just staying inert.
+
+           H-13 fix (2026-08-05, half — the OTHER half is the server-side
+           gate above, unchanged by this fix) — this button used to say
+           "Create & Confirm" unconditionally, even for a design that
+           ALREADY has a linked quotation (hydrated via
+           state.saleOrderName — see _hydrateFromDesign's H-4/H-01
+           backfill, and _createAndConfirm's own success-path write-back
+           for the same-session case). Clicking it then re-ran
+           action_create_quotation, which — per that method's own
+           existing server-side behavior — routes to the EXISTING draft
+           rather than minting a duplicate, so the click already "worked"
+           correctly; only the LABEL lied about what it was about to do.
+           _createAndConfirm's click handler is UNCHANGED (still the
+           same RPC, still opens/returns the draft either way) — this is
+           purely a truth-in-labeling fix. state.saleOrderName is
+           guarded defensively (a plain truthy check) because it may be
+           absent/undefined on an older cached response predating the
+           server-side contract this reads from. -->
       <button t-if="!state.portalUser"
               class="o_sbk_btn o_sbk_btn_confirm"
               t-att-disabled="state.saving || state.loading || !state.items.length"
               t-on-click="_createAndConfirm"
-              title="Save the design and create a draft Sale Order for this customer">
+              t-att-title="state.saleOrderName
+                  ? ('Open the existing quotation — ' + state.saleOrderName)
+                  : 'Save the design and create a draft Sale Order for this customer'">
         <t t-if="state.saving">Working…</t>
+        <t t-elif="state.saleOrderName">Open quotation <t t-esc="state.saleOrderName"/></t>
         <t t-else="">Create &amp; Confirm</t>
       </button>
     </div>
@@ -6293,9 +6695,12 @@ SouthbrookKitchenConfigurator.template = xml`
            activation a native <button> has for free — WAI-ARIA APG
            button pattern) with real nested <button>s for the toggle
            and Add; both stop click propagation so activating them never
-           also fires the row's own preview click. Appends to the
-           active wall per F7's fixed precedence (state.activeWall wins
-           over any stale drop-wall override). -->
+           also fires the row's own preview click. This call site never
+           supplies a wallOverride (no drop happened) — appends to
+           state.activeWall directly, unaffected by which signal wins
+           in the drop-vs-active-wall precedence conflict case (see
+           _addCabinetFromProduct's own comment on the newItem.wall
+           assignment, updated by the C-3 fix). -->
       <div class="o_sbk_product_list">
         <t t-foreach="_groupedInventory().categories" t-as="cat" t-key="cat.key">
           <div class="o_sbk_cat_header"
@@ -6588,7 +6993,7 @@ SouthbrookKitchenConfigurator.prototype._onCanvasMoveStart = function (_item) {
 };
 SouthbrookKitchenConfigurator.prototype._onCanvasMove = function ({ item, x_position_in, pinnable }) {
     this._markUserAction();   // T7 gate
-    this._placementsDirty = true;   // Task 35
+    this._markPlacementsDirty();   // Task 35 / C-12
     if (pinnable) {
         item.pinned = true;
         this._savePinnedPosition(item);
@@ -6620,7 +7025,7 @@ SouthbrookKitchenConfigurator.prototype._onCanvasResize = function (newWidthIn, 
     if (!inFlight) {
         this._roomResizeDragActive = false;
         this._markUserAction();   // T7 gate
-        this._placementsDirty = true;   // Task 35 — a subsequent Auto-arrange should confirm again
+        this._markPlacementsDirty();   // Task 35 / C-12 — a subsequent Auto-arrange should confirm again
         // T7 — saved designs re-derive through the engine, never the
         // single-wall /layout generator (see _rearrangeOnServer).
         if (this._usesEngineResize()) {
@@ -6652,7 +7057,7 @@ SouthbrookKitchenConfigurator.prototype._onCanvasResizeDepth = function (newDept
     if (!inFlight) {
         this._roomResizeDragActive = false;
         this._markUserAction();   // T7 gate
-        this._placementsDirty = true;   // Task 35 — same as the width puller above
+        this._markPlacementsDirty();   // Task 35 / C-12 — same as the width puller above
         // T7 — same engine routing as the width puller above.
         if (this._usesEngineResize()) {
             this._rearrangeOnServer();

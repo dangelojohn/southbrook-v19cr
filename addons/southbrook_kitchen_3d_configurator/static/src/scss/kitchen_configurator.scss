@@ -1153,6 +1153,18 @@ $sbk-amber:      var(--sb-status-warn-fg);
         color: var(--sb-status-ok-fg);
         background: var(--sb-status-ok-bg);
     }
+    // SBK-062 (2026-08-05) — the third state the chip always needed. It had
+    // exactly two (saving / last-save-succeeded), so a FAILED autosave just
+    // made the chip disappear, and the designer had no way to know their
+    // screen and the database disagreed. An E2E reviewer edited through a
+    // string of 503s while the header quietly showed nothing; Validate then
+    // blessed the stale server copy. Warn-tier, not danger — the work is
+    // not lost, it is unsaved, and the companion fix makes Validate force a
+    // save before it will run.
+    &.is-dirty {
+        color: var(--sb-status-warn-fg, #8a6d00);
+        background: var(--sb-status-warn-bg, rgba(212, 170, 20, 0.14));
+    }
 }
 
 
