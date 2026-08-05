@@ -49,12 +49,23 @@
          Send-to-Production looks up a BoM for the variant, ours
          is picked first.
          ============================================================ -->
+    <!-- SBK-060b (2026-08-05) — was 0, and that 0 was quietly poisoning BOM
+         resolution on every upgrade. Odoo picks a BOM by ORDER BY sequence,
+         product_id, id; the generated variant-specific CatalogAutoBOM rows sit
+         at sequence 10, so a template-wide Canonical at 0 beat EVERY variant's
+         own cut list — wrong handedness, doubled hardware — and because this
+         file is noupdate="0", each upgrade re-seeded the 0 and reverted any
+         repair. 1000 makes the Canonical what it always was meant to be: the
+         FALLBACK when a variant has no BOM of its own. The 2026-06 cruft
+         concern (demo BoMs at sequence=1) is covered by the id tie-break at
+         equal sequence — the Canonical, seeded earliest, carries the lowest id
+         — and the 19.0.1.9.2 migration demotes any straggler wildcard anyway. -->
     <record id="bom_base_1dr" model="mrp.bom">
       <field name="product_tmpl_id"
              ref="southbrook_estimating.base_1dr"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-BASE-1DR Canonical</field>
     </record>
 

@@ -390,7 +390,13 @@ class SouthbrookKitchenDesign(models.Model):
     )
     partner_id  = fields.Many2one("res.partner",  string="Customer", index=True)
     sale_order_id = fields.Many2one(
-        "sale.order", string="Quotation", readonly=True, index=True)
+        # SBK-061 (2026-08-05) — copy=False, mirroring room_id below. Without
+        # it, "Duplicate as New Version" produced a draft copy still BOUND to
+        # the original's ISSUED quotation: pressing Create & Confirm on the
+        # copy would have written into a document already in front of a
+        # customer. A new version starts unquoted by definition.
+        "sale.order", string="Quotation", readonly=True, index=True,
+        copy=False)
     notes = fields.Text(string="Design Notes")
 
     # ── Recommendation D · Sprint 1 bridge field ────────────────────────
@@ -748,6 +754,12 @@ class SouthbrookKitchenDesign(models.Model):
         ],
         default="draft",
         required=True,
+        # SBK-061 — a copy is a new draft on ANY copy path. The
+        # "Duplicate as New Version" button already overrode state in its
+        # own copy() call, but the stock Duplicate menu item did not, so a
+        # duplicate of a quoted design was born "quoted" with no quote of
+        # its own.
+        copy=False,
         tracking=True,
     )
 
@@ -3970,6 +3982,39 @@ class SouthbrookKitchenDesign(models.Model):
         return " | ".join(p for p in parts if p)
 
     # ── D11 — Duplicate-and-Open action ────────────────────────────────────────
+    def copy(self, default=None):
+        """SBK-061 (2026-08-05) — id-bearing layout keys must follow the copy.
+
+        Derived corner/filler lines carry keys of the form
+        ``corner-<design_id>-<corner>-<layer>``. The ORM copies them
+        verbatim, so a duplicate of design 168 carried ``corner-168-*``
+        keys. That is not cosmetic: the corner-clearance validator parses
+        the design id OUT of the key to exempt a corner's own legitimate
+        run-neighbour — with a foreign id the parse misses, the exemption
+        never fires, and a byte-identical copy reports four phantom
+        BLOCKERS the original never showed. Same geometry, different key,
+        different verdict.
+
+        Rewriting the id prefix (never blanking the key — reconcile's
+        idempotency matching depends on keys existing) keeps the validator
+        honest on copies. Corner lines are regenerated on the next arrange
+        anyway; this covers the window before that happens.
+        """
+        new_records = super().copy(default)
+        for old, new in zip(self, new_records):
+            old_marker = "-%d-" % old.id
+            new_marker = "-%d-" % new.id
+            lines = new.with_context(active_test=False).cabinet_line_ids
+            for line in lines:
+                key = line.layout_key or ""
+                for prefix in ("corner", "cornerfill", "design"):
+                    tagged = "%s%s" % (prefix, old_marker)
+                    if key.startswith(tagged):
+                        line.layout_key = "%s%s%s" % (
+                            prefix, new_marker, key[len(tagged):])
+                        break
+        return new_records
+
     def action_duplicate_and_open(self):
         """Copy this design as draft and open the 3D Configurator on
         the new record. One click instead of Duplicate -> open."""

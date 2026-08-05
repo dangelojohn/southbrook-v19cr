@@ -410,3 +410,4 @@ from . import test_reconcile_multiwall_shape
 from . import test_send_to_wall_corner_absorption
 from . import test_all_tests_are_imported
 from . import test_template_picker_onchange
+from . import test_design_copy_semantics

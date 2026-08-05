@@ -41,11 +41,22 @@
     <!-- ============================================================
          SB-WALL-1DR — Wall 1-Door (0.75x, 60 min)
          ============================================================ -->
+    <!-- SBK-060b (2026-08-05) — was 0, and that 0 was quietly poisoning BOM
+         resolution on every upgrade. Odoo picks a BOM by ORDER BY sequence,
+         product_id, id; the generated variant-specific CatalogAutoBOM rows sit
+         at sequence 10, so a template-wide Canonical at 0 beat EVERY variant's
+         own cut list — wrong handedness, doubled hardware — and because this
+         file is noupdate="0", each upgrade re-seeded the 0 and reverted any
+         repair. 1000 makes the Canonical what it always was meant to be: the
+         FALLBACK when a variant has no BOM of its own. The 2026-06 cruft
+         concern (demo BoMs at sequence=1) is covered by the id tie-break at
+         equal sequence — the Canonical, seeded earliest, carries the lowest id
+         — and the 19.0.1.9.2 migration demotes any straggler wildcard anyway. -->
     <record id="bom_wall_1dr" model="mrp.bom">
       <field name="product_tmpl_id" ref="southbrook_estimating.wall_1dr"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-WALL-1DR Canonical</field>
     </record>
     <record id="route_wall_1dr_cut" model="mrp.routing.workcenter">
@@ -112,7 +123,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.wall_2dr"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-WALL-2DR Canonical</field>
     </record>
     <record id="route_wall_2dr_cut" model="mrp.routing.workcenter">
@@ -179,7 +190,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.base_2dr"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-BASE-2DR Canonical</field>
     </record>
     <record id="route_base_2dr_cut" model="mrp.routing.workcenter">
@@ -246,7 +257,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.drawer_bank"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-DRAWER Canonical</field>
     </record>
     <record id="route_drawer_cut" model="mrp.routing.workcenter">
@@ -306,7 +317,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.sink_base"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-SINK-BASE Canonical</field>
     </record>
     <record id="route_sink_base_cut" model="mrp.routing.workcenter">
@@ -373,7 +384,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.tall_pantry"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-TALL-PANTRY Canonical</field>
     </record>
     <record id="route_tall_pantry_cut" model="mrp.routing.workcenter">
@@ -440,7 +451,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.tall_oven"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-TALL-OVEN Canonical</field>
     </record>
     <record id="route_tall_oven_cut" model="mrp.routing.workcenter">
@@ -507,7 +518,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.corner"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-CORNER Canonical</field>
     </record>
     <record id="route_corner_cut" model="mrp.routing.workcenter">
@@ -574,7 +585,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.vanity"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-VANITY Canonical</field>
     </record>
     <record id="route_vanity_cut" model="mrp.routing.workcenter">
@@ -642,7 +653,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.accessory"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-ACCESSORY Canonical</field>
     </record>
     <record id="route_accessory_cut" model="mrp.routing.workcenter">
@@ -682,7 +693,7 @@
       <field name="product_tmpl_id" ref="southbrook_estimating.worktop"/>
       <field name="product_qty">1.0</field>
       <field name="type">normal</field>
-      <field name="sequence">0</field>
+      <field name="sequence">1000</field>
       <field name="code">SB-WORKTOP Canonical</field>
     </record>
     <record id="route_worktop_cut" model="mrp.routing.workcenter">

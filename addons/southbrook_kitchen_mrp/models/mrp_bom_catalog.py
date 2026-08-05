@@ -691,7 +691,11 @@ class MrpBom(models.Model):
                 continue
 
             if ours:
-                ours[0].write({"bom_line_ids": [(5, 0, 0)] + bom_line_vals})
+                # SBK-060b — stamp precedence on the update path too. A
+                # pre-existing variant BOM with a NULL sequence sorts LAST
+                # and loses even to a demoted (1000) wildcard.
+                ours[0].write({"bom_line_ids": [(5, 0, 0)] + bom_line_vals,
+                               "sequence": 10})
                 updated += 1
             else:
                 code_base = variant.default_code or tmpl.default_code or ("TMPL-%d" % tmpl.id)
@@ -702,8 +706,37 @@ class MrpBom(models.Model):
                     "product_qty": 1.0,
                     "code": "CatalogAutoBOM-Variant-%s" % code_base,
                     "bom_line_ids": bom_line_vals,
+                    # SBK-060 (2026-08-05) — explicit precedence. Odoo picks a
+                    # BOM with ORDER BY sequence, product_id, id — and Postgres
+                    # sorts NULL sequence LAST. A hand-seeded template-wide
+                    # "Canonical" wildcard carried sequence=0 while every
+                    # generated variant BOM carried NULL, so the wildcard beat
+                    # its own variants: 16 wildcards were shadowing 106 variant
+                    # BOMs, handing the shop the wrong handedness AND doubled
+                    # hardware quantities. A variant-specific BOM must always
+                    # outrank a template-wide fallback.
+                    "sequence": 10,
                 })
                 created += 1
+
+        # SBK-060b — the create above is not enough on its own, and the
+        # ratchet test proved it within minutes of the first fix: on a
+        # database where this generator runs AFTER the precedence
+        # migration (any upgrade that re-seeds), the fresh sequence-10
+        # variant BOMs still lost to a template wildcard the migration had
+        # skipped as "lone" while it genuinely was lone — its variants
+        # only came into existence in this very method. Precedence is an
+        # invariant of GENERATION, not a one-shot repair: whenever this
+        # template now has variant-scoped BOMs, any sibling wildcard that
+        # would sort at-or-before them is demoted where it stands.
+        if created or updated:
+            shadowing = Bom.search([
+                ("product_tmpl_id", "=", tmpl.id),
+                ("product_id", "=", False),
+                ("sequence", "<=", 10),
+            ])
+            if shadowing:
+                shadowing.write({"sequence": 1000})
 
         return created, updated, skipped
 

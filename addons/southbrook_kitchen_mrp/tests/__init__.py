@@ -8,3 +8,4 @@ from . import test_p2_drawer_slide
 from . import test_cabinet_label_w007
 from . import test_catalog_bom_generator
 from . import test_researched_sheet_goods_pricing_2026_08_02
+from . import test_bom_variant_precedence
