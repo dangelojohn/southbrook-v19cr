@@ -3481,6 +3481,14 @@ class SouthbrookKitchenConfigurator extends Component {
     }
 
     // Remove the selected cabinet entirely.
+    // SBK-058 (2026-08-04) — plain deselect, for the "✕" in the Selected
+    // Cabinet panel header. That button used to call
+    // _removeSelectedCabinet, so the one control shaped and placed like a
+    // close button was the only destructive control in the panel.
+    _deselectCabinet() {
+        this.state.selected = null;
+    }
+
     _removeSelectedCabinet() {
         this._markUserAction();   // T7 gate
         const sel = this.state.selected;
@@ -6384,10 +6392,10 @@ SouthbrookKitchenConfigurator.template = xml`
            role="region" aria-labelledby="sbkDetailHeading">
         <div class="o_sbk_detail_head">
           <h4 id="sbkDetailHeading">Selected Cabinet</h4>
-          <button class="o_sbk_detail_remove"
-                  aria-label="Remove this cabinet from the layout"
-                  title="Remove cabinet"
-                  t-on-click="_removeSelectedCabinet">✕</button>
+          <button class="o_sbk_detail_close"
+                  aria-label="Close this panel"
+                  title="Close"
+                  t-on-click="_deselectCabinet">✕</button>
         </div>
         <div class="o_sbk_detail_card">
           <div class="o_sbk_detail_img">
@@ -6516,6 +6524,23 @@ SouthbrookKitchenConfigurator.template = xml`
           <dt>BoM</dt>      <dd><t t-if="state.selected.bom_available">✓ Available</t><t t-else="">—</t></dd>
           <dt>Price</dt>    <dd class="price"><t t-esc="_money(state.selected.price)"/></dd>
         </dl>
+
+        <!-- SBK-058 (2026-08-04) — removal is now an explicit, labelled,
+             destructive action down here, not a bare "✕" in the panel
+             header. That glyph deleted the cabinet: it read as "close this
+             panel" to every user who has ever used a panel, it sat exactly
+             where a close control sits, and it destroyed a cabinet with no
+             confirmation on an auto-saving document. Its only warning was an
+             aria-label nobody sees.
+             Deliberately NOT adding a confirm dialog — this product's users
+             are professionals and undo already covers a real mis-click. The
+             defect was that the control lied about what it did, not that it
+             acted without permission. -->
+        <div class="o_sbk_detail_danger">
+          <button class="o_sbk_detail_remove_btn" type="button"
+                  title="Remove this cabinet from the layout"
+                  t-on-click="_removeSelectedCabinet">Remove cabinet</button>
+        </div>
       </div>
 
     </aside>

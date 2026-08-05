@@ -2893,3 +2893,51 @@ $sbk-amber:      var(--sb-status-warn-fg);
         cursor: not-allowed;
     }
 }
+
+// SBK-058 (2026-08-04) — the panel-header "✕" now closes the panel, and
+// removal moved to an explicit labelled button at the bottom of the card.
+// `.o_sbk_detail_remove` above styled the old destructive glyph; the close
+// control inherits the same box so the header geometry is unchanged, but
+// reads as neutral rather than dangerous.
+.o_sbk_detail_close {
+    border: 1px solid var(--sb-border, rgba(0, 0, 0, 0.15));
+    background: transparent;
+    color: var(--sb-text-muted, #6b6b6b);
+    min-width: 32px;
+    min-height: 32px;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--sb-radius-btn);
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    &:hover {
+        background: var(--sb-surface-2, rgba(0, 0, 0, 0.04));
+        color: var(--sb-text, #1f1f1f);
+    }
+}
+
+.o_sbk_detail_danger {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--sb-border, rgba(0, 0, 0, 0.12));
+}
+
+.o_sbk_detail_remove_btn {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid rgba(192, 73, 47, 0.35);
+    background: transparent;
+    color: #c0492f;
+    border-radius: var(--sb-radius-btn);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+
+    &:hover {
+        background: rgba(192, 73, 47, 0.08);
+    }
+}

@@ -175,7 +175,9 @@ test("clicking the drawer's own Remove control (a close path other than Escape) 
     await tick();
     assert.equal(h.dom.window.document.activeElement, h.root.querySelector(".o_sbk_detail"));
 
-    const removeBtn = h.root.querySelector(".o_sbk_detail_remove");
+    // SBK-058 — removal moved off the header "✕" (which now closes the
+    // panel) onto an explicit labelled button in the card body.
+    const removeBtn = h.root.querySelector(".o_sbk_detail_remove_btn");
     assert.ok(removeBtn);
     removeBtn.click();
     await tick();
@@ -324,5 +326,33 @@ test("_onCustomerInputKeydown: Escape when the picker is already closed is a har
     let called = false;
     c._onCustomerInputKeydown({ key: "Escape", preventDefault: () => { called = true; }, stopPropagation() {} });
     assert.equal(called, false);
+    h.destroy();
+});
+
+test("SBK-058: the panel-header close control deselects and must NOT delete the cabinet", async () => {
+    // Regression guard. That "✕" used to call _removeSelectedCabinet — a
+    // control shaped, placed and read as "close this panel" silently
+    // destroyed a cabinet on an auto-saving document. Its only warning was
+    // an aria-label.
+    const h = await mountConfigurator({});
+    await tick();
+    h.component.state.items = [{ ...SELECTABLE_ITEM }];
+
+    h.canvasProps().onSelectItem(h.component.state.items[0]);
+    await tick();
+
+    const closeBtn = h.root.querySelector(".o_sbk_detail_close");
+    assert.ok(closeBtn, "the header must carry a close control");
+    assert.equal(
+        closeBtn.getAttribute("aria-label"), "Close this panel",
+        "the header control must describe itself as closing, not removing");
+
+    closeBtn.click();
+    await tick();
+
+    assert.equal(h.component.state.selected, null, "closing deselects");
+    assert.equal(
+        h.component.state.items.length, 1,
+        "closing the panel must leave the cabinet in the layout");
     h.destroy();
 });

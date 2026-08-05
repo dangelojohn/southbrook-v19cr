@@ -1351,7 +1351,27 @@ class SouthbrookKitchenConfiguratorController(http.Controller):
         for key, line in saved_lines_by_key.items():
             if key in sentinel_keys:
                 continue
-            if (line.wall or "back") != "back":
+            # SBK-059 (2026-08-04) — a PINNED line has been positioned by
+            # hand and must not be re-packed.
+            #
+            # `pinned` was already honoured one level up, where it skips
+            # auto_arrange — but not here, in the wall-placement pass. So
+            # typing a position for any cabinet on the left, right or front
+            # wall behaved like this: the value saved, `pinned` stuck, the
+            # scene animated to the new spot for about two seconds, and then
+            # this pass recomputed the whole run from the layout engine and
+            # wrote the old value back. The field snapped to its previous
+            # number with no error and no toast.
+            #
+            # That made the only precision-placement control in the product
+            # non-functional on three of the four walls, which is most of a
+            # U-shaped kitchen — and it failed silently, so a designer would
+            # reasonably conclude they had mistyped rather than hit a bug.
+            # The back wall was unaffected, which is why it survived review.
+            #
+            # `pinned` means the designer placed this deliberately. Honour it
+            # in both places.
+            if (line.wall or "back") != "back" and not line.pinned:
                 wall_lines |= line
         placed = []
         if wall_lines:

@@ -4,7 +4,7 @@
         "Isometric Three.js kitchen room configurator backed by "
         "live Odoo cabinet inventory — design, save, and quote."
     ),
-    "version": "19.0.5.47.3",
+    "version": "19.0.5.47.4",
     "category": "Manufacturing/Product Configurator",
     "author": "OdooIQ / REAL Partners Ltd.",
     "website": "https://odooiq.com",
