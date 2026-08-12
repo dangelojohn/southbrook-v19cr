@@ -134,56 +134,52 @@ class TestFacetCoverageMechanism(TransactionCase):
 # x_southbrook_compatible_material_ids and x_southbrook_glue_type were
 # classified into their categories and are no longer unpopulated.
 EXPECTED_UNPOPULATED_FACETS = frozenset({
-    # MEASURED, not derived: this exact set is what
-    # tools.catalog.provider.audit_facet_coverage() reported on the
-    # 2026-08-03 dev copy of the production DB. The pin now tracks
-    # the real improved state after products were classified into the
-    # Adhesives category facets.
-    "Abrasives and Surface Preparation::x_southbrook_compatible_material_ids",
-    "Abrasives and Surface Preparation::x_southbrook_grit",
+    # ── RE-PINNED 2026-08-12: 45 → 8. This is the "shrink the pin, that's
+    # a real improvement" branch of the docstring above, exercised for the
+    # second time (the 08-03 note above was the first).
+    #
+    # MEASURED on prod itself (db southbrook) via
+    # tools.catalog.provider.audit_facet_coverage(), immediately after
+    # scripts/populate_hardware_catalog_specs.py committed. The lineage,
+    # every number measured rather than reasoned about:
+    #   47  the original 2026-07-31 pin
+    #   45  re-pinned 2026-08-03 when the consumables wave populated the
+    #       Adhesives compatible-material and glue-type facets. This was
+    #       CORRECT: an independent audit of prod on 2026-08-12, before
+    #       this change, also reported exactly 45. Two sessions measuring
+    #       the same number from different directions is the pin working.
+    #   54/62 populated after the spec fill → the 8 entries below
+    #
+    # WHAT CHANGED: the 28 products classified into southbrook.tool.
+    # category gained their descriptive spec layer — 534 field values
+    # across dimensions (cutting/shank/blade diameter, tooth count, bore,
+    # kerf, overall length), grit, coatings, material grades, screw
+    # geometry, adhesive open/cure times, shelf lives, substrate
+    # compatibility, replenishment bounds and operator/safety guidance.
+    # The original pin's note that "the 11 classified tools are $1
+    # placeholders carrying no numeric specs at all" is no longer true of
+    # the specs; the $1 prices are still placeholders.
+    #
+    # WHY THESE 8 SURVIVE — and why they are NOT a defect: every one is
+    # x_southbrook_preferred_vendor_id, one per facet category. This DB
+    # holds exactly two suppliers (Marathon Hardware, Upper Canada Forest
+    # Products). Naming either as the preferred vendor for, say, a carbide
+    # router bit would assert a supply relationship that does not exist
+    # and would feed purchasing. That is a procurement decision with a
+    # real-world counterparty, not a spec value, so it is left to a human.
+    # All 8 close in a single pass once real vendors are assigned.
+    #
+    # ENVIRONMENT NOTE still applies unchanged (see above): this is
+    # prod-parity truth, measured with no demo data. A demo-enabled DB
+    # will disagree; prefer running this where the data is real.
     "Abrasives and Surface Preparation::x_southbrook_preferred_vendor_id",
-    "Adhesives, Glues, Sealants::x_southbrook_cure_time_min",
-    "Adhesives, Glues, Sealants::x_southbrook_directness",
-    "Adhesives, Glues, Sealants::x_southbrook_open_time_min",
     "Adhesives, Glues, Sealants::x_southbrook_preferred_vendor_id",
-    "Adhesives, Glues, Sealants::x_southbrook_shelf_life_days",
-    "Adhesives, Glues, Sealants::x_southbrook_tool_family",
-    "CNC Router Bits::x_southbrook_coating",
-    "CNC Router Bits::x_southbrook_compatible_material_ids",
-    "CNC Router Bits::x_southbrook_cutting_diameter_mm",
-    "CNC Router Bits::x_southbrook_cutting_length_mm",
     "CNC Router Bits::x_southbrook_preferred_vendor_id",
-    "CNC Router Bits::x_southbrook_shank_diameter_mm",
-    "Drill and Boring Bits::x_southbrook_cutting_diameter_mm",
-    "Drill and Boring Bits::x_southbrook_material_grade",
-    "Drill and Boring Bits::x_southbrook_overall_length_mm",
     "Drill and Boring Bits::x_southbrook_preferred_vendor_id",
-    "Drill and Boring Bits::x_southbrook_shank_diameter_mm",
-    "Fasteners::x_southbrook_compatible_material_ids",
-    "Fasteners::x_southbrook_directness",
     "Fasteners::x_southbrook_preferred_vendor_id",
-    "Fasteners::x_southbrook_screw_length_mm",
-    "Fasteners::x_southbrook_tool_family",
-    "Finishing and Paint Tools::x_southbrook_directness",
     "Finishing and Paint Tools::x_southbrook_preferred_vendor_id",
-    "Finishing and Paint Tools::x_southbrook_shelf_life_days",
-    "Finishing and Paint Tools::x_southbrook_tool_family",
-    "Saw Blades::x_southbrook_blade_diameter_mm",
-    "Saw Blades::x_southbrook_bore_size_mm",
-    "Saw Blades::x_southbrook_coating",
-    "Saw Blades::x_southbrook_compatible_material_ids",
-    "Saw Blades::x_southbrook_material_grade",
     "Saw Blades::x_southbrook_preferred_vendor_id",
-    "Saw Blades::x_southbrook_tooth_count",
-    "Screws::x_southbrook_compatible_material_ids",
-    "Screws::x_southbrook_directness",
-    "Screws::x_southbrook_drive_type",
-    "Screws::x_southbrook_head_type",
     "Screws::x_southbrook_preferred_vendor_id",
-    "Screws::x_southbrook_screw_length_mm",
-    "Screws::x_southbrook_screw_size",
-    "Screws::x_southbrook_thread_type",
-    "Screws::x_southbrook_tool_family",
 })
 
 
