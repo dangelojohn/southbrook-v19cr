@@ -256,6 +256,51 @@ class ToolsCatalogProvider(models.AbstractModel):
         return [int(x) for x in (category.parent_path or "").strip("/").split("/") if x]
 
     @api.model
+    def _descendant_declarations(self, model_name, category):
+        """Declarations from the subtree BELOW `category`, broadest wins.
+
+        The aggregate case: `category` sits ABOVE every level anyone has
+        declared. Ancestor resolution finds nothing there, because
+        parent_path only ever walks upward — so selecting "Cutting Tools"
+        used to render a grid of 11 products with no spec columns and no
+        facets at all, which reads as "the data is missing" when the data
+        is in fact present one level down. The rows in view are already
+        `child_of category`, so the declarations that describe them are
+        exactly the ones declared on that subtree; gathering them is what
+        makes an ancestor selection a real browse view rather than a dead
+        end.
+
+        Dedupe is on field_name, and here the BROADEST (shallowest)
+        declaration wins — the opposite tie-break to the ancestor case, and
+        deliberately so. Aggregating across sibling subtrees, the label that
+        should survive is the general one ("CNC Router Bits" wanting
+        "Coating"), not one sibling's more specific override, which would
+        otherwise win arbitrarily depending on which subtree sorted first.
+        Depth comes from parent_path length, so ordering is deterministic
+        and does not depend on id order.
+        """
+        subtree = self.env["southbrook.tool.category"].search([
+            ("id", "child_of", category.id), ("id", "!=", category.id)])
+        if not subtree:
+            return self.env[model_name]
+        declared = self.env[model_name].search(
+            [("category_id", "in", subtree.ids)])
+        if not declared:
+            return declared
+
+        def _depth(dec):
+            path = (dec.category_id.parent_path or "").strip("/")
+            return len([x for x in path.split("/") if x])
+
+        by_field = {}
+        for dec in declared.sorted(lambda d: (_depth(d), d.sequence, d.id)):
+            # FIRST (shallowest) wins here — note this is setdefault, where
+            # the ancestor branch below overwrites so its LAST (nearest) wins.
+            by_field.setdefault(dec.field_name, dec)
+        return self.env[model_name].browse(
+            [dec.id for dec in by_field.values()])
+
+    @api.model
     def _resolve_declarations(self, model_name, category):
         """Ancestor-inclusive declarations for `category`, nearest wins.
 
@@ -273,8 +318,14 @@ class ToolsCatalogProvider(models.AbstractModel):
         facet's declared type. One shared resolver means the three call
         sites cannot silently diverge on which declaration wins.
 
+        When nothing is declared at or above `category`, fall back to the
+        subtree below it — see `_descendant_declarations`. That fallback is
+        reached ONLY in the previously-empty case, so no category that
+        renders declarations today changes shape.
+
         Returns an empty recordset of `model_name` when there is nothing to
-        resolve (no category, or no ancestors, or nothing declared).
+        resolve (no category, or no ancestors, or nothing declared anywhere
+        in its subtree either).
         """
         if not category:
             return self.env[model_name]
@@ -283,7 +334,7 @@ class ToolsCatalogProvider(models.AbstractModel):
             return self.env[model_name]
         declared = self.env[model_name].search([("category_id", "in", ids)])
         if not declared:
-            return declared
+            return self._descendant_declarations(model_name, category)
         # Nearest declaration wins: order by depth of its category in `ids`
         # (ancestors first, `category` itself last), then collapse into a
         # dict keyed on field_name — the LAST write for a given field_name
