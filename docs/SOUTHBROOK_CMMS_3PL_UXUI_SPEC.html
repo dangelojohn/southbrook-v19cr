@@ -1,0 +1,1931 @@
+<title>Project SIGHTLINE</title>
+<style>
+/* Project SIGHTLINE — spec sheet
+   Palette: cool draughting paper + steel-blue ink rules.
+   Semantic health/severity colours are the spec's own SL-F04 tokens. */
+
+:root {
+  --ground:      #E9EDF1;
+  --surface:     #FDFEFE;
+  --surface-2:   #F1F4F7;
+  --ink:         #131A20;
+  --ink-2:       #53616C;
+  --ink-3:       #616C76;
+  --rule:        #D3DBE1;
+  --rule-2:      #B6C2CB;
+  --accent:      #1D5A78;
+  --accent-2:    #2E7EA3;
+  --accent-soft: #DEEAF1;
+
+  /* SL-F04 signal palette. --good and --critical are the spec's own values;
+     --watch and --degraded are darkened from #b8860b / #c2571a, which read at
+     3.2:1 and 4.4:1 on white and so miss the spec's own 4.5:1 acceptance bar. */
+  --good:      #1a7f5a;
+  --watch:     #7A6800;
+  --degraded:  #B14E14;
+  --critical:  #b02a2a;
+  --unknown:   #5C6470;
+
+  /* syntax */
+  --c-tag:  #1D5A78;
+  --c-attr: #8A5320;
+  --c-str:  #2F6B4F;
+  --c-com:  #616C76;
+  --c-num:  #7A4C86;
+
+  --font-display: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-body: Charter, "Bitstream Charter", "Iowan Old Style", "Source Serif 4", "Source Serif Pro", Georgia, serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, "JetBrains Mono", Consolas, monospace;
+
+  --shadow: 0 1px 2px rgba(19, 26, 32, .05), 0 8px 24px -16px rgba(19, 26, 32, .28);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0E1418;
+    --surface:     #151D23;
+    --surface-2:   #1A242B;
+    --ink:         #E3EAEF;
+    --ink-2:       #9BAAB4;
+    --ink-3:       #838F99;
+    --rule:        #26313A;
+    --rule-2:      #3A4750;
+    --accent:      #79B8D7;
+    --accent-2:    #A5D3EA;
+    --accent-soft: #16303D;
+
+    --good:      #4FBF92;
+    --watch:     #D9AE45;
+    --degraded:  #E8894F;
+    --critical:  #E8706E;
+    --unknown:   #94A1AB;
+
+    --c-tag:  #79B8D7;
+    --c-attr: #D6A472;
+    --c-str:  #83CBA6;
+    --c-com:  #7A8892;
+    --c-num:  #C29AD4;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .8);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground:      #0E1418;
+  --surface:     #151D23;
+  --surface-2:   #1A242B;
+  --ink:         #E3EAEF;
+  --ink-2:       #9BAAB4;
+  --ink-3:       #838F99;
+  --rule:        #26313A;
+  --rule-2:      #3A4750;
+  --accent:      #79B8D7;
+  --accent-2:    #A5D3EA;
+  --accent-soft: #16303D;
+
+  --good:      #4FBF92;
+  --watch:     #D9AE45;
+  --degraded:  #E8894F;
+  --critical:  #E8706E;
+  --unknown:   #94A1AB;
+
+  --c-tag:  #79B8D7;
+  --c-attr: #D6A472;
+  --c-str:  #83CBA6;
+  --c-com:  #7A8892;
+  --c-num:  #C29AD4;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .8);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16.5px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-underline-offset: 2px; text-decoration-thickness: 1px; }
+a:focus-visible, summary:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ── shell ────────────────────────────────────────────────── */
+
+.wrap {
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 6rem;
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: 0 3.5rem;
+  align-items: start;
+}
+
+.rail {
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+  padding: 2.25rem 0 3rem;
+  font-family: var(--font-display);
+  font-size: .78rem;
+  line-height: 1.45;
+  scrollbar-width: thin;
+}
+
+.rail-title {
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding-bottom: .55rem;
+  margin-bottom: .7rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.rail nav { display: flex; flex-direction: column; }
+.rail a {
+  display: block;
+  padding: .26rem 0 .26rem .7rem;
+  color: var(--ink-2);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+.rail a:hover { color: var(--accent); background: var(--surface-2); }
+.rail a.part {
+  color: var(--ink);
+  font-weight: 620;
+  letter-spacing: .01em;
+  margin-top: .85rem;
+  font-size: .8rem;
+}
+.rail a.sub { padding-left: 1.35rem; font-size: .755rem; }
+.rail a.leaf {
+  padding-left: 1.35rem;
+  font-size: .73rem;
+  color: var(--ink-3);
+  display: flex;
+  gap: .4rem;
+  align-items: baseline;
+}
+.rail a.leaf b {
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--ink-3);
+  flex: none;
+}
+.rail a.leaf:hover, .rail a.leaf:hover b { color: var(--accent); }
+.rail a.here { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+.rail a.here b { color: var(--accent); }
+
+.rail-foot {
+  margin-top: 1.6rem;
+  padding-top: .8rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  letter-spacing: .06em;
+  color: var(--ink-3);
+}
+
+.mobile-index { display: none; }
+
+/* ── title block ──────────────────────────────────────────── */
+
+.sheet { padding-top: 2.25rem; }
+
+.masthead {
+  background: var(--surface);
+  border: 1px solid var(--rule-2);
+  border-top: 3px solid var(--accent);
+  box-shadow: var(--shadow);
+}
+
+.masthead-head { padding: 1.9rem 2rem 1.5rem; border-bottom: 1px solid var(--rule); }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: .66rem;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 .8rem;
+}
+
+.masthead h1 {
+  font-family: var(--font-display);
+  font-size: clamp(2.3rem, 5.5vw, 3.4rem);
+  font-weight: 700;
+  letter-spacing: -.025em;
+  line-height: 1.02;
+  margin: 0;
+  text-wrap: balance;
+}
+.masthead h1 span { color: var(--ink-3); font-weight: 300; }
+
+.masthead .lede {
+  margin: .9rem 0 0;
+  font-size: 1.12rem;
+  color: var(--ink-2);
+  max-width: 44ch;
+}
+
+.titleblock {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  border-top: 0;
+}
+.titleblock div {
+  padding: .8rem 1rem .85rem;
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+.titleblock dt {
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 .3rem;
+}
+.titleblock dd {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: .86rem;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.tally {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  background: var(--surface-2);
+}
+.tally div { padding: .95rem 1rem; border-right: 1px solid var(--rule); }
+.tally b {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 1.7rem;
+  font-weight: 680;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.tally span {
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.tally .crit b { color: var(--critical); }
+
+/* ── document body ────────────────────────────────────────── */
+
+.doc { max-width: 47rem; }
+.doc > section, .doc section section { scroll-margin-top: 1rem; }
+
+.doc h1, .doc h2, .doc h3, .doc h4 {
+  font-family: var(--font-display);
+  text-wrap: balance;
+  letter-spacing: -.015em;
+}
+
+/* part banner */
+.doc > section > h1 {
+  font-size: 1.02rem;
+  font-weight: 680;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  margin: 4.5rem 0 2rem;
+  padding: 0 0 .7rem;
+  border-bottom: 2px solid var(--accent);
+  color: var(--accent);
+}
+.doc > section:first-of-type > h1 { margin-top: 3rem; }
+
+.doc h2 {
+  font-size: 1.6rem;
+  font-weight: 660;
+  margin: 3.2rem 0 1.1rem;
+  line-height: 1.2;
+}
+.doc h2 strong { font-weight: 660; }
+
+.doc h3 {
+  font-size: 1.16rem;
+  font-weight: 650;
+  margin: 2.6rem 0 .9rem;
+  line-height: 1.3;
+}
+
+.doc p { margin: 0 0 1.05rem; }
+.doc strong { font-weight: 700; }
+.doc em { font-style: italic; }
+.doc hr { display: none; }
+
+.doc ul, .doc ol { margin: 0 0 1.15rem; padding-left: 1.2rem; }
+.doc li { margin: 0 0 .42rem; }
+.doc li::marker { color: var(--ink-3); }
+
+.doc code {
+  font-family: var(--font-mono);
+  font-size: .845em;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: .08em .32em;
+  word-break: break-word;
+}
+
+/* ── plates (the SL-xx enhancement records) ───────────────── */
+
+.plate { border-top: 1px solid var(--rule); padding-top: 1.9rem; margin-top: 2.6rem; }
+.plate > h3 { margin-top: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .6rem; }
+
+.plate-id {
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  padding: .18rem .42rem;
+  white-space: nowrap;
+  text-decoration: none;
+  align-self: center;
+}
+a.plate-id:hover { background: var(--accent); color: var(--surface); }
+.plate-name { font-size: 1.24rem; font-weight: 680; }
+.plate-sub { font-weight: 400; color: var(--ink-2); font-size: 1.02rem; letter-spacing: 0; }
+
+.plate-tag {
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: -.35rem 0 1.1rem !important;
+}
+.plate-tag a { color: var(--degraded); text-decoration: none; border-bottom: 1px dotted currentColor; }
+
+/* Problem / Change / Implementation / Done when */
+.doc .plate > p > strong:first-child {
+  font-family: var(--font-display);
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-right: .15rem;
+}
+
+.doc blockquote {
+  margin: 0 0 1.2rem;
+  padding: .75rem 0 .75rem 1.1rem;
+  border-left: 3px solid var(--rule-2);
+  color: var(--ink-2);
+}
+.doc blockquote p:last-child { margin-bottom: 0; }
+.doc blockquote em { color: var(--ink-2); }
+.plate > blockquote { border-left-color: var(--degraded); }
+
+/* ── tables ───────────────────────────────────────────────── */
+
+.tablewrap {
+  overflow-x: auto;
+  margin: 0 0 1.5rem;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  width: max-content;
+  max-width: 100%;
+}
+@media (min-width: 1180px) {
+  .tablewrap, .doc .sourceCode { max-width: min(58rem, calc(100vw - 22rem)); }
+}
+
+.doc table { border-collapse: collapse; font-family: var(--font-display); font-size: .84rem; width: 100%; }
+.doc th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  padding: .6rem .8rem;
+  border-bottom: 1px solid var(--rule-2);
+  white-space: nowrap;
+}
+.doc td {
+  padding: .58rem .8rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  line-height: 1.45;
+}
+.doc tbody tr:last-child td { border-bottom: 0; }
+.doc td code { font-size: .82em; background: none; border: 0; padding: 0; color: var(--ink-2); }
+.doc td:first-child { font-variant-numeric: tabular-nums; }
+
+tr.defect { scroll-margin-top: 5rem; }
+tr.defect:target { background: var(--accent-soft); }
+tr.defect td:first-child { font-family: var(--font-mono); font-weight: 600; color: var(--ink-2); }
+
+/* severity read as a 4-step meter + label, never colour alone (the spec's own D13 rule) */
+.sev { display: inline-flex; align-items: center; gap: .45rem; white-space: nowrap; }
+.sev-meter { display: inline-flex; gap: 2px; }
+.sev-meter i { width: 5px; height: 12px; background: currentColor; opacity: .22; border-radius: 1px; }
+.sev-meter i.on { opacity: 1; }
+.sev-label { font-family: var(--font-mono); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; font-weight: 600; }
+.sev-critical { color: var(--critical); }
+.sev-high     { color: var(--degraded); }
+.sev-medium   { color: var(--watch); }
+.sev-low      { color: var(--unknown); }
+
+.fixed-by { font-family: var(--font-mono); font-size: .68rem; }
+.fixed-by a { text-decoration: none; border-bottom: 1px solid var(--rule-2); }
+.fixed-by .none { color: var(--ink-3); }
+
+/* ── code ─────────────────────────────────────────────────── */
+
+.doc .sourceCode, .doc pre:not(.sourceCode) {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-2);
+  margin: 0 0 1.5rem;
+}
+.doc pre {
+  margin: 0;
+  padding: .95rem 1.1rem;
+  font-family: var(--font-mono);
+  font-size: .765rem;
+  line-height: 1.62;
+  tab-size: 2;
+}
+.doc pre code { background: none; border: 0; padding: 0; font-size: inherit; white-space: pre; }
+.doc pre.text code { color: var(--ink-2); }
+
+.doc .kw, .doc .fu { color: var(--c-tag); }
+.doc .ot, .doc .at { color: var(--c-attr); }
+.doc .st, .doc .ch, .doc .vs { color: var(--c-str); }
+.doc .co { color: var(--c-com); font-style: italic; }
+.doc .dv, .doc .fl, .doc .bn, .doc .cn { color: var(--c-num); }
+.doc .va, .doc .dt, .doc .op, .doc .in, .doc .im, .doc .er, .doc .al { color: var(--ink); }
+
+/* ── task lists (acceptance criteria) ─────────────────────── */
+
+.doc ul.task-list { list-style: none; padding-left: 0; }
+.doc ul.task-list li {
+  display: flex;
+  gap: .65rem;
+  align-items: baseline;
+  padding: .42rem .1rem;
+  border-bottom: 1px dotted var(--rule);
+}
+.doc ul.task-list input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--rule-2);
+  border-radius: 2px;
+  background: var(--surface);
+  translate: 0 2px;
+}
+
+/* ── appendix index chips ─────────────────────────────────── */
+
+.chipgrid { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 1.4rem; }
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .4rem;
+  font-family: var(--font-display);
+  font-size: .78rem;
+  text-decoration: none;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: .28rem .55rem;
+}
+.chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+.chip b {
+  font-family: var(--font-mono);
+  font-size: .66rem;
+  font-weight: 600;
+  letter-spacing: .03em;
+  color: var(--accent);
+}
+.chipcount {
+  font-family: var(--font-mono);
+  font-size: .64rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 .55rem;
+}
+
+.colophon {
+  margin-top: 4rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+/* ── narrow ───────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 1.1rem 4rem; }
+  .rail { display: none; }
+  .mobile-index {
+    display: block;
+    margin: 1.5rem 0 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+  }
+  .mobile-index summary {
+    cursor: pointer;
+    padding: .7rem .9rem;
+    font-family: var(--font-mono);
+    font-size: .68rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .mobile-index nav { padding: 0 .9rem .8rem; display: flex; flex-direction: column; }
+  .mobile-index a { font-family: var(--font-display); font-size: .85rem; padding: .3rem 0; color: var(--ink-2); text-decoration: none; }
+  .mobile-index a.part { color: var(--ink); font-weight: 640; margin-top: .5rem; }
+  .sheet { padding-top: 1.25rem; }
+  .masthead-head { padding: 1.4rem 1.15rem 1.15rem; }
+  .titleblock div { padding: .7rem .9rem; }
+  .doc pre { font-size: .72rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}
+
+html { scroll-behavior: smooth; }
+
+</style>
+
+<div class="wrap">
+<aside class="rail">
+  <p class="rail-title">Contents</p>
+  <nav id="rail-nav">
+<a class="part" href="#0-how-to-use-this-document" data-target="0-how-to-use-this-document">0. How to use this document</a>
+<a class="part" href="#1-ground-truth--what-actually-exists-today" data-target="1-ground-truth--what-actually-exists-today">1. Ground truth — what actually exists today</a>
+<a class="leaf" href="#11-the-screen-family" data-target="11-the-screen-family">1.1 The screen family</a>
+<a class="leaf" href="#12-field-inventory-mail-mixin-fields-stripped" data-target="12-field-inventory-mail-mixin-fields-stripped">1.2 Field inventory (mail-mixin fields stripped)</a>
+<a class="leaf" href="#13-adjacent-fields-you-are-allowed-to-pull-from" data-target="13-adjacent-fields-you-are-allowed-to-pull-from">1.3 Adjacent fields you are allowed to pull from</a>
+<a class="leaf" href="#14-defects-and-gaps-found-during-the-walkthrough" data-target="14-defects-and-gaps-found-during-the-walkthrough">1.4 Defects and gaps found during the walkthrough</a>
+<a class="part" href="#2-design-principles-for-this-program" data-target="2-design-principles-for-this-program">2. Design principles for this program</a>
+<a class="leaf" href="#21-role-model" data-target="21-role-model">2.1 Role model</a>
+<a class="part" href="#phase-0--foundation" data-target="phase-0--foundation">PHASE 0 — FOUNDATION</a>
+<a class="leaf" href="#sl-f01--ground-truth--search-views-for-all-six-models" data-target="sl-f01--ground-truth--search-views-for-all-six-models"><b>SL-F01</b>Ground Truth</a>
+<a class="leaf" href="#sl-f02--nameplate--reference-sequence-and-label-hygiene" data-target="sl-f02--nameplate--reference-sequence-and-label-hygiene"><b>SL-F02</b>Nameplate</a>
+<a class="leaf" href="#sl-f03--doorman--menu-visibility-follows-access-rights" data-target="sl-f03--doorman--menu-visibility-follows-access-rights"><b>SL-F03</b>Doorman</a>
+<a class="leaf" href="#sl-f04--signal-palette--the-cmms-design-token-layer" data-target="sl-f04--signal-palette--the-cmms-design-token-layer"><b>SL-F04</b>Signal Palette</a>
+<a class="leaf" href="#sl-f05--column-discipline--list-ergonomics-pass" data-target="sl-f05--column-discipline--list-ergonomics-pass"><b>SL-F05</b>Column Discipline</a>
+<a class="leaf" href="#sl-f06--density-switch--comfortable--compact--tech" data-target="sl-f06--density-switch--comfortable--compact--tech"><b>SL-F06</b>Density Switch</a>
+<a class="leaf" href="#sl-f07--empty-states-that-teach" data-target="sl-f07--empty-states-that-teach"><b>SL-F07</b>Empty States That Teach</a>
+<a class="leaf" href="#sl-f08--load-bearing--performance-and-growth-guards" data-target="sl-f08--load-bearing--performance-and-growth-guards"><b>SL-F08</b>Load Bearing</a>
+<a class="part" href="#phase-1--screen-upgrades" data-target="phase-1--screen-upgrades">PHASE 1 — SCREEN UPGRADES</a>
+<a class="sub" href="#1a--screen-equipment-reliability--mtbfmttr-action-1401" data-target="1a--screen-equipment-reliability--mtbfmttr-action-1401">1A · Screen: Equipment Reliability — MTBF/MTTR (action 1401)</a>
+<a class="leaf" href="#sl-01--reliability-ledger--the-rebuilt-list" data-target="sl-01--reliability-ledger--the-rebuilt-list"><b>SL-01</b>Reliability Ledger</a>
+<a class="leaf" href="#sl-02--fleet-health-board--new-kanban" data-target="sl-02--fleet-health-board--new-kanban"><b>SL-02</b>Fleet Health Board</a>
+<a class="leaf" href="#sl-03--reliability-pivot" data-target="sl-03--reliability-pivot"><b>SL-03</b>Reliability Pivot</a>
+<a class="leaf" href="#sl-04--trend-wall--upgraded-graph" data-target="sl-04--trend-wall--upgraded-graph"><b>SL-04</b>Trend Wall</a>
+<a class="leaf" href="#sl-05--failure-cohort" data-target="sl-05--failure-cohort"><b>SL-05</b>Failure Cohort</a>
+<a class="leaf" href="#sl-06--equipment-reliability-card--form-redesign" data-target="sl-06--equipment-reliability-card--form-redesign"><b>SL-06</b>Equipment Reliability Card</a>
+<a class="sub" href="#1b--screen-breakdown-alerts-action-1402" data-target="1b--screen-breakdown-alerts-action-1402">1B · Screen: Breakdown Alerts (action 1402)</a>
+<a class="leaf" href="#sl-07--triage-board--kanban-rework" data-target="sl-07--triage-board--kanban-rework"><b>SL-07</b>Triage Board</a>
+<a class="leaf" href="#sl-08--escalation-ladder--sla-ageing" data-target="sl-08--escalation-ladder--sla-ageing"><b>SL-08</b>Escalation Ladder</a>
+<a class="leaf" href="#sl-09--one-tap-dispatch--form-for-the-floor" data-target="sl-09--one-tap-dispatch--form-for-the-floor"><b>SL-09</b>One-Tap Dispatch</a>
+<a class="leaf" href="#sl-10--blast-radius-panel" data-target="sl-10--blast-radius-panel"><b>SL-10</b>Blast Radius Panel</a>
+<a class="leaf" href="#sl-11--alert-calendar--map" data-target="sl-11--alert-calendar--map"><b>SL-11</b>Alert Calendar &amp; Map</a>
+<a class="sub" href="#1c--screen-equipment-service-contracts-action-1403" data-target="1c--screen-equipment-service-contracts-action-1403">1C · Screen: Equipment Service Contracts (action 1403)</a>
+<a class="leaf" href="#sl-12--coverage-timeline--gantt" data-target="sl-12--coverage-timeline--gantt"><b>SL-12</b>Coverage Timeline</a>
+<a class="leaf" href="#sl-13--expiry-runway--list-rework" data-target="sl-13--expiry-runway--list-rework"><b>SL-13</b>Expiry Runway</a>
+<a class="leaf" href="#sl-14--coverage-sheet--form-rework" data-target="sl-14--coverage-sheet--form-rework"><b>SL-14</b>Coverage Sheet</a>
+<a class="leaf" href="#sl-15--uncovered-equipment-radar" data-target="sl-15--uncovered-equipment-radar"><b>SL-15</b>Uncovered Equipment Radar</a>
+<a class="sub" href="#1d--screen-landed-cost-templates-action-1404" data-target="1d--screen-landed-cost-templates-action-1404">1D · Screen: Landed Cost Templates (action 1404)</a>
+<a class="leaf" href="#sl-16--rate-card--list-rework" data-target="sl-16--rate-card--list-rework"><b>SL-16</b>Rate Card</a>
+<a class="leaf" href="#sl-17--cost-stack-simulator--form" data-target="sl-17--cost-stack-simulator--form"><b>SL-17</b>Cost Stack Simulator</a>
+<a class="leaf" href="#sl-18--vendor-mapping-matrix" data-target="sl-18--vendor-mapping-matrix"><b>SL-18</b>Vendor Mapping Matrix</a>
+<a class="sub" href="#1e--screen-cmms--wms-command-deck-action-1405" data-target="1e--screen-cmms--wms-command-deck-action-1405">1E · Screen: CMMS / WMS Command Deck (action 1405)</a>
+<a class="leaf" href="#sl-19--command-deck--kill-the-list-build-the-dashboard" data-target="sl-19--command-deck--kill-the-list-build-the-dashboard"><b>SL-19</b>Command Deck</a>
+<a class="leaf" href="#sl-20--snapshot-history" data-target="sl-20--snapshot-history"><b>SL-20</b>Snapshot History</a>
+<a class="sub" href="#1f--screen-3pl-advance-shipping-notices-action-1370" data-target="1f--screen-3pl-advance-shipping-notices-action-1370">1F · Screen: 3PL Advance Shipping Notices (action 1370)</a>
+<a class="leaf" href="#sl-21--shipment-pipeline--kanban" data-target="sl-21--shipment-pipeline--kanban"><b>SL-21</b>Shipment Pipeline</a>
+<a class="leaf" href="#sl-22--permit-corridor" data-target="sl-22--permit-corridor"><b>SL-22</b>Permit Corridor</a>
+<a class="leaf" href="#sl-23--payload-inspector" data-target="sl-23--payload-inspector"><b>SL-23</b>Payload Inspector</a>
+<a class="leaf" href="#sl-24--asn-timeline" data-target="sl-24--asn-timeline"><b>SL-24</b>ASN Timeline</a>
+<a class="part" href="#phase-2--beyond-standard-odoo" data-target="phase-2--beyond-standard-odoo">PHASE 2 — BEYOND STANDARD ODOO</a>
+<a class="leaf" href="#sl-x1--plant-floor-live-map" data-target="sl-x1--plant-floor-live-map"><b>SL-X1</b>Plant Floor Live Map</a>
+<a class="leaf" href="#sl-x2--reliability-bathtub-curve" data-target="sl-x2--reliability-bathtub-curve"><b>SL-X2</b>Reliability Bathtub Curve</a>
+<a class="leaf" href="#sl-x3--downtime-pareto--waterfall" data-target="sl-x3--downtime-pareto--waterfall"><b>SL-X3</b>Downtime Pareto &amp; Waterfall</a>
+<a class="leaf" href="#sl-x4--failure-runway" data-target="sl-x4--failure-runway"><b>SL-X4</b>Failure Runway</a>
+<a class="leaf" href="#sl-x5--blast-radius-graph" data-target="sl-x5--blast-radius-graph"><b>SL-X5</b>Blast Radius Graph</a>
+<a class="leaf" href="#sl-x6--command-deck-owl" data-target="sl-x6--command-deck-owl"><b>SL-X6</b>Command Deck (OWL)</a>
+<a class="leaf" href="#sl-x7--tech-mode" data-target="sl-x7--tech-mode"><b>SL-X7</b>Tech Mode</a>
+<a class="leaf" href="#sl-x8--asset-passport" data-target="sl-x8--asset-passport"><b>SL-X8</b>Asset Passport</a>
+<a class="leaf" href="#sl-x9--coverage-heat-grid" data-target="sl-x9--coverage-heat-grid"><b>SL-X9</b>Coverage Heat Grid</a>
+<a class="leaf" href="#sl-x10--landed-cost-waterfall-simulator" data-target="sl-x10--landed-cost-waterfall-simulator"><b>SL-X10</b>Landed Cost Waterfall Simulator</a>
+<a class="leaf" href="#sl-x11--3pl-load-board" data-target="sl-x11--3pl-load-board"><b>SL-X11</b>3PL Load Board</a>
+<a class="leaf" href="#sl-x12--reliability-ticker" data-target="sl-x12--reliability-ticker"><b>SL-X12</b>Reliability Ticker</a>
+<a class="leaf" href="#sl-x13--downtime-cost-lens" data-target="sl-x13--downtime-cost-lens"><b>SL-X13</b>Downtime Cost Lens</a>
+<a class="leaf" href="#sl-x14--anomaly-spotlight" data-target="sl-x14--anomaly-spotlight"><b>SL-X14</b>Anomaly Spotlight</a>
+<a class="leaf" href="#sl-x15--shift-handover-digest" data-target="sl-x15--shift-handover-digest"><b>SL-X15</b>Shift Handover Digest</a>
+<a class="part" href="#3--cross-cutting-requirements" data-target="3--cross-cutting-requirements">3 · Cross-cutting requirements</a>
+<a class="leaf" href="#31-accessibility-non-negotiable" data-target="31-accessibility-non-negotiable">3.1 Accessibility (non-negotiable)</a>
+<a class="leaf" href="#32-keyboard" data-target="32-keyboard">3.2 Keyboard</a>
+<a class="leaf" href="#33-mobile--responsive" data-target="33-mobile--responsive">3.3 Mobile / responsive</a>
+<a class="leaf" href="#34-notifications" data-target="34-notifications">3.4 Notifications</a>
+<a class="leaf" href="#35-what-not-to-do" data-target="35-what-not-to-do">3.5 What NOT to do</a>
+<a class="part" href="#4--module-structure-for-implementation" data-target="4--module-structure-for-implementation">4 · Module structure for implementation</a>
+<a class="part" href="#5--delivery-sequence" data-target="5--delivery-sequence">5 · Delivery sequence</a>
+<a class="part" href="#6--acceptance-criteria" data-target="6--acceptance-criteria">6 · Acceptance criteria</a>
+<a class="sub" href="#appendix-a--enhancement-index" data-target="appendix-a--enhancement-index">Appendix A — Enhancement index</a>
+<a class="sub" href="#appendix-b--verification-notes" data-target="appendix-b--verification-notes">Appendix B — Verification notes</a>
+  </nav>
+  <p class="rail-foot">47 enhancements<br>8 foundation ·
+  24 screen · 15 custom</p>
+</aside>
+
+<main class="sheet">
+  <header class="masthead">
+    <div class="masthead-head">
+      <p class="eyebrow">UX/UI Enhancement Specification</p>
+      <h1>Project <span>SIGHTLINE</span></h1>
+      <p class="lede">Rebuilding the Southbrook CMMS &amp; 3PL screen family so the
+      exception — not the average — is what the screen shows.</p>
+    </div>
+    <dl class="titleblock">
+      <div><dt>Target instance</dt><dd>southbrookcabinetry.space</dd></div>
+      <div><dt>Platform</dt><dd>Odoo 17 / 18</dd></div>
+      <div><dt>Authored</dt><dd>2026-08-13 · Claude (Cowork)</dd></div>
+      <div><dt>Consumer</dt><dd>Claude Code — implementation agent</dd></div>
+      <div><dt>Basis</dt><dd>Live DB introspection + screen walkthrough</dd></div>
+      <div><dt>Deliverable</dt><dd>Build spec, not a mockup</dd></div>
+    </dl>
+    <div class="tally">
+      <div><b>47</b><span>Enhancements</span></div>
+      <div class="crit"><b>14</b><span>Defects found</span></div>
+      <div><b>3</b><span>Phases</span></div>
+      <div><b>8</b><span>Delivery waves</span></div>
+      <div><b>6</b><span>Models in scope</span></div>
+    </div>
+  </header>
+
+  <details class="mobile-index">
+    <summary>Contents</summary>
+    <nav>
+<a class="part" href="#0-how-to-use-this-document" data-target="0-how-to-use-this-document">0. How to use this document</a>
+<a class="part" href="#1-ground-truth--what-actually-exists-today" data-target="1-ground-truth--what-actually-exists-today">1. Ground truth — what actually exists today</a>
+<a class="leaf" href="#11-the-screen-family" data-target="11-the-screen-family">1.1 The screen family</a>
+<a class="leaf" href="#12-field-inventory-mail-mixin-fields-stripped" data-target="12-field-inventory-mail-mixin-fields-stripped">1.2 Field inventory (mail-mixin fields stripped)</a>
+<a class="leaf" href="#13-adjacent-fields-you-are-allowed-to-pull-from" data-target="13-adjacent-fields-you-are-allowed-to-pull-from">1.3 Adjacent fields you are allowed to pull from</a>
+<a class="leaf" href="#14-defects-and-gaps-found-during-the-walkthrough" data-target="14-defects-and-gaps-found-during-the-walkthrough">1.4 Defects and gaps found during the walkthrough</a>
+<a class="part" href="#2-design-principles-for-this-program" data-target="2-design-principles-for-this-program">2. Design principles for this program</a>
+<a class="leaf" href="#21-role-model" data-target="21-role-model">2.1 Role model</a>
+<a class="part" href="#phase-0--foundation" data-target="phase-0--foundation">PHASE 0 — FOUNDATION</a>
+<a class="leaf" href="#sl-f01--ground-truth--search-views-for-all-six-models" data-target="sl-f01--ground-truth--search-views-for-all-six-models"><b>SL-F01</b>Ground Truth</a>
+<a class="leaf" href="#sl-f02--nameplate--reference-sequence-and-label-hygiene" data-target="sl-f02--nameplate--reference-sequence-and-label-hygiene"><b>SL-F02</b>Nameplate</a>
+<a class="leaf" href="#sl-f03--doorman--menu-visibility-follows-access-rights" data-target="sl-f03--doorman--menu-visibility-follows-access-rights"><b>SL-F03</b>Doorman</a>
+<a class="leaf" href="#sl-f04--signal-palette--the-cmms-design-token-layer" data-target="sl-f04--signal-palette--the-cmms-design-token-layer"><b>SL-F04</b>Signal Palette</a>
+<a class="leaf" href="#sl-f05--column-discipline--list-ergonomics-pass" data-target="sl-f05--column-discipline--list-ergonomics-pass"><b>SL-F05</b>Column Discipline</a>
+<a class="leaf" href="#sl-f06--density-switch--comfortable--compact--tech" data-target="sl-f06--density-switch--comfortable--compact--tech"><b>SL-F06</b>Density Switch</a>
+<a class="leaf" href="#sl-f07--empty-states-that-teach" data-target="sl-f07--empty-states-that-teach"><b>SL-F07</b>Empty States That Teach</a>
+<a class="leaf" href="#sl-f08--load-bearing--performance-and-growth-guards" data-target="sl-f08--load-bearing--performance-and-growth-guards"><b>SL-F08</b>Load Bearing</a>
+<a class="part" href="#phase-1--screen-upgrades" data-target="phase-1--screen-upgrades">PHASE 1 — SCREEN UPGRADES</a>
+<a class="sub" href="#1a--screen-equipment-reliability--mtbfmttr-action-1401" data-target="1a--screen-equipment-reliability--mtbfmttr-action-1401">1A · Screen: Equipment Reliability — MTBF/MTTR (action 1401)</a>
+<a class="leaf" href="#sl-01--reliability-ledger--the-rebuilt-list" data-target="sl-01--reliability-ledger--the-rebuilt-list"><b>SL-01</b>Reliability Ledger</a>
+<a class="leaf" href="#sl-02--fleet-health-board--new-kanban" data-target="sl-02--fleet-health-board--new-kanban"><b>SL-02</b>Fleet Health Board</a>
+<a class="leaf" href="#sl-03--reliability-pivot" data-target="sl-03--reliability-pivot"><b>SL-03</b>Reliability Pivot</a>
+<a class="leaf" href="#sl-04--trend-wall--upgraded-graph" data-target="sl-04--trend-wall--upgraded-graph"><b>SL-04</b>Trend Wall</a>
+<a class="leaf" href="#sl-05--failure-cohort" data-target="sl-05--failure-cohort"><b>SL-05</b>Failure Cohort</a>
+<a class="leaf" href="#sl-06--equipment-reliability-card--form-redesign" data-target="sl-06--equipment-reliability-card--form-redesign"><b>SL-06</b>Equipment Reliability Card</a>
+<a class="sub" href="#1b--screen-breakdown-alerts-action-1402" data-target="1b--screen-breakdown-alerts-action-1402">1B · Screen: Breakdown Alerts (action 1402)</a>
+<a class="leaf" href="#sl-07--triage-board--kanban-rework" data-target="sl-07--triage-board--kanban-rework"><b>SL-07</b>Triage Board</a>
+<a class="leaf" href="#sl-08--escalation-ladder--sla-ageing" data-target="sl-08--escalation-ladder--sla-ageing"><b>SL-08</b>Escalation Ladder</a>
+<a class="leaf" href="#sl-09--one-tap-dispatch--form-for-the-floor" data-target="sl-09--one-tap-dispatch--form-for-the-floor"><b>SL-09</b>One-Tap Dispatch</a>
+<a class="leaf" href="#sl-10--blast-radius-panel" data-target="sl-10--blast-radius-panel"><b>SL-10</b>Blast Radius Panel</a>
+<a class="leaf" href="#sl-11--alert-calendar--map" data-target="sl-11--alert-calendar--map"><b>SL-11</b>Alert Calendar &amp; Map</a>
+<a class="sub" href="#1c--screen-equipment-service-contracts-action-1403" data-target="1c--screen-equipment-service-contracts-action-1403">1C · Screen: Equipment Service Contracts (action 1403)</a>
+<a class="leaf" href="#sl-12--coverage-timeline--gantt" data-target="sl-12--coverage-timeline--gantt"><b>SL-12</b>Coverage Timeline</a>
+<a class="leaf" href="#sl-13--expiry-runway--list-rework" data-target="sl-13--expiry-runway--list-rework"><b>SL-13</b>Expiry Runway</a>
+<a class="leaf" href="#sl-14--coverage-sheet--form-rework" data-target="sl-14--coverage-sheet--form-rework"><b>SL-14</b>Coverage Sheet</a>
+<a class="leaf" href="#sl-15--uncovered-equipment-radar" data-target="sl-15--uncovered-equipment-radar"><b>SL-15</b>Uncovered Equipment Radar</a>
+<a class="sub" href="#1d--screen-landed-cost-templates-action-1404" data-target="1d--screen-landed-cost-templates-action-1404">1D · Screen: Landed Cost Templates (action 1404)</a>
+<a class="leaf" href="#sl-16--rate-card--list-rework" data-target="sl-16--rate-card--list-rework"><b>SL-16</b>Rate Card</a>
+<a class="leaf" href="#sl-17--cost-stack-simulator--form" data-target="sl-17--cost-stack-simulator--form"><b>SL-17</b>Cost Stack Simulator</a>
+<a class="leaf" href="#sl-18--vendor-mapping-matrix" data-target="sl-18--vendor-mapping-matrix"><b>SL-18</b>Vendor Mapping Matrix</a>
+<a class="sub" href="#1e--screen-cmms--wms-command-deck-action-1405" data-target="1e--screen-cmms--wms-command-deck-action-1405">1E · Screen: CMMS / WMS Command Deck (action 1405)</a>
+<a class="leaf" href="#sl-19--command-deck--kill-the-list-build-the-dashboard" data-target="sl-19--command-deck--kill-the-list-build-the-dashboard"><b>SL-19</b>Command Deck</a>
+<a class="leaf" href="#sl-20--snapshot-history" data-target="sl-20--snapshot-history"><b>SL-20</b>Snapshot History</a>
+<a class="sub" href="#1f--screen-3pl-advance-shipping-notices-action-1370" data-target="1f--screen-3pl-advance-shipping-notices-action-1370">1F · Screen: 3PL Advance Shipping Notices (action 1370)</a>
+<a class="leaf" href="#sl-21--shipment-pipeline--kanban" data-target="sl-21--shipment-pipeline--kanban"><b>SL-21</b>Shipment Pipeline</a>
+<a class="leaf" href="#sl-22--permit-corridor" data-target="sl-22--permit-corridor"><b>SL-22</b>Permit Corridor</a>
+<a class="leaf" href="#sl-23--payload-inspector" data-target="sl-23--payload-inspector"><b>SL-23</b>Payload Inspector</a>
+<a class="leaf" href="#sl-24--asn-timeline" data-target="sl-24--asn-timeline"><b>SL-24</b>ASN Timeline</a>
+<a class="part" href="#phase-2--beyond-standard-odoo" data-target="phase-2--beyond-standard-odoo">PHASE 2 — BEYOND STANDARD ODOO</a>
+<a class="leaf" href="#sl-x1--plant-floor-live-map" data-target="sl-x1--plant-floor-live-map"><b>SL-X1</b>Plant Floor Live Map</a>
+<a class="leaf" href="#sl-x2--reliability-bathtub-curve" data-target="sl-x2--reliability-bathtub-curve"><b>SL-X2</b>Reliability Bathtub Curve</a>
+<a class="leaf" href="#sl-x3--downtime-pareto--waterfall" data-target="sl-x3--downtime-pareto--waterfall"><b>SL-X3</b>Downtime Pareto &amp; Waterfall</a>
+<a class="leaf" href="#sl-x4--failure-runway" data-target="sl-x4--failure-runway"><b>SL-X4</b>Failure Runway</a>
+<a class="leaf" href="#sl-x5--blast-radius-graph" data-target="sl-x5--blast-radius-graph"><b>SL-X5</b>Blast Radius Graph</a>
+<a class="leaf" href="#sl-x6--command-deck-owl" data-target="sl-x6--command-deck-owl"><b>SL-X6</b>Command Deck (OWL)</a>
+<a class="leaf" href="#sl-x7--tech-mode" data-target="sl-x7--tech-mode"><b>SL-X7</b>Tech Mode</a>
+<a class="leaf" href="#sl-x8--asset-passport" data-target="sl-x8--asset-passport"><b>SL-X8</b>Asset Passport</a>
+<a class="leaf" href="#sl-x9--coverage-heat-grid" data-target="sl-x9--coverage-heat-grid"><b>SL-X9</b>Coverage Heat Grid</a>
+<a class="leaf" href="#sl-x10--landed-cost-waterfall-simulator" data-target="sl-x10--landed-cost-waterfall-simulator"><b>SL-X10</b>Landed Cost Waterfall Simulator</a>
+<a class="leaf" href="#sl-x11--3pl-load-board" data-target="sl-x11--3pl-load-board"><b>SL-X11</b>3PL Load Board</a>
+<a class="leaf" href="#sl-x12--reliability-ticker" data-target="sl-x12--reliability-ticker"><b>SL-X12</b>Reliability Ticker</a>
+<a class="leaf" href="#sl-x13--downtime-cost-lens" data-target="sl-x13--downtime-cost-lens"><b>SL-X13</b>Downtime Cost Lens</a>
+<a class="leaf" href="#sl-x14--anomaly-spotlight" data-target="sl-x14--anomaly-spotlight"><b>SL-X14</b>Anomaly Spotlight</a>
+<a class="leaf" href="#sl-x15--shift-handover-digest" data-target="sl-x15--shift-handover-digest"><b>SL-X15</b>Shift Handover Digest</a>
+<a class="part" href="#3--cross-cutting-requirements" data-target="3--cross-cutting-requirements">3 · Cross-cutting requirements</a>
+<a class="leaf" href="#31-accessibility-non-negotiable" data-target="31-accessibility-non-negotiable">3.1 Accessibility (non-negotiable)</a>
+<a class="leaf" href="#32-keyboard" data-target="32-keyboard">3.2 Keyboard</a>
+<a class="leaf" href="#33-mobile--responsive" data-target="33-mobile--responsive">3.3 Mobile / responsive</a>
+<a class="leaf" href="#34-notifications" data-target="34-notifications">3.4 Notifications</a>
+<a class="leaf" href="#35-what-not-to-do" data-target="35-what-not-to-do">3.5 What NOT to do</a>
+<a class="part" href="#4--module-structure-for-implementation" data-target="4--module-structure-for-implementation">4 · Module structure for implementation</a>
+<a class="part" href="#5--delivery-sequence" data-target="5--delivery-sequence">5 · Delivery sequence</a>
+<a class="part" href="#6--acceptance-criteria" data-target="6--acceptance-criteria">6 · Acceptance criteria</a>
+<a class="sub" href="#appendix-a--enhancement-index" data-target="appendix-a--enhancement-index">Appendix A — Enhancement index</a>
+<a class="sub" href="#appendix-b--verification-notes" data-target="appendix-b--verification-notes">Appendix B — Verification notes</a>
+    </nav>
+  </details>
+
+  <article class="doc">
+<section id="0-how-to-use-this-document" class="level2">
+<h2>0. How to use this document</h2>
+<p>Every enhancement carries a stable ID (<code>SL-Fxx</code>, <code>SL-xx</code>, <code>SL-Xxx</code>) and a <strong>name</strong>. Names are intentional — they are the vocabulary for the whole program. Use the ID in branch names, commit messages, and view <code>xml_id</code>s so the spec and the codebase stay welded together.</p>
+<pre class="text"><code>feat(SL-01): Reliability Ledger — regroup MTBF list, availability meter widget
+xml_id: southbrook_cmms_ux.view_mtbf_list_reliability_ledger   # SL-01</code></pre>
+<p>Each item is written as: <strong>Name</strong> → <em>Problem</em> → <em>Change</em> → <em>Implementation</em> → <em>Done when</em>.</p>
+<p>Nothing in Phase 0 or Phase 1 requires a custom view type. Phase 2 is where the OWL work lives.</p>
+<hr />
+</section>
+<section id="1-ground-truth--what-actually-exists-today" class="level2">
+<h2>1. Ground truth — what actually exists today</h2>
+<p>This was read directly from the target database, not assumed. Trust it.</p>
+<section id="11-the-screen-family" class="level3">
+<h3>1.1 The screen family</h3>
+<p>Menu root: <strong><code>Inventory ▸ CMMS &amp; 3PL</code></strong> (<code>ir.ui.menu</code> id <strong>930</strong>)</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th style="text-align: left;">Menu ID</th>
+<th style="text-align: left;">Screen</th>
+<th style="text-align: left;">Action</th>
+<th style="text-align: left;">Model</th>
+<th style="text-align: left;">Current <code>view_mode</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">931</td>
+<td style="text-align: left;">MTBF/MTTR Reports</td>
+<td style="text-align: left;"><code>act_window,1401</code></td>
+<td style="text-align: left;"><code>southbrook.cmms.mtbf_mttr_report</code></td>
+<td style="text-align: left;"><code>list,form,graph</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">932</td>
+<td style="text-align: left;">Breakdown Alerts</td>
+<td style="text-align: left;"><code>act_window,1402</code></td>
+<td style="text-align: left;"><code>southbrook.cmms.breakdown_alert</code></td>
+<td style="text-align: left;"><code>list,kanban,form</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">933</td>
+<td style="text-align: left;">Service Contracts</td>
+<td style="text-align: left;"><code>act_window,1403</code></td>
+<td style="text-align: left;"><code>southbrook.cmms.service_contract</code></td>
+<td style="text-align: left;"><code>list,form,calendar</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">934</td>
+<td style="text-align: left;">Landed Cost Templates</td>
+<td style="text-align: left;"><code>act_window,1404</code></td>
+<td style="text-align: left;"><code>southbrook.cmms.landed_cost_template</code></td>
+<td style="text-align: left;"><code>list,form</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">935</td>
+<td style="text-align: left;">Snapshot</td>
+<td style="text-align: left;"><code>act_window,1405</code></td>
+<td style="text-align: left;"><code>southbrook.cmms.mi_tiles</code></td>
+<td style="text-align: left;"><code>list,form</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Sibling screen, same family, different app (<strong><code>Manufacturing ▸ Integrations ▸ 3PL ASNs</code></strong>, menu 918):</p>
+<p>| 918 | 3PL ASNs | <code>act_window,1370</code> | <code>southbrook.integrations.asn_3pl</code> | <code>list,form</code> |</p>
+</section>
+<section id="12-field-inventory-mail-mixin-fields-stripped" class="level3">
+<h3>1.2 Field inventory (mail-mixin fields stripped)</h3>
+<p><strong><code>southbrook.cmms.mtbf_mttr_report</code></strong> — inherits <code>mail.thread</code> <code>name</code> (char) · <code>equipment_id</code> (m2o <code>maintenance.equipment</code>) · <code>as_of_date</code> (date) · <code>period_days</code> (int) · <code>breakdown_count</code> (int) · <code>mtbf_hours</code> (float) · <code>mttr_hours</code> (float) · <code>availability_pct</code> (float) · <code>total_downtime_hours</code> (float) · <code>total_runtime_hours</code> (float)</p>
+<p><strong><code>southbrook.cmms.breakdown_alert</code></strong> — inherits <code>mail.thread</code> <code>name</code> · <code>equipment_id</code> · <code>workcenter_id</code> (m2o <code>mrp.workcenter</code>) · <code>severity</code> (<code>low|medium|high|critical</code>) · <code>state</code> (<code>open|dispatched|fixed</code>) · <code>reported_at</code> (datetime) · <code>reported_by</code> (m2o <code>res.users</code>) · <code>description</code> (text) · <code>maintenance_request_id</code> (m2o <code>maintenance.request</code>) · <code>affected_production_ids</code> (m2m <code>mrp.production</code>) Form header already exposes: <code>action_dispatch</code>, <code>action_block_affected_mos</code>, statusbar.</p>
+<p><strong><code>southbrook.cmms.service_contract</code></strong> <code>name</code> · <code>vendor_id</code> · <code>date_start</code> · <code>date_end</code> · <code>days_to_expiry</code> (int) · <code>annual_value</code> (monetary) · <code>currency_id</code> · <code>equipment_ids</code> (m2m <code>maintenance.equipment</code>) · <code>expiry_alert_at</code> (<code>30|60|90|180</code>) · <code>state</code> (<code>active|expiring_soon|expired|…</code>)</p>
+<p><strong><code>southbrook.cmms.landed_cost_template</code></strong> <code>name</code> · <code>freight_pct</code> · <code>duty_pct</code> · <code>customs_pct</code> · <code>handling_pct</code> · <code>default_for_vendor_ids</code> (m2m <code>res.partner</code>)</p>
+<p><strong><code>southbrook.cmms.mi_tiles</code></strong> (action title: <em>CMMS / WMS Snapshot</em>) <code>label</code> · <code>as_of</code> (datetime) · <code>currency_id</code> · <code>open_breakdowns_count</code> · <code>service_contracts_expiring_60d_count</code> · <code>oversize_pickings_pending_count</code> · <code>mtbf_avg_30d</code> · <code>mttr_avg_30d</code> · <code>landed_cost_value_30d</code> (monetary)</p>
+<p><strong><code>southbrook.integrations.asn_3pl</code></strong> <code>name</code> · <code>picking_id</code> (m2o <code>stock.picking</code>) · <code>carrier_id</code> (m2o <code>delivery.carrier</code>) · <code>tracking_number</code> · <code>state</code> (<code>draft|sent|acked|shipped|delivered</code>) · <code>oversize_load_flag</code> (bool) · <code>permit_jurisdictions</code> (char) · <code>payload_json</code> (text)</p>
+</section>
+<section id="13-adjacent-fields-you-are-allowed-to-pull-from" class="level3">
+<h3>1.3 Adjacent fields you are allowed to pull from</h3>
+<p><code>maintenance.equipment</code> is unusually rich here and is currently <strong>almost entirely unused by the CMMS screens</strong>. Available:</p>
+<p><code>expected_mtbf</code> · <code>mtbf</code> · <code>mttr</code> · <code>estimated_next_failure</code> · <code>latest_failure_date</code> · <code>maintenance_open_count</code> · <code>maintenance_count</code> · <code>workcenter_id</code> · <code>category_id</code> · <code>location_id</code> · <code>technician_user_id</code> · <code>maintenance_team_id</code> · <code>warranty_date</code> · <code>serial_no</code> · <code>model</code> · <code>cost</code> · <code>effective_date</code> · <code>scrap_date</code> · <code>color</code> · <code>equipment_properties</code> · <code>southbrook_condition</code> · <code>southbrook_condition_last_updated</code> · <code>southbrook_condition_note</code> · <code>southbrook_condition_updated_by</code> · <code>southbrook_impacted_production_count</code> · <code>southbrook_impacted_production_ids</code> · <code>southbrook_tool_asset_count</code> · <code>southbrook_tool_asset_ids</code></p>
+<blockquote>
+<p><strong>This is the single biggest missed opportunity in the current build.</strong> There is already a computed <code>expected_mtbf</code> vs actual <code>mtbf</code>, an <code>estimated_next_failure</code>, and a bespoke <code>southbrook_condition</code> rating — and not one of the five CMMS screens surfaces any of them. Half of Phase 1 is simply <em>connecting what already exists</em>.</p>
+</blockquote>
+</section>
+<section id="14-defects-and-gaps-found-during-the-walkthrough" class="level3">
+<h3>1.4 Defects and gaps found during the walkthrough</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th style="text-align: left;">#</th>
+<th style="text-align: left;">Finding</th>
+<th style="text-align: left;">Severity</th>
+<th style="text-align: left;">Evidence</th><th>Fixed by</th></tr></thead>
+<tbody>
+<tr class="defect" id="D1"><td>D1</td><td><strong>Zero search views.</strong> Not one of the six models has an <code>ir.ui.view</code> of type <code>search</code>. Users cannot filter, group, or save a favourite anywhere in this family.</td><td><span class="sev sev-critical"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="sev-label">Critical</span></span></td><td>View-type audit returned only <code>form/list/kanban/graph/calendar</code> across all 5 CMMS models</td><td class="fixed-by"><a href="#sl-f01--ground-truth--search-views-for-all-six-models">SL-F01</a></td></tr>
+<tr class="defect" id="D2"><td>D2</td><td><strong>Duplicated sequence prefix.</strong> References read <code>MTBF/2026-08-12/MTBF/0241</code> — the <code>MTBF/</code> token appears twice.</td><td><span class="sev sev-degraded"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class=""></i></span><span class="sev-label">High</span></span></td><td>Every row on action-1401</td><td class="fixed-by"><a href="#sl-f02--nameplate--reference-sequence-and-label-hygiene">SL-F02</a></td></tr>
+<tr class="defect" id="D3"><td>D3</td><td><strong>3PL ASNs menu is visible but inaccessible.</strong> Opening action-1370 as <em>Administrator</em> throws <code>Access Error</code> requiring <code>Southbrook Integrations / Manager</code> or <code>/ User</code>. The menu has no <code>groups=</code> guard, so it advertises a dead end.</td><td><span class="sev sev-degraded"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class=""></i></span><span class="sev-label">High</span></span></td><td>Screenshot of action-1370</td><td class="fixed-by"><a href="#sl-f03--doorman--menu-visibility-follows-access-rights">SL-F03</a></td></tr>
+<tr class="defect" id="D4"><td>D4</td><td><strong>Snapshot KPI model rendered as a list.</strong> <code>mi_tiles</code> is a single-row KPI aggregate displayed as a 6-column table with truncated headers (<code>Open Br…</code>, <code>Contract…</code>, <code>Oversize…</code>). This is the worst possible presentation of a dashboard model.</td><td><span class="sev sev-degraded"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class=""></i></span><span class="sev-label">High</span></span></td><td>action-1405</td><td class="fixed-by"><a href="#sl-19--command-deck--kill-the-list-build-the-dashboard">SL-19</a></td></tr>
+<tr class="defect" id="D5"><td>D5</td><td><strong>Default boilerplate empty states.</strong> Every action carries <code>help = "&lt;p class='o_view_nocontent_smiling_face'&gt;Create new document&lt;/p&gt;"</code>. Six screens, six identical meaningless placeholders.</td><td><span class="sev sev-watch"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class=""></i><i class=""></i></span><span class="sev-label">Medium</span></span></td><td><code>ir.actions.act_window.help</code> on 1401–1405, 1370</td><td class="fixed-by"><a href="#sl-f07--empty-states-that-teach">SL-F07</a></td></tr>
+<tr class="defect" id="D6"><td>D6</td><td><strong>No pivot view anywhere.</strong> Six analytical models, zero pivots.</td><td><span class="sev sev-watch"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class=""></i><i class=""></i></span><span class="sev-label">Medium</span></span></td><td><code>view_mode</code> audit</td><td class="fixed-by"><a href="#sl-03--reliability-pivot">SL-03</a></td></tr>
+<tr class="defect" id="D7"><td>D7</td><td><strong>No activity view</strong> despite <code>mail.thread</code> on the alert and report models.</td><td><span class="sev sev-watch"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class=""></i><i class=""></i></span><span class="sev-label">Medium</span></span></td><td><code>view_mode</code> audit</td><td class="fixed-by"><a href="#sl-11--alert-calendar--map">SL-11</a></td></tr>
+<tr class="defect" id="D8"><td>D8</td><td><strong>Column truncation on default widths.</strong> <code>Period (…</code>, <code>Breakdo…</code>, <code>Availability (…</code> all clipped at standard viewport.</td><td><span class="sev sev-watch"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class=""></i><i class=""></i></span><span class="sev-label">Medium</span></span></td><td>action-1401</td><td class="fixed-by"><a href="#sl-01--reliability-ledger--the-rebuilt-list">SL-01</a> · <a href="#sl-f05--column-discipline--list-ergonomics-pass">SL-F05</a></td></tr>
+<tr class="defect" id="D9"><td>D9</td><td><strong>Signal buried in noise.</strong> 241 MTBF rows, one per equipment per day. Four of five machines sit at exactly <code>100.00 / 2,160.00 / 0</code> forever; the one machine that matters (Biesse Rover K FT / CNC-001, 47–64 % availability) is one row in five. The list is 80 % padding.</td><td><span class="sev sev-critical"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="sev-label">Critical</span></span></td><td>action-1401, 241 records</td><td class="fixed-by"><a href="#sl-01--reliability-ledger--the-rebuilt-list">SL-01</a></td></tr>
+<tr class="defect" id="D10"><td>D10</td><td><strong>Menu label ≠ action title.</strong> Menu says <code>Snapshot</code>; breadcrumb says <code>CMMS / WMS Snapshot</code>.</td><td><span class="sev sev-unknown"><span class="sev-meter"><i class="on"></i><i class=""></i><i class=""></i><i class=""></i></span><span class="sev-label">Low</span></span></td><td>action-1405</td><td class="fixed-by"><a href="#sl-f02--nameplate--reference-sequence-and-label-hygiene">SL-F02</a></td></tr>
+<tr class="defect" id="D11"><td>D11</td><td><strong>Monetary field showing <code>$ 0.00</code> on a live contract.</strong> Service Contract "Smoke Cont…" is <code>Expiring Soon</code>, 36 days out, <code>annual_value = 0</code>. Either a data gap or a required-field gap — the UI gives no hint which.</td><td><span class="sev sev-watch"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class=""></i><i class=""></i></span><span class="sev-label">Medium</span></span></td><td>action-1403</td><td class="fixed-by"><a href="#sl-14--coverage-sheet--form-rework">SL-14</a></td></tr>
+<tr class="defect" id="D12"><td>D12</td><td><strong>No mobile/touch consideration.</strong> Standard Odoo list density; a technician wearing gloves cannot reliably hit a row or the Dispatch button.</td><td><span class="sev sev-degraded"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class=""></i></span><span class="sev-label">High</span></span></td><td>All screens</td><td class="fixed-by"><a href="#sl-x7--tech-mode">SL-X7</a></td></tr>
+<tr class="defect" id="D13"><td>D13</td><td><strong>Severity/state encoded by colour alone</strong> in list decorations — fails WCAG 1.4.1 (use of colour).</td><td><span class="sev sev-watch"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class=""></i><i class=""></i></span><span class="sev-label">Medium</span></span></td><td>Breakdown Alerts list arch</td><td class="fixed-by"><a href="#sl-f04--signal-palette--the-cmms-design-token-layer">SL-F04</a></td></tr>
+<tr class="defect" id="D14"><td>D14</td><td><strong>Unbounded growth, no default date filter.</strong> 5 snapshot rows/day ≈ 1,825/year on <code>mtbf_mttr_report</code>, with no domain on the action and no index guidance.</td><td><span class="sev sev-degraded"><span class="sev-meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class=""></i></span><span class="sev-label">High</span></span></td><td>Record count trajectory</td><td class="fixed-by"><a href="#sl-f08--load-bearing--performance-and-growth-guards">SL-F08</a></td></tr>
+</tbody>
+</table></div>
+<hr />
+</section>
+</section>
+<section id="2-design-principles-for-this-program" class="level2">
+<h2>2. Design principles for this program</h2>
+<ol type="1">
+<li><strong>The exception is the interface.</strong> A CMMS screen that shows 200 healthy rows to surface 40 unhealthy ones has failed. Default every view to the thing that is wrong.</li>
+<li><strong>Two front doors, one dataset.</strong> A technician and a plant manager should never share a default view. Role-aware actions, shared models.</li>
+<li><strong>Colour is a reinforcement, never the message.</strong> Every severity/state/health signal gets an icon or a label alongside its colour.</li>
+<li><strong>Every number is a door.</strong> No KPI tile, aggregate, or badge is inert — clicking it opens the filtered records behind it.</li>
+<li><strong>Native until native breaks.</strong> Do not write an OWL component for something a <code>widget="progressbar"</code> or a pivot can do. Phase 2 exists because Phase 1 genuinely runs out of road, not before.</li>
+<li><strong>Upgrade-safe.</strong> New module, no core patches, no <code>ir.ui.view</code> surgery on Odoo standard views. Everything is additive and removable.</li>
+</ol>
+<section id="21-role-model" class="level3">
+<h3>2.1 Role model</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th style="text-align: left;">Role</th>
+<th style="text-align: left;">Group</th>
+<th style="text-align: left;">Default landing</th>
+<th style="text-align: left;">Optimised for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Floor Technician</strong></td>
+<td style="text-align: left;"><code>southbrook_cmms_ux.group_cmms_tech</code></td>
+<td style="text-align: left;"><em>Tech Mode</em> (SL-X7)</td>
+<td style="text-align: left;">Touch, glare, gloves, one task at a time</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Maintenance Lead</strong></td>
+<td style="text-align: left;"><code>southbrook_cmms_ux.group_cmms_lead</code></td>
+<td style="text-align: left;">Triage Board (SL-07)</td>
+<td style="text-align: left;">Queue management, dispatch, SLA</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Plant / Ops Manager</strong></td>
+<td style="text-align: left;"><code>southbrook_cmms_ux.group_cmms_manager</code></td>
+<td style="text-align: left;">Command Deck (SL-19 / SL-X6)</td>
+<td style="text-align: left;">Trend, cost, contract, exception</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Logistics / 3PL</strong></td>
+<td style="text-align: left;"><code>southbrook_integrations.group_*</code> (existing)</td>
+<td style="text-align: left;">Load Board (SL-X11)</td>
+<td style="text-align: left;">Shipment state, oversize, permits</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+</section>
+</section>
+</section>
+<section id="phase-0--foundation" class="level1">
+<h1>PHASE 0 — FOUNDATION</h1>
+<p><em>Native only. No new view types. Ship this first; everything else depends on it.</em></p>
+<hr />
+<section id="sl-f01--ground-truth--search-views-for-all-six-models" class="level3 plate">
+<h3><a class="plate-id" href="#sl-f01--ground-truth--search-views-for-all-six-models">SL-F01</a><span class="plate-name">Ground Truth</span><span class="plate-sub">search views for all six models</span></h3>
+<p class="plate-tag">Fixes <a href="#D1">D1</a></p>
+<p><strong>Problem.</strong> No filters, no group-bys, no saved favourites, anywhere in the family. Every user is doing manual visual scanning of an unsorted table.</p>
+<p><strong>Change.</strong> A full <code>search</code> view per model with named filters, group-by dimensions, and searchable fields.</p>
+<p><strong>Implementation.</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode xml"><code class="sourceCode xml"><span id="cb2-1">&lt;<span class="kw">record</span> <span class="ot">id=</span><span class="st">&quot;view_mtbf_search&quot;</span> <span class="ot">model=</span><span class="st">&quot;ir.ui.view&quot;</span>&gt;   <span class="co">&lt;!-- SL-F01 --&gt;</span></span>
+<span id="cb2-2">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;name&quot;</span>&gt;southbrook.cmms.mtbf_mttr_report.search&lt;/<span class="kw">field</span>&gt;</span>
+<span id="cb2-3">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;model&quot;</span>&gt;southbrook.cmms.mtbf_mttr_report&lt;/<span class="kw">field</span>&gt;</span>
+<span id="cb2-4">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;arch&quot;</span> <span class="ot">type=</span><span class="st">&quot;xml&quot;</span>&gt;</span>
+<span id="cb2-5">    &lt;<span class="kw">search</span> <span class="ot">string=</span><span class="st">&quot;Reliability&quot;</span>&gt;</span>
+<span id="cb2-6">      &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;equipment_id&quot;</span>/&gt;</span>
+<span id="cb2-7">      &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;name&quot;</span> <span class="ot">string=</span><span class="st">&quot;Reference&quot;</span>/&gt;</span>
+<span id="cb2-8">      &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;as_of_date&quot;</span>/&gt;</span>
+<span id="cb2-9">      &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;f_today&quot;</span>   <span class="ot">string=</span><span class="st">&quot;Today&quot;</span>       <span class="ot">domain=</span><span class="st">&quot;[(&#39;as_of_date&#39;,&#39;=&#39;, context_today().strftime(&#39;%Y-%m-%d&#39;))]&quot;</span>/&gt;</span>
+<span id="cb2-10">      &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;f_7d&quot;</span>      <span class="ot">string=</span><span class="st">&quot;Last 7 Days&quot;</span> <span class="ot">domain=</span><span class="st">&quot;[(&#39;as_of_date&#39;,&#39;</span><span class="dv">&amp;gt;</span><span class="st">=&#39;, (context_today() - relativedelta(days=7)).strftime(&#39;%Y-%m-%d&#39;))]&quot;</span>/&gt;</span>
+<span id="cb2-11">      &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;f_30d&quot;</span>     <span class="ot">string=</span><span class="st">&quot;Last 30 Days&quot;</span> <span class="ot">domain=</span><span class="st">&quot;[(&#39;as_of_date&#39;,&#39;</span><span class="dv">&amp;gt;</span><span class="st">=&#39;, (context_today() - relativedelta(days=30)).strftime(&#39;%Y-%m-%d&#39;))]&quot;</span>/&gt;</span>
+<span id="cb2-12">      &lt;<span class="kw">separator</span>/&gt;</span>
+<span id="cb2-13">      &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;f_degraded&quot;</span> <span class="ot">string=</span><span class="st">&quot;⚠ Degraded (</span><span class="dv">&amp;lt;</span><span class="st"> 95%)&quot;</span>  <span class="ot">domain=</span><span class="st">&quot;[(&#39;availability_pct&#39;,&#39;</span><span class="dv">&amp;lt;</span><span class="st">&#39;,95)]&quot;</span>/&gt;</span>
+<span id="cb2-14">      &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;f_critical&quot;</span> <span class="ot">string=</span><span class="st">&quot;🛑 Critical (</span><span class="dv">&amp;lt;</span><span class="st"> 80%)&quot;</span>  <span class="ot">domain=</span><span class="st">&quot;[(&#39;availability_pct&#39;,&#39;</span><span class="dv">&amp;lt;</span><span class="st">&#39;,80)]&quot;</span>/&gt;</span>
+<span id="cb2-15">      &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;f_hadbreak&quot;</span> <span class="ot">string=</span><span class="st">&quot;Had Breakdowns&quot;</span>        <span class="ot">domain=</span><span class="st">&quot;[(&#39;breakdown_count&#39;,&#39;</span><span class="dv">&amp;gt;</span><span class="st">&#39;,0)]&quot;</span>/&gt;</span>
+<span id="cb2-16">      &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;f_below_expected&quot;</span> <span class="ot">string=</span><span class="st">&quot;Below Expected MTBF&quot;</span></span>
+<span id="cb2-17">              <span class="ot">domain=</span><span class="st">&quot;[(&#39;mtbf_hours&#39;,&#39;</span><span class="dv">&amp;lt;</span><span class="st">&#39;,&#39;equipment_id.expected_mtbf&#39;)]&quot;</span>/&gt;  <span class="co">&lt;!-- see note --&gt;</span></span>
+<span id="cb2-18">      &lt;<span class="kw">separator</span>/&gt;</span>
+<span id="cb2-19">      &lt;<span class="kw">group</span> <span class="ot">expand=</span><span class="st">&quot;1&quot;</span> <span class="ot">string=</span><span class="st">&quot;Group By&quot;</span>&gt;</span>
+<span id="cb2-20">        &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;g_equipment&quot;</span> <span class="ot">string=</span><span class="st">&quot;Equipment&quot;</span>  <span class="ot">context=</span><span class="st">&quot;{&#39;group_by&#39;:&#39;equipment_id&#39;}&quot;</span>/&gt;</span>
+<span id="cb2-21">        &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;g_category&quot;</span>  <span class="ot">string=</span><span class="st">&quot;Category&quot;</span>   <span class="ot">context=</span><span class="st">&quot;{&#39;group_by&#39;:&#39;equipment_id.category_id&#39;}&quot;</span>/&gt;</span>
+<span id="cb2-22">        &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;g_workcenter&quot;</span> <span class="ot">string=</span><span class="st">&quot;Work Center&quot;</span> <span class="ot">context=</span><span class="st">&quot;{&#39;group_by&#39;:&#39;equipment_id.workcenter_id&#39;}&quot;</span>/&gt;</span>
+<span id="cb2-23">        &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;g_week&quot;</span>      <span class="ot">string=</span><span class="st">&quot;Week&quot;</span>       <span class="ot">context=</span><span class="st">&quot;{&#39;group_by&#39;:&#39;as_of_date:week&#39;}&quot;</span>/&gt;</span>
+<span id="cb2-24">        &lt;<span class="kw">filter</span> <span class="ot">name=</span><span class="st">&quot;g_month&quot;</span>     <span class="ot">string=</span><span class="st">&quot;Month&quot;</span>      <span class="ot">context=</span><span class="st">&quot;{&#39;group_by&#39;:&#39;as_of_date:month&#39;}&quot;</span>/&gt;</span>
+<span id="cb2-25">      &lt;/<span class="kw">group</span>&gt;</span>
+<span id="cb2-26">    &lt;/<span class="kw">search</span>&gt;</span>
+<span id="cb2-27">  &lt;/<span class="kw">field</span>&gt;</span>
+<span id="cb2-28">&lt;/<span class="kw">record</span>&gt;</span></code></pre></div>
+<blockquote>
+<p><strong>Note on <code>f_below_expected</code>:</strong> cross-field comparison is not expressible in a domain. Add a stored computed boolean <code>is_below_expected_mtbf</code> on the report model (<code>mtbf_hours &lt; equipment_id.expected_mtbf</code>, <code>store=True</code>, depends on both) and filter on that. Same pattern applies wherever a filter needs a comparison rather than a constant.</p>
+</blockquote>
+<p>Required search views, minimum filter set per model:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th style="text-align: left;">Model</th>
+<th style="text-align: left;">Must-have filters</th>
+<th style="text-align: left;">Must-have group-bys</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>mtbf_mttr_report</code></td>
+<td style="text-align: left;">Today · 7d · 30d · Degraded · Critical · Had Breakdowns · Below Expected MTBF</td>
+<td style="text-align: left;">Equipment · Category · Work Center · Week · Month</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>breakdown_alert</code></td>
+<td style="text-align: left;">Open · Unassigned · Critical+High · Reported Today · Ageing &gt; 4h · Ageing &gt; 24h · Blocking Production · My Reports</td>
+<td style="text-align: left;">Severity · State · Equipment · Work Center · Reported By · Day</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>service_contract</code></td>
+<td style="text-align: left;">Active · Expiring ≤30/60/90 · Expired · No Value Set · Covers Critical Equipment</td>
+<td style="text-align: left;">State · Vendor · Expiry Month · Alert Threshold</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>landed_cost_template</code></td>
+<td style="text-align: left;">Has Vendor Defaults · Unassigned · Total &gt; 20 %</td>
+<td style="text-align: left;">Vendor</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>mi_tiles</code></td>
+<td style="text-align: left;">Latest · Last 7 Snapshots · Last 30</td>
+<td style="text-align: left;">Day · Week</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>asn_3pl</code></td>
+<td style="text-align: left;">Draft · In Transit · Delivered · <strong>Oversize</strong> · Awaiting Ack &gt; 24h · Permit Required</td>
+<td style="text-align: left;">State · Carrier · Oversize · Jurisdiction</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Done when.</strong> Every screen in the family opens with a working filter dropdown, a Group By section, and at least one default filter applied via the action's <code>context</code>.</p>
+<hr />
+</section>
+<section id="sl-f02--nameplate--reference-sequence-and-label-hygiene" class="level3 plate">
+<h3><a class="plate-id" href="#sl-f02--nameplate--reference-sequence-and-label-hygiene">SL-F02</a><span class="plate-name">Nameplate</span><span class="plate-sub">reference sequence and label hygiene</span></h3>
+<p class="plate-tag">Fixes <a href="#D2">D2</a>, <a href="#D10">D10</a></p>
+<p><strong>Problem.</strong> <code>MTBF/2026-08-12/MTBF/0241</code>. The <code>MTBF/</code> prefix is applied twice — almost certainly an <code>ir.sequence</code> with <code>prefix = 'MTBF/%(range_year)s-%(range_month)s-%(range_day)s/MTBF/'</code> or a Python-side <code>f"MTBF/{date}/"</code> concatenated onto a sequence that already carries the prefix. Menu label <code>Snapshot</code> disagrees with action title <code>CMMS / WMS Snapshot</code>.</p>
+<p><strong>Change.</strong></p>
+<ul>
+<li>Reference format → <code>MTBF/2026-08-12/0241</code>. Migration script to rewrite existing 241 records so history stays searchable.</li>
+<li>Align menu label and action name across the family. Proposed final naming:</li>
+</ul>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th style="text-align: left;">Menu (short, scannable)</th>
+<th style="text-align: left;">Action title (explicit, breadcrumb-friendly)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Reliability</td>
+<td style="text-align: left;">Equipment Reliability — MTBF/MTTR</td>
+</tr>
+<tr>
+<td style="text-align: left;">Breakdowns</td>
+<td style="text-align: left;">Breakdown Alerts</td>
+</tr>
+<tr>
+<td style="text-align: left;">Contracts</td>
+<td style="text-align: left;">Equipment Service Contracts</td>
+</tr>
+<tr>
+<td style="text-align: left;">Landed Costs</td>
+<td style="text-align: left;">Landed Cost Templates</td>
+</tr>
+<tr>
+<td style="text-align: left;">Command Deck</td>
+<td style="text-align: left;">CMMS / WMS Command Deck</td>
+</tr>
+<tr>
+<td style="text-align: left;">3PL Shipments</td>
+<td style="text-align: left;">3PL Advance Shipping Notices</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Done when.</strong> No reference contains a repeated token; breadcrumb text matches the menu item the user clicked.</p>
+<hr />
+</section>
+<section id="sl-f03--doorman--menu-visibility-follows-access-rights" class="level3 plate">
+<h3><a class="plate-id" href="#sl-f03--doorman--menu-visibility-follows-access-rights">SL-F03</a><span class="plate-name">Doorman</span><span class="plate-sub">menu visibility follows access rights</span></h3>
+<p class="plate-tag">Fixes <a href="#D3">D3</a></p>
+<p><strong>Problem.</strong> The <code>3PL ASNs</code> menu renders for users who cannot open it, producing a hard <code>Access Error</code> modal. This is the single most trust-destroying moment in the family.</p>
+<p><strong>Change.</strong></p>
+<ol type="1">
+<li>Add <code>groups="southbrook_integrations.group_asn_user,southbrook_integrations.group_asn_manager"</code> to menu 918 so it disappears for users without rights.</li>
+<li>Grant <code>base.group_system</code> (Administrator) implied membership in <code>group_asn_user</code> — an admin who cannot open a screen in their own database is a configuration bug, not a security posture.</li>
+<li>Sweep all six menus and add matching <code>groups=</code> guards.</li>
+<li>Audit <code>ir.model.access</code> + <code>ir.rule</code> for all six models; anything with a menu must have a matching read ACL for every group that can see the menu.</li>
+</ol>
+<p><strong>Done when.</strong> No user in the system can click a CMMS/3PL menu item and receive an access error. Verify by impersonating one user per group.</p>
+<hr />
+</section>
+<section id="sl-f04--signal-palette--the-cmms-design-token-layer" class="level3 plate">
+<h3><a class="plate-id" href="#sl-f04--signal-palette--the-cmms-design-token-layer">SL-F04</a><span class="plate-name">Signal Palette</span><span class="plate-sub">the CMMS design token layer</span></h3>
+<p class="plate-tag">Foundation for everything visual</p>
+<p><strong>Problem.</strong> Every screen invents its own colour meaning. <code>decoration-danger</code> currently means "high severity" on alerts and nothing at all elsewhere; the MTBF list colours whole rows red when a machine has a single breakdown, which is louder than the actual availability number deserves.</p>
+<p><strong>Change.</strong> One SCSS token file defining semantic health bands, reused by every list decoration, kanban card, badge, and Phase 2 component.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode scss"><code class="sourceCode scss"><span id="cb3-1"><span class="co">// static/src/scss/cmms_tokens.scss  — SL-F04</span></span>
+<span id="cb3-2"><span class="in">:root</span> {</span>
+<span id="cb3-3"></span>
+<span id="cb3-4">  <span class="co">/* Availability / health bands — the spine of the whole family */</span></span>
+<span id="cb3-5">  <span class="va">--sb-health-good</span><span class="ch">:</span>      <span class="cn">#1a7f5a</span><span class="op">;</span>   <span class="co">/* ≥ 98 %  */</span></span>
+<span id="cb3-6">  <span class="va">--sb-health-watch</span><span class="ch">:</span>     <span class="cn">#b8860b</span><span class="op">;</span>   <span class="co">/* 95–98 % */</span></span>
+<span id="cb3-7">  <span class="va">--sb-health-degraded</span><span class="ch">:</span>  <span class="cn">#c2571a</span><span class="op">;</span>   <span class="co">/* 80–95 % */</span></span>
+<span id="cb3-8">  <span class="va">--sb-health-critical</span><span class="ch">:</span>  <span class="cn">#b02a2a</span><span class="op">;</span>   <span class="co">/* &lt; 80 %  */</span></span>
+<span id="cb3-9">  <span class="va">--sb-health-unknown</span><span class="ch">:</span>   <span class="cn">#6b7280</span><span class="op">;</span></span>
+<span id="cb3-10"></span>
+<span id="cb3-11">  <span class="co">/* Severity — deliberately distinct from health so they never read as the same axis */</span></span>
+<span id="cb3-12">  <span class="va">--sb-sev-low</span><span class="ch">:</span>      <span class="cn">#4b7bec</span><span class="op">;</span></span>
+<span id="cb3-13">  <span class="va">--sb-sev-medium</span><span class="ch">:</span>   <span class="cn">#b8860b</span><span class="op">;</span></span>
+<span id="cb3-14">  <span class="va">--sb-sev-high</span><span class="ch">:</span>     <span class="cn">#c2571a</span><span class="op">;</span></span>
+<span id="cb3-15">  <span class="va">--sb-sev-critical</span><span class="ch">:</span> <span class="cn">#8b1a1a</span><span class="op">;</span></span>
+<span id="cb3-16"></span>
+<span id="cb3-17">  <span class="co">/* Lifecycle states */</span></span>
+<span id="cb3-18">  <span class="va">--sb-state-open</span><span class="ch">:</span>       <span class="cn">#b02a2a</span><span class="op">;</span></span>
+<span id="cb3-19">  <span class="va">--sb-state-dispatched</span><span class="ch">:</span> <span class="cn">#b8860b</span><span class="op">;</span></span>
+<span id="cb3-20">  <span class="va">--sb-state-fixed</span><span class="ch">:</span>      <span class="cn">#1a7f5a</span><span class="op">;</span></span>
+<span id="cb3-21"></span>
+<span id="cb3-22">  <span class="co">/* Surfaces */</span></span>
+<span id="cb3-23">  <span class="va">--sb-tile-bg</span><span class="ch">:</span>     <span class="cn">#ffffff</span><span class="op">;</span></span>
+<span id="cb3-24">  <span class="va">--sb-tile-border</span><span class="ch">:</span> <span class="cn">#e5e7eb</span><span class="op">;</span></span>
+<span id="cb3-25">  <span class="va">--sb-tile-radius</span><span class="ch">:</span> <span class="dv">12</span><span class="dt">px</span><span class="op">;</span></span>
+<span id="cb3-26"></span>
+<span id="cb3-27">  <span class="co">/* Touch targets — Tech Mode */</span></span>
+<span id="cb3-28">  <span class="va">--sb-touch-min</span><span class="ch">:</span>   <span class="dv">48</span><span class="dt">px</span><span class="op">;</span></span>
+<span id="cb3-29">  <span class="va">--sb-touch-gap</span><span class="ch">:</span>   <span class="dv">12</span><span class="dt">px</span><span class="op">;</span></span>
+<span id="cb3-30">}</span>
+<span id="cb3-31"><span class="im">@media</span> <span class="fu">(</span><span class="kw">prefers-color-scheme</span><span class="ch">:</span> dark<span class="fu">)</span> { <span class="co">/* dark-mode overrides — required, Odoo 17+ ships dark mode */</span> }</span></code></pre></div>
+<p>Plus a small component set: <code>.sb-chip</code>, <code>.sb-chip--sev-critical</code>, <code>.sb-meter</code>, <code>.sb-meter__fill</code>, <code>.sb-tile</code>, <code>.sb-delta--up/--down</code>.</p>
+<p><strong>Rule:</strong> every colour token pairs with an icon token. <code>--sb-sev-critical</code> always renders with <code>fa-exclamation-triangle</code>. Colour never carries meaning alone (fixes D13).</p>
+<p><strong>Done when.</strong> No hardcoded hex exists in any CMMS view or component; contrast ratio ≥ 4.5:1 verified in both light and dark mode.</p>
+<hr />
+</section>
+<section id="sl-f05--column-discipline--list-ergonomics-pass" class="level3 plate">
+<h3><a class="plate-id" href="#sl-f05--column-discipline--list-ergonomics-pass">SL-F05</a><span class="plate-name">Column Discipline</span><span class="plate-sub">list ergonomics pass</span></h3>
+<p class="plate-tag">Fixes <a href="#D8">D8</a></p>
+<p><strong>Change</strong>, applied to all six lists:</p>
+<ul>
+<li><code>optional="hide"</code> on secondary columns (<code>total_runtime_hours</code>, <code>total_downtime_hours</code>, <code>period_days</code>, <code>payload_json</code>) so users opt in via the column picker.</li>
+<li>Explicit <code>width</code> on short columns; <code>nolabel</code>/short <code>string</code> on long headers (<code>Period (days)</code> → <code>Period</code>, <code>Availability (%)</code> → <code>Avail.</code>).</li>
+<li><code>sum=</code> aggregates on every numeric column so grouped views produce real totals.</li>
+<li><code>widget="progressbar"</code> on <code>availability_pct</code>; <code>widget="float_time"</code> on <code>mtbf_hours</code> / <code>mttr_hours</code> / downtime — these are hours, and <code>2,160.00</code> is far less legible than <code>2160:00</code> or <code>90d 0h</code>.</li>
+<li><code>decoration-*</code> bound to the SL-F04 bands, not to ad-hoc conditions.</li>
+<li><code>default_order</code> set on every model (<code>as_of_date desc, availability_pct asc</code> for reliability; <code>severity desc, reported_at asc</code> for alerts).</li>
+</ul>
+<p><strong>Done when.</strong> No header is clipped at 1280 px; every numeric column has a sensible aggregate.</p>
+<hr />
+</section>
+<section id="sl-f06--density-switch--comfortable--compact--tech" class="level3 plate">
+<h3><a class="plate-id" href="#sl-f06--density-switch--comfortable--compact--tech">SL-F06</a><span class="plate-name">Density Switch</span><span class="plate-sub">comfortable / compact / tech</span></h3>
+<p class="plate-tag">Precursor to <a href="#D12">D12</a> fix</p>
+<p><strong>Change.</strong> A three-position density control in the CMMS control panel, persisted per user via <code>res.users</code> setting.</p>
+<ul>
+<li><strong>Comfortable</strong> — Odoo default.</li>
+<li><strong>Compact</strong> — reduced row height, for managers scanning 200 rows.</li>
+<li><strong>Tech</strong> — 48 px minimum row height, 18 px base font, oversized checkboxes and buttons, high-contrast borders. Automatically forced when viewport &lt; 768 px or when the user is in <code>group_cmms_tech</code>.</li>
+</ul>
+<p><strong>Implementation.</strong> A body-level class (<code>o_sb_density--tech</code>) toggled by a small OWL control-panel button; all sizing in SL-F04 tokens so the switch is a single variable swap.</p>
+<p><strong>Done when.</strong> A user on a 10" shop-floor tablet can hit every interactive control without zooming.</p>
+<hr />
+</section>
+<section id="sl-f07--empty-states-that-teach" class="level3 plate">
+<h3><a class="plate-id" href="#sl-f07--empty-states-that-teach">SL-F07</a><span class="plate-name">Empty States That Teach</span></h3>
+<p class="plate-tag">Fixes <a href="#D5">D5</a></p>
+<p><strong>Change.</strong> Replace all six <code>Create new document</code> placeholders with purposeful <code>nocontent</code> helpers that explain what the screen is for, what generates the records, and what to do next.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode xml"><code class="sourceCode xml"><span id="cb4-1">&lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;help&quot;</span> <span class="ot">type=</span><span class="st">&quot;html&quot;</span>&gt;</span>
+<span id="cb4-2">  &lt;<span class="kw">p</span> <span class="ot">class=</span><span class="st">&quot;o_view_nocontent_smiling_face&quot;</span>&gt;No reliability data for this period&lt;/<span class="kw">p</span>&gt;</span>
+<span id="cb4-3">  &lt;<span class="kw">p</span>&gt;MTBF/MTTR snapshots are generated nightly for every piece of equipment with a</span>
+<span id="cb4-4">     work center assignment. If this is empty, either the scheduled action hasn&#39;t</span>
+<span id="cb4-5">     run yet or your filter is too narrow.&lt;/<span class="kw">p</span>&gt;</span>
+<span id="cb4-6">  &lt;<span class="kw">p</span>&gt;&lt;<span class="kw">a</span> <span class="ot">href=</span><span class="st">&quot;#&quot;</span> <span class="ot">data-oe-action=</span><span class="st">&quot;clear_filters&quot;</span>&gt;Clear filters&lt;/<span class="kw">a</span>&gt; ·</span>
+<span id="cb4-7">     &lt;<span class="kw">a</span> <span class="ot">href=</span><span class="st">&quot;#&quot;</span> <span class="ot">data-oe-action=</span><span class="st">&quot;run_snapshot&quot;</span>&gt;Run snapshot now&lt;/<span class="kw">a</span>&gt;&lt;/<span class="kw">p</span>&gt;</span>
+<span id="cb4-8">&lt;/<span class="kw">field</span>&gt;</span></code></pre></div>
+<p>Distinguish three empty states per screen, because they mean completely different things:</p>
+<ol type="1">
+<li><strong>Never had data</strong> — onboarding copy.</li>
+<li><strong>Filtered to nothing</strong> — offer a one-click filter reset.</li>
+<li><strong>Genuinely all-clear</strong> — celebrate it. "No open breakdowns. All 5 assets above 95 % availability." is a <em>result</em>, not an absence.</li>
+</ol>
+<p><strong>Done when.</strong> No screen in the family shows generic boilerplate.</p>
+<hr />
+</section>
+<section id="sl-f08--load-bearing--performance-and-growth-guards" class="level3 plate">
+<h3><a class="plate-id" href="#sl-f08--load-bearing--performance-and-growth-guards">SL-F08</a><span class="plate-name">Load Bearing</span><span class="plate-sub">performance and growth guards</span></h3>
+<p class="plate-tag">Fixes <a href="#D14">D14</a></p>
+<p><strong>Change.</strong></p>
+<ul>
+<li><code>index=True</code> on <code>mtbf_mttr_report.as_of_date</code>, <code>equipment_id</code>; <code>breakdown_alert.state</code>, <code>severity</code>, <code>reported_at</code>; <code>service_contract.date_end</code>, <code>state</code>; <code>asn_3pl.state</code>, <code>picking_id</code>.</li>
+<li>Default action <code>context</code> applies <code>search_default_f_30d</code> on the reliability screen so the list never opens unbounded.</li>
+<li>All KPI computations use <code>read_group</code>, never Python loops over <code>search()</code>.</li>
+<li>Add a retention policy: roll <code>mtbf_mttr_report</code> rows older than 13 months into monthly aggregates (<code>ir.cron</code>), keeping the daily grain hot and the archive small.</li>
+</ul>
+<p><strong>Done when.</strong> Reliability list first paint &lt; 800 ms with 10,000 seeded records.</p>
+<hr />
+</section>
+</section>
+<section id="phase-1--screen-upgrades" class="level1">
+<h1>PHASE 1 — SCREEN UPGRADES</h1>
+<p><em>Native Odoo view types only. Big visible payoff, low risk, upgrade-safe.</em></p>
+<hr />
+<section id="1a--screen-equipment-reliability--mtbfmttr-action-1401" class="level2">
+<h2>1A · Screen: <strong>Equipment Reliability — MTBF/MTTR</strong> (action 1401)</h2>
+<blockquote>
+<p>This screen has 241 rows of which roughly 48 carry information. Everything below is in service of inverting that ratio.</p>
+</blockquote>
+<section id="sl-01--reliability-ledger--the-rebuilt-list" class="level3 plate">
+<h3><a class="plate-id" href="#sl-01--reliability-ledger--the-rebuilt-list">SL-01</a><span class="plate-name">Reliability Ledger</span><span class="plate-sub">the rebuilt list</span></h3>
+<p class="plate-tag">Fixes <a href="#D9">D9</a>, <a href="#D8">D8</a></p>
+<p><strong>Change.</strong> The list stops being a log and becomes a health register.</p>
+<ul>
+<li><strong>Default grouping: <code>equipment_id</code></strong>, collapsed. Five groups instead of 241 rows. Each group header shows the aggregate that matters (avg availability, total breakdowns, total downtime).</li>
+<li><code>availability_pct</code> renders as <code>widget="progressbar"</code> with SL-F04 band colouring — the eye finds the 47 % bar instantly.</li>
+<li>New <strong>Trend</strong> column: a text-mode delta (<code>▲ 2.2</code> / <code>▼ 4.1</code> / <code>–</code>) comparing this snapshot to the prior one for the same equipment. Requires a stored computed <code>availability_delta</code>.</li>
+<li>New <strong>vs Expected</strong> column: <code>mtbf_hours / equipment_id.expected_mtbf</code> as a percentage, with the SL-F04 bands. This connects the two existing fields nobody is currently reading.</li>
+<li>Row decorations bound to <em>availability bands</em>, not breakdown count. A machine with one breakdown but 99 % availability should not be red.</li>
+<li><code>optional="hide"</code> on <code>period_days</code>, <code>total_runtime_hours</code>, <code>total_downtime_hours</code>.</li>
+<li><code>float_time</code> widget on all hour fields.</li>
+<li>Icon prefix on the equipment cell reflecting <code>southbrook_condition</code>.</li>
+</ul>
+<div class="sourceCode" id="cb5"><pre class="sourceCode xml"><code class="sourceCode xml"><span id="cb5-1">&lt;<span class="kw">list</span> <span class="ot">string=</span><span class="st">&quot;Reliability&quot;</span> <span class="ot">default_order=</span><span class="st">&quot;as_of_date desc, availability_pct asc&quot;</span></span>
+<span id="cb5-2">      <span class="ot">decoration-danger=</span><span class="st">&quot;availability_pct </span><span class="dv">&amp;lt;</span><span class="st"> 80&quot;</span></span>
+<span id="cb5-3">      <span class="ot">decoration-warning=</span><span class="st">&quot;availability_pct </span><span class="dv">&amp;gt;</span><span class="st">= 80 and availability_pct </span><span class="dv">&amp;lt;</span><span class="st"> 95&quot;</span></span>
+<span id="cb5-4">      <span class="ot">decoration-muted=</span><span class="st">&quot;availability_pct </span><span class="dv">&amp;gt;</span><span class="st">= 98&quot;</span>&gt;</span>
+<span id="cb5-5">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;equipment_id&quot;</span> <span class="ot">widget=</span><span class="st">&quot;sb_equipment_chip&quot;</span>/&gt;   <span class="co">&lt;!-- Phase 2 widget; plain m2o until then --&gt;</span></span>
+<span id="cb5-6">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;as_of_date&quot;</span>/&gt;</span>
+<span id="cb5-7">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;availability_pct&quot;</span> <span class="ot">widget=</span><span class="st">&quot;progressbar&quot;</span> <span class="ot">string=</span><span class="st">&quot;Avail.&quot;</span> <span class="ot">sum=</span><span class="st">&quot;Avg&quot;</span>/&gt;</span>
+<span id="cb5-8">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;availability_delta&quot;</span> <span class="ot">string=</span><span class="st">&quot;Trend&quot;</span> <span class="ot">widget=</span><span class="st">&quot;sb_delta&quot;</span> <span class="ot">optional=</span><span class="st">&quot;show&quot;</span>/&gt;</span>
+<span id="cb5-9">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;mtbf_hours&quot;</span>  <span class="ot">widget=</span><span class="st">&quot;float_time&quot;</span> <span class="ot">string=</span><span class="st">&quot;MTBF&quot;</span> <span class="ot">sum=</span><span class="st">&quot;Total&quot;</span>/&gt;</span>
+<span id="cb5-10">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;mtbf_vs_expected_pct&quot;</span> <span class="ot">string=</span><span class="st">&quot;vs Expected&quot;</span> <span class="ot">widget=</span><span class="st">&quot;progressbar&quot;</span> <span class="ot">optional=</span><span class="st">&quot;show&quot;</span>/&gt;</span>
+<span id="cb5-11">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;mttr_hours&quot;</span>  <span class="ot">widget=</span><span class="st">&quot;float_time&quot;</span> <span class="ot">string=</span><span class="st">&quot;MTTR&quot;</span> <span class="ot">sum=</span><span class="st">&quot;Total&quot;</span>/&gt;</span>
+<span id="cb5-12">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;breakdown_count&quot;</span> <span class="ot">string=</span><span class="st">&quot;Failures&quot;</span> <span class="ot">sum=</span><span class="st">&quot;Total&quot;</span>/&gt;</span>
+<span id="cb5-13">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;total_downtime_hours&quot;</span> <span class="ot">widget=</span><span class="st">&quot;float_time&quot;</span> <span class="ot">optional=</span><span class="st">&quot;hide&quot;</span> <span class="ot">sum=</span><span class="st">&quot;Total&quot;</span>/&gt;</span>
+<span id="cb5-14">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;total_runtime_hours&quot;</span>  <span class="ot">widget=</span><span class="st">&quot;float_time&quot;</span> <span class="ot">optional=</span><span class="st">&quot;hide&quot;</span> <span class="ot">sum=</span><span class="st">&quot;Total&quot;</span>/&gt;</span>
+<span id="cb5-15">  &lt;<span class="kw">field</span> <span class="ot">name=</span><span class="st">&quot;period_days&quot;</span> <span class="ot">optional=</span><span class="st">&quot;hide&quot;</span>/&gt;</span>
+<span id="cb5-16">&lt;/<span class="kw">list</span>&gt;</span></code></pre></div>
+<p><strong>Done when.</strong> Opening the screen surfaces CNC-001 as the problem asset without the user filtering, sorting, or scrolling.</p>
+<hr />
+</section>
+<section id="sl-02--fleet-health-board--new-kanban" class="level3 plate">
+<h3><a class="plate-id" href="#sl-02--fleet-health-board--new-kanban">SL-02</a><span class="plate-name">Fleet Health Board</span><span class="plate-sub">new kanban</span></h3>
+<p class="plate-tag">New view type for this model</p>
+<p><strong>Change.</strong> One card per <strong>equipment</strong> (not per snapshot) showing its current reliability posture. Backed by a <code>read_group</code> on latest <code>as_of_date</code>.</p>
+<p>Card anatomy:</p>
+<pre class="text"><code>┌──────────────────────────────────────┐
+│ ● Biesse Rover K FT      CNC-001     │  ← condition dot + name + serial
+│ ████████░░░░░░░░░░░░  47.8 %         │  ← availability meter, banded
+│ MTBF 1032 h  ▼        MTTR 1128 h ▲  │  ← paired metrics with trend arrows
+│ Expected 2160 h · 48 % of target     │  ← the connection to expected_mtbf
+│ ⚠ 1 open breakdown · 3 MOs blocked   │  ← live cross-model badges
+│ Next failure est. Aug 19             │  ← estimated_next_failure
+│ [ Log Breakdown ]  [ Open History ]  │  ← two actions, thumb-sized
+└──────────────────────────────────────┘</code></pre>
+<p>Kanban <code>default_group_by="equipment_id.category_id"</code>, <code>records_draggable="false"</code>. Cards inherit SL-F04 tokens; card left border is a 4 px health band.</p>
+<p><strong>Done when.</strong> A manager can assess the entire fleet in one screen without opening a record.</p>
+<hr />
+</section>
+<section id="sl-03--reliability-pivot" class="level3 plate">
+<h3><a class="plate-id" href="#sl-03--reliability-pivot">SL-03</a><span class="plate-name">Reliability Pivot</span></h3>
+<p class="plate-tag">Fixes <a href="#D6">D6</a></p>
+<p><strong>Change.</strong> Add <code>pivot</code> to <code>view_mode</code>.</p>
+<ul>
+<li>Rows: <code>equipment_id</code> → <code>as_of_date:month</code></li>
+<li>Cols: none by default</li>
+<li>Measures: <code>availability_pct</code> (avg), <code>mtbf_hours</code> (avg), <code>mttr_hours</code> (avg), <code>breakdown_count</code> (sum), <code>total_downtime_hours</code> (sum)</li>
+<li><code>&lt;pivot sample="1" display_quantity="1"&gt;</code> with <code>&lt;field name="availability_pct" type="measure" widget="percentage"/&gt;</code></li>
+</ul>
+<p><strong>Done when.</strong> Month-over-month fleet reliability is one click from the list.</p>
+<hr />
+</section>
+<section id="sl-04--trend-wall--upgraded-graph" class="level3 plate">
+<h3><a class="plate-id" href="#sl-04--trend-wall--upgraded-graph">SL-04</a><span class="plate-name">Trend Wall</span><span class="plate-sub">upgraded graph</span></h3>
+<p><strong>Change.</strong> The existing graph view is unconfigured. Make it a multi-series line chart: X = <code>as_of_date:day</code>, series = <code>equipment_id</code>, measure = <code>availability_pct</code> (avg), with a secondary saved config for MTBF. Add <code>stacked="0"</code>, <code>&lt;field name="as_of_date" interval="day" type="row"/&gt;</code>. Set <code>graph</code> as the <strong>default view for <code>group_cmms_manager</code></strong> via a separate role-scoped action.</p>
+<hr />
+</section>
+<section id="sl-05--failure-cohort" class="level3 plate">
+<h3><a class="plate-id" href="#sl-05--failure-cohort">SL-05</a><span class="plate-name">Failure Cohort</span></h3>
+<p><strong>Change.</strong> Cohort view (<code>web_cohort</code>, Enterprise) on <code>breakdown_alert</code>: <code>date_start = reported_at</code>, <code>date_stop = maintenance_request_id.close_date</code>, interval month, measure count. Answers "of the machines that failed in March, how many failed again within 30/60/90 days" — the classic repeat-failure question a CMMS should answer and this one currently cannot.</p>
+<p><em>If the instance is Community:</em> substitute a pivot with a stored <code>days_since_previous_failure</code> bucket field.</p>
+<hr />
+</section>
+<section id="sl-06--equipment-reliability-card--form-redesign" class="level3 plate">
+<h3><a class="plate-id" href="#sl-06--equipment-reliability-card--form-redesign">SL-06</a><span class="plate-name">Equipment Reliability Card</span><span class="plate-sub">form redesign</span></h3>
+<p><strong>Change.</strong> The form stops being a read-only field dump and becomes an asset briefing.</p>
+<ul>
+<li><strong>Stat button row</strong> (<code>oe_button_box</code>): Breakdowns (90d) · Open Work Orders · Impacted MOs · Active Contracts · Downtime Cost. Each drills through to a filtered list (Principle 4).</li>
+<li><strong>Header ribbon</strong>: availability band as a full-width coloured strip with the number in 32 px type. This is the one thing the reader came for.</li>
+<li><strong>Left group</strong>: equipment identity pulled from <code>maintenance.equipment</code> (<code>model</code>, <code>serial_no</code>, <code>location_id</code>, <code>workcenter_id</code>, <code>category_id</code>, <code>technician_user_id</code>).</li>
+<li><strong>Right group</strong>: the period metrics, with <code>expected_mtbf</code> shown <em>adjacent to</em> <code>mtbf_hours</code> so the comparison is unavoidable.</li>
+<li><strong>Notebook tabs</strong>: <code>Failure History</code> (related breakdown alerts) · <code>Coverage</code> (related service contracts + <code>warranty_date</code>) · <code>Production Impact</code> (<code>southbrook_impacted_production_ids</code>) · <code>Notes</code>.</li>
+<li><strong>Chatter stays</strong> — repurpose it as <em>Reliability Annotations</em>. A snapshot record with a chatter is unusual, but it means a lead can annotate "MTBF dip caused by tooling change, not machine fault" against a specific data point. Rename the chatter section accordingly and add a <code>Log annotation</code> quick button.</li>
+</ul>
+<hr />
+</section>
+</section>
+<section id="1b--screen-breakdown-alerts-action-1402" class="level2">
+<h2>1B · Screen: <strong>Breakdown Alerts</strong> (action 1402)</h2>
+<section id="sl-07--triage-board--kanban-rework" class="level3 plate">
+<h3><a class="plate-id" href="#sl-07--triage-board--kanban-rework">SL-07</a><span class="plate-name">Triage Board</span><span class="plate-sub">kanban rework</span></h3>
+<p><strong>Change.</strong> Default view becomes kanban for <code>group_cmms_lead</code>. <code>default_group_by="state"</code> with columns Open → Dispatched → Fixed, drag-to-progress enabled (dragging to Dispatched calls <code>action_dispatch</code>).</p>
+<p>Card anatomy:</p>
+<ul>
+<li>Left border 4 px in severity colour + severity icon + label text (never colour alone).</li>
+<li><strong>Elapsed timer</strong> — "Open 3h 12m", recomputed client-side, turning amber past 4 h and red past 24 h. This is the single most useful thing you can put on a breakdown card and it does not exist today.</li>
+<li>Equipment name + work center.</li>
+<li><code>affected_production_ids</code> count as a red badge — "3 MOs blocked".</li>
+<li>Reporter avatar.</li>
+<li>Footer: <code>[Dispatch]</code> primary button, thumb-sized.</li>
+</ul>
+<p>Add <code>&lt;progressbar field="severity" colors='{"critical":"danger","high":"warning","medium":"info","low":"muted"}'/&gt;</code> to the kanban column headers so each state column shows its severity mix at a glance.</p>
+</section>
+<section id="sl-08--escalation-ladder--sla-ageing" class="level3 plate">
+<h3><a class="plate-id" href="#sl-08--escalation-ladder--sla-ageing">SL-08</a><span class="plate-name">Escalation Ladder</span><span class="plate-sub">SLA ageing</span></h3>
+<p><strong>Change.</strong> New stored computed <code>age_hours</code> and <code>sla_band</code> (<code>fresh|ageing|breached</code>) on the alert model, driven by severity (critical: 1 h, high: 4 h, medium: 24 h, low: 72 h). Surface as:</p>
+<ul>
+<li>A list column with a coloured pill.</li>
+<li>A search filter set (SL-F01).</li>
+<li>An <code>ir.cron</code> that escalates breached alerts by creating an <code>mail.activity</code> on the maintenance team lead.</li>
+</ul>
+</section>
+<section id="sl-09--one-tap-dispatch--form-for-the-floor" class="level3 plate">
+<h3><a class="plate-id" href="#sl-09--one-tap-dispatch--form-for-the-floor">SL-09</a><span class="plate-name">One-Tap Dispatch</span><span class="plate-sub">form for the floor</span></h3>
+<p><strong>Change.</strong> The form currently has the right buttons in the wrong ergonomics.</p>
+<ul>
+<li>Header buttons become full-width, 56 px tall stacked blocks in Tech density.</li>
+<li><code>action_dispatch</code> gets a confirmation sheet showing <em>what will happen</em> (creates maintenance request, notifies team X, assigns technician Y) rather than firing silently.</li>
+<li><code>action_block_affected_mos</code> is destructive and currently unguarded — add <code>confirm="This will block N manufacturing orders. Continue?"</code> with N interpolated.</li>
+<li>Add a <strong>Report Breakdown</strong> quick-create flow: equipment (barcode/QR scannable), severity (four big buttons, not a dropdown), description (voice-to-text friendly textarea), photo attachment. Three taps from cold start to logged alert.</li>
+</ul>
+</section>
+<section id="sl-10--blast-radius-panel" class="level3 plate">
+<h3><a class="plate-id" href="#sl-10--blast-radius-panel">SL-10</a><span class="plate-name">Blast Radius Panel</span></h3>
+<p><strong>Change.</strong> <code>affected_production_ids</code> is currently an m2m tag soup. Render it as an embedded list inside a form notebook tab showing MO reference, product, quantity, date planned, and — the point — <strong>estimated value at risk</strong>. Add a computed <code>production_value_at_risk</code> monetary summing the affected MOs. A breakdown stops being an inconvenience and becomes a dollar figure.</p>
+</section>
+<section id="sl-11--alert-calendar--map" class="level3 plate">
+<h3><a class="plate-id" href="#sl-11--alert-calendar--map">SL-11</a><span class="plate-name">Alert Calendar &amp; Map</span></h3>
+<p><strong>Change.</strong> Add <code>calendar</code> (<code>date_start = reported_at</code>, colour by <code>severity</code>) and <code>activity</code> view (fixes D7) to <code>view_mode</code>. If <code>maintenance.equipment.location_id</code> resolves to a physical location with coordinates, add the <code>map</code> view for multi-site operations.</p>
+<hr />
+</section>
+</section>
+<section id="1c--screen-equipment-service-contracts-action-1403" class="level2">
+<h2>1C · Screen: <strong>Equipment Service Contracts</strong> (action 1403)</h2>
+<section id="sl-12--coverage-timeline--gantt" class="level3 plate">
+<h3><a class="plate-id" href="#sl-12--coverage-timeline--gantt">SL-12</a><span class="plate-name">Coverage Timeline</span><span class="plate-sub">Gantt</span></h3>
+<p><strong>Change.</strong> Add <code>gantt</code> view (Enterprise): <code>date_start = date_start</code>, <code>date_stop = date_end</code>, <code>default_group_by = vendor_id</code>, colour by <code>state</code>. Contract coverage is inherently an interval-on-a-timeline problem and a list is the wrong shape for it. Today's calendar view shows a contract as a series of unhelpful day-cells.</p>
+<p><em>Community fallback:</em> the Phase 2 <strong>Coverage Heat Grid</strong> (SL-X9).</p>
+</section>
+<section id="sl-13--expiry-runway--list-rework" class="level3 plate">
+<h3><a class="plate-id" href="#sl-13--expiry-runway--list-rework">SL-13</a><span class="plate-name">Expiry Runway</span><span class="plate-sub">list rework</span></h3>
+<p><strong>Change.</strong></p>
+<ul>
+<li><code>days_to_expiry</code> as a <strong>reversed progressbar</strong> against <code>expiry_alert_at</code> — the bar drains as expiry approaches.</li>
+<li>Decorations from the alert threshold, not a hardcoded number: a contract with a 180-day alert should turn amber at 180, not at 30.</li>
+<li>Group by <code>state</code> by default, <code>expired</code> group collapsed.</li>
+<li><code>annual_value</code> with <code>sum="Total Annual Spend"</code> — the manager wants the portfolio number.</li>
+<li>Equipment count column (<code>equipment_ids</code> count) + computed <code>cost_per_equipment</code>.</li>
+</ul>
+</section>
+<section id="sl-14--coverage-sheet--form-rework" class="level3 plate">
+<h3><a class="plate-id" href="#sl-14--coverage-sheet--form-rework">SL-14</a><span class="plate-name">Coverage Sheet</span><span class="plate-sub">form rework</span></h3>
+<p><strong>Change.</strong></p>
+<ul>
+<li>Stat buttons: Equipment Covered · Breakdowns Under This Contract (90d) · Value per Asset · Days Remaining.</li>
+<li><strong>Renewal action</strong> in the header: <code>action_renew</code> clones the contract forward by its term with dates shifted, in draft.</li>
+<li><strong>Zero-value guard</strong> (fixes D11): if <code>annual_value == 0</code> on a non-draft contract, show an inline warning banner — "No annual value recorded. Portfolio spend reporting will under-count this contract." — with a jump-to-field link. Do not make it a blocking constraint; make it visible.</li>
+<li>Equipment list rendered with coverage dates and each asset's current availability, so you can see whether you are paying for coverage on your worst machine.</li>
+</ul>
+</section>
+<section id="sl-15--uncovered-equipment-radar" class="level3 plate">
+<h3><a class="plate-id" href="#sl-15--uncovered-equipment-radar">SL-15</a><span class="plate-name">Uncovered Equipment Radar</span></h3>
+<p class="plate-tag">A genuinely new capability, still native</p>
+<p><strong>Change.</strong> A new action + list on <code>maintenance.equipment</code> with domain <code>equipment not in any active service_contract.equipment_ids AND warranty_date &lt; today</code>. Columns: equipment, category, criticality proxy (<code>availability_pct</code> 90 d avg), <code>cost</code>, <code>latest_failure_date</code>, <code>maintenance_open_count</code>.</p>
+<p><strong>Why.</strong> The contract screen currently answers "what am I paying for". It cannot answer "what am I exposed on" — which is the question that costs money. Ordered by lowest availability, this is a procurement to-do list.</p>
+<hr />
+</section>
+</section>
+<section id="1d--screen-landed-cost-templates-action-1404" class="level2">
+<h2>1D · Screen: <strong>Landed Cost Templates</strong> (action 1404)</h2>
+<section id="sl-16--rate-card--list-rework" class="level3 plate">
+<h3><a class="plate-id" href="#sl-16--rate-card--list-rework">SL-16</a><span class="plate-name">Rate Card</span><span class="plate-sub">list rework</span></h3>
+<p><strong>Change.</strong> Add a computed <code>total_pct</code> (<code>freight + duty + customs + handling</code>) as the primary column with a stacked-segment bar showing the four components in distinct hues. Four separate percentage columns are four numbers the user has to add in their head; one bar with four segments is the same data, instantly.</p>
+</section>
+<section id="sl-17--cost-stack-simulator--form" class="level3 plate">
+<h3><a class="plate-id" href="#sl-17--cost-stack-simulator--form">SL-17</a><span class="plate-name">Cost Stack Simulator</span><span class="plate-sub">form</span></h3>
+<p><strong>Change.</strong> Add a non-stored <code>sample_base_amount</code> (default 10,000) and computed <code>sample_freight/duty/customs/handling/total</code>. Editing the base recomputes live. Render as a small waterfall table inside the form:</p>
+<pre class="text"><code>Base value                        10,000.00
+  + Freight        8.0 %             800.00
+  + Duty           4.5 %             450.00
+  + Customs        1.2 %             120.00
+  + Handling       2.0 %             200.00
+  ──────────────────────────────────────────
+  Landed cost     15.7 %          11,570.00</code></pre>
+<p>A template that is currently four abstract percentages becomes a number the buyer can reason about.</p>
+</section>
+<section id="sl-18--vendor-mapping-matrix" class="level3 plate">
+<h3><a class="plate-id" href="#sl-18--vendor-mapping-matrix">SL-18</a><span class="plate-name">Vendor Mapping Matrix</span></h3>
+<p><strong>Change.</strong></p>
+<ul>
+<li><code>default_for_vendor_ids</code> with <code>widget="many2many_tags"</code> and vendor colour.</li>
+<li><strong>Conflict detection</strong>: a constraint + inline warning when a vendor is the default for more than one template — currently silently possible and silently wrong.</li>
+<li>A "Vendors with no template" smart link on the list view, mirroring SL-15's exposure logic.</li>
+</ul>
+<hr />
+</section>
+</section>
+<section id="1e--screen-cmms--wms-command-deck-action-1405" class="level2">
+<h2>1E · Screen: <strong>CMMS / WMS Command Deck</strong> (action 1405)</h2>
+<section id="sl-19--command-deck--kill-the-list-build-the-dashboard" class="level3 plate">
+<h3><a class="plate-id" href="#sl-19--command-deck--kill-the-list-build-the-dashboard">SL-19</a><span class="plate-name">Command Deck</span><span class="plate-sub">kill the list, build the dashboard</span></h3>
+<p class="plate-tag">Fixes <a href="#D4">D4</a>. Native implementation; <a href="#sl-x6--command-deck-owl">SL-X6</a> upgrades it in Phase 2.</p>
+<p><strong>Change.</strong> Phase 1 native version: replace the list default with a <strong>kanban view rendered as KPI tiles</strong> (a standard Odoo idiom — <code>&lt;kanban class="o_sb_deck"&gt;</code> with card templates styled as tiles). Six tiles, each clickable, each drilling through to the underlying filtered records:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th style="text-align: left;">Tile</th>
+<th style="text-align: left;">Field</th>
+<th style="text-align: left;">Drills to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Open Breakdowns</strong></td>
+<td style="text-align: left;"><code>open_breakdowns_count</code></td>
+<td style="text-align: left;">Breakdown Alerts filtered <code>state = open</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Contracts Expiring (60d)</strong></td>
+<td style="text-align: left;"><code>service_contracts_expiring_60d_count</code></td>
+<td style="text-align: left;">Service Contracts filtered <code>Expiring ≤60</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Oversize Pickings Pending</strong></td>
+<td style="text-align: left;"><code>oversize_pickings_pending_count</code></td>
+<td style="text-align: left;">3PL ASNs filtered <code>oversize_load_flag = True</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Fleet MTBF (30d avg)</strong></td>
+<td style="text-align: left;"><code>mtbf_avg_30d</code></td>
+<td style="text-align: left;">Reliability pivot</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Fleet MTTR (30d avg)</strong></td>
+<td style="text-align: left;"><code>mttr_avg_30d</code></td>
+<td style="text-align: left;">Reliability pivot</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Landed Cost Value (30d)</strong></td>
+<td style="text-align: left;"><code>landed_cost_value_30d</code></td>
+<td style="text-align: left;">Landed cost analysis</td>
+</tr>
+</tbody>
+</table></div>
+<p>Each tile: large value, small label, <strong>delta vs previous snapshot</strong> (<code>▲ 3 since yesterday</code>), and a health colour from SL-F04. <code>as_of</code> rendered once as "Last updated 2 hours ago" — freshness is a first-class piece of information on a dashboard and is currently a raw datetime in a table cell.</p>
+<p><strong>Done when.</strong> Nobody ever sees <code>mi_tiles</code> as a table again.</p>
+</section>
+<section id="sl-20--snapshot-history" class="level3 plate">
+<h3><a class="plate-id" href="#sl-20--snapshot-history">SL-20</a><span class="plate-name">Snapshot History</span></h3>
+<p><strong>Change.</strong> <code>mi_tiles</code> currently holds one record. Make the nightly cron append rather than overwrite, then:</p>
+<ul>
+<li>Add <code>graph</code> and <code>pivot</code> to <code>view_mode</code> for KPI trending.</li>
+<li>Each Command Deck tile gains a <strong>sparkline</strong> of its last 30 snapshots (native: a small inline SVG in the kanban template; no OWL needed).</li>
+<li>Retention: keep daily for 90 days, weekly thereafter.</li>
+</ul>
+<p><strong>Why this matters.</strong> A KPI without a trend is a number without a verdict. <code>open_breakdowns_count = 3</code> is meaningless; <code>3, down from 11 last week</code> is a management decision.</p>
+<hr />
+</section>
+</section>
+<section id="1f--screen-3pl-advance-shipping-notices-action-1370" class="level2">
+<h2>1F · Screen: <strong>3PL Advance Shipping Notices</strong> (action 1370)</h2>
+<section id="sl-21--shipment-pipeline--kanban" class="level3 plate">
+<h3><a class="plate-id" href="#sl-21--shipment-pipeline--kanban">SL-21</a><span class="plate-name">Shipment Pipeline</span><span class="plate-sub">kanban</span></h3>
+<p><strong>Change.</strong> Add <code>kanban</code> to <code>view_mode</code>, <code>default_group_by="state"</code> (Draft → Sent → Acknowledged → Shipped → Delivered). Card shows carrier, tracking number (click-to-copy), destination from <code>picking_id</code>, an <strong>OVERSIZE</strong> badge when <code>oversize_load_flag</code>, and permit jurisdiction chips. Column-header progressbars split by oversize vs standard.</p>
+</section>
+<section id="sl-22--permit-corridor" class="level3 plate">
+<h3><a class="plate-id" href="#sl-22--permit-corridor">SL-22</a><span class="plate-name">Permit Corridor</span></h3>
+<p><strong>Change.</strong> <code>permit_jurisdictions</code> is a bare char field holding what is semantically a list. Parse and render as chips; add a <code>many2many</code> to a new <code>southbrook.permit.jurisdiction</code> model so jurisdictions become filterable and reportable. Surface a warning banner on oversize loads with no jurisdictions recorded — that is a truck that will be stopped.</p>
+</section>
+<section id="sl-23--payload-inspector" class="level3 plate">
+<h3><a class="plate-id" href="#sl-23--payload-inspector">SL-23</a><span class="plate-name">Payload Inspector</span></h3>
+<p><strong>Change.</strong> <code>payload_json</code> in a raw <code>&lt;field&gt;</code> textarea is unreadable and un-diffable. Replace with a JSON viewer: pretty-printed, syntax-coloured, collapsible nodes, copy button, and a validity indicator. Phase 1 can ship a read-only pretty-print via a computed HTML field; Phase 2 makes it a proper OWL widget with collapse and diff-vs-last-send.</p>
+</section>
+<section id="sl-24--asn-timeline" class="level3 plate">
+<h3><a class="plate-id" href="#sl-24--asn-timeline">SL-24</a><span class="plate-name">ASN Timeline</span></h3>
+<p><strong>Change.</strong> A horizontal state timeline in the form header (Draft → Sent → Acked → Shipped → Delivered) with the timestamp under each completed step and elapsed time between steps. Add <code>date_sent</code>, <code>date_acked</code>, <code>date_shipped</code>, <code>date_delivered</code> datetime fields — currently the model records <em>which</em> state but not <em>when it got there</em>, which makes carrier SLA measurement impossible.</p>
+<hr />
+</section>
+</section>
+</section>
+<section id="phase-2--beyond-standard-odoo" class="level1">
+<h1>PHASE 2 — BEYOND STANDARD ODOO</h1>
+<p><em>Custom OWL components and view types. This is where the family stops looking like Odoo.</em></p>
+<p>Each item states why native could not do it — build nothing here that Phase 1 already solved.</p>
+<hr />
+<section id="sl-x1--plant-floor-live-map" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x1--plant-floor-live-map">SL-X1</a><span class="plate-name">Plant Floor Live Map</span></h3>
+<blockquote>
+<p><em>Native cannot: render a spatial floorplan with live per-asset state.</em></p>
+</blockquote>
+<p>A custom OWL <strong>view type</strong> (<code>js_class="sb_floorplan"</code>, registered in <code>view_registry</code>) rendering an SVG shop-floor plan of the Southbrook facility. Each machine is a node positioned by new <code>floor_x</code> / <code>floor_y</code> fields on <code>maintenance.equipment</code>.</p>
+<ul>
+<li>Node fill = availability band (SL-F04). Node ring = <code>southbrook_condition</code>.</li>
+<li><strong>Pulse animation</strong> on any asset with an open breakdown; pulse rate scales with severity.</li>
+<li>Work centers drawn as translucent zones; material flow arrows between them.</li>
+<li>Hover → tooltip card (MTBF, MTTR, next failure estimate, open WOs).</li>
+<li>Click → the SL-06 Equipment Reliability Card in a side panel, floorplan stays visible.</li>
+<li><strong>Time scrubber</strong> along the bottom: drag back through the last 90 days and watch the floor change colour. Failure clustering by zone becomes visible in a way no table will ever show.</li>
+<li>Live via <code>bus.bus</code> — a breakdown logged on a tablet lights up the manager's wall display within a second.</li>
+</ul>
+<p>Editor mode: managers drag nodes to set <code>floor_x</code>/<code>floor_y</code>; no XML editing to lay out the plant.</p>
+<p><strong>Effort:</strong> L. <strong>Payoff:</strong> This is the screen that goes on the wall-mounted display in the plant office.</p>
+<hr />
+</section>
+<section id="sl-x2--reliability-bathtub-curve" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x2--reliability-bathtub-curve">SL-X2</a><span class="plate-name">Reliability Bathtub Curve</span></h3>
+<blockquote>
+<p><em>Native cannot: plot failure rate against asset age with regime shading.</em></p>
+</blockquote>
+<p>An OWL chart component plotting failure rate (failures per 1,000 running hours) against asset age (derived from <code>effective_date</code>), with the three classic regimes shaded: infant mortality, useful life, wear-out. Overlay each asset as a dot positioned by its own age and failure rate.</p>
+<p><strong>Why it matters.</strong> It tells you <em>why</em> a machine is failing. A new machine failing often is a commissioning/training problem. An old machine failing often is a replacement decision. Those are different budgets and different conversations, and no standard Odoo view distinguishes them.</p>
+<hr />
+</section>
+<section id="sl-x3--downtime-pareto--waterfall" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x3--downtime-pareto--waterfall">SL-X3</a><span class="plate-name">Downtime Pareto &amp; Waterfall</span></h3>
+<blockquote>
+<p><em>Native pivot can rank; it cannot draw the 80 % cumulative line that makes a Pareto a Pareto.</em></p>
+</blockquote>
+<p>Combined bar + cumulative-line chart of <code>total_downtime_hours</code> by equipment (and, once failure-cause coding is added, by cause). The 80 % threshold line renders as a hard rule; everything left of it is highlighted as "the vital few". Clicking a bar drills to the contributing snapshots.</p>
+<p>Add a companion <strong>waterfall</strong> showing how total plant downtime decomposes: planned maintenance → unplanned breakdown → changeover → material starvation.</p>
+<hr />
+</section>
+<section id="sl-x4--failure-runway" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x4--failure-runway">SL-X4</a><span class="plate-name">Failure Runway</span></h3>
+<blockquote>
+<p><em>Native cannot: render a per-asset predictive risk band on a timeline.</em></p>
+</blockquote>
+<p>A horizontal strip per asset showing the projected window to next failure, computed from <code>expected_mtbf</code>, actual <code>mtbf</code>, and <code>latest_failure_date</code>, with <code>estimated_next_failure</code> marked. The band widens with uncertainty (few data points = wide band). Overlaid: scheduled preventive maintenance dates and service contract coverage end.</p>
+<p><strong>The insight it delivers:</strong> an asset whose predicted failure window opens <em>after</em> its contract expires is a specific, actionable, and currently invisible risk. Highlight those in red and the screen has paid for itself.</p>
+<p><em>Model note:</em> implement the projection as a stored computed field with a documented formula (simple: <code>latest_failure_date + mtbf_hours</code>; better: exponential-weighted MTBF over the last N snapshots). Do not present a statistical claim the data cannot support — label the band "estimate" and show the sample size.</p>
+<hr />
+</section>
+<section id="sl-x5--blast-radius-graph" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x5--blast-radius-graph">SL-X5</a><span class="plate-name">Blast Radius Graph</span></h3>
+<blockquote>
+<p><em>Native cannot: render a multi-hop dependency graph.</em></p>
+</blockquote>
+<p>A force-directed graph (d3 or cytoscape, bundled — no CDN) launched from a breakdown alert:</p>
+<pre class="text"><code>Equipment ─→ Work Center ─→ Manufacturing Orders ─→ Sales Orders ─→ Customers</code></pre>
+<p>Node size = value at risk. Edge thickness = quantity. Nodes turn red as the downstream date slips past commitment. A one-line summary sits above it: <em>"CNC-001 down 3h — 3 MOs blocked, $47,200 at risk, 2 customer deliveries slip past promise date."</em></p>
+<p><strong>Why it matters.</strong> It converts a maintenance event into a commercial event. This is the artifact a maintenance lead forwards to the plant manager to get overtime approved.</p>
+<hr />
+</section>
+<section id="sl-x6--command-deck-owl" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x6--command-deck-owl">SL-X6</a><span class="plate-name">Command Deck (OWL)</span></h3>
+<blockquote>
+<p><em>Upgrades SL-19 past what a kanban template can carry.</em></p>
+</blockquote>
+<p>A full OWL client action replacing the Phase 1 tile-kanban:</p>
+<ul>
+<li>Responsive tile grid, each tile with live sparkline, delta, and a threshold ring.</li>
+<li><strong>Drill-in without leaving</strong> — clicking a tile expands it in place into a chart + record list panel.</li>
+<li>Auto-refresh via <code>bus.bus</code>, with a visible "live" indicator and last-updated stamp.</li>
+<li><strong>Role-aware layout</strong>: managers see cost and trend tiles first; leads see queue and SLA tiles first. Same component, different tile manifest per group.</li>
+<li>Configurable — users pick and reorder their own tiles, persisted per user.</li>
+<li>A <strong>wallboard mode</strong> (<code>?wallboard=1</code>): no chrome, huge type, 30-second rotation between panels, designed for an unattended shop-floor screen.</li>
+</ul>
+<hr />
+</section>
+<section id="sl-x7--tech-mode" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x7--tech-mode">SL-X7</a><span class="plate-name">Tech Mode</span></h3>
+<blockquote>
+<p><em>Native cannot: deliver a glove-operable, single-task, offline-tolerant floor interface.</em> <em>Fixes D12 completely.</em></p>
+</blockquote>
+<p>A dedicated full-screen OWL client action, the default landing for <code>group_cmms_tech</code>:</p>
+<ul>
+<li><strong>One question per screen.</strong> No breadcrumb, no side menu, no notebook tabs.</li>
+<li>Home = today's assigned work as large cards: open breakdowns, due preventive maintenance, ordered by SLA urgency.</li>
+<li><strong>48 px minimum touch targets</strong>, 18 px base type, high-contrast palette tuned for shop lighting and safety glasses.</li>
+<li><strong>Scan to act</strong> — camera QR/barcode scan on equipment resolves straight to that asset's actions.</li>
+<li><strong>Voice-to-text</strong> on every description field (Web Speech API); a technician in gloves does not type.</li>
+<li><strong>Photo capture</strong> attached directly to the alert.</li>
+<li><strong>Offline tolerance</strong> — service worker caches the assigned work list and queues actions taken while the connection drops, syncing on reconnect with a visible pending-sync indicator. Shop floors have dead spots; a CMMS that fails in a dead spot does not get used.</li>
+<li>Big <strong>Log Breakdown</strong> button, permanently docked. Three taps: scan → severity → submit.</li>
+</ul>
+<p><strong>Effort:</strong> L. <strong>Payoff:</strong> Highest of anything in this document. Data quality in a CMMS is entirely determined by whether the person holding the wrench will use it.</p>
+<hr />
+</section>
+<section id="sl-x8--asset-passport" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x8--asset-passport">SL-X8</a><span class="plate-name">Asset Passport</span></h3>
+<blockquote>
+<p><em>Native cannot: give a physical machine a scannable digital identity page.</em></p>
+</blockquote>
+<p>Generate a QR code per <code>maintenance.equipment</code> (printable label sheet via a QWeb report). Scanning opens a public-ish, auth-gated mobile page:</p>
+<ul>
+<li>Identity: photo, model, serial, install date, location.</li>
+<li>Health: current availability meter, MTBF vs expected, condition rating and who set it.</li>
+<li>Coverage: warranty status, active service contract, vendor contact with tap-to-call.</li>
+<li>History: last 5 breakdowns, last 5 maintenance requests.</li>
+<li>Documents: manuals, schematics, safety sheets (attachments).</li>
+<li><strong>One tap: Report a Breakdown</strong> — pre-filled with this equipment.</li>
+</ul>
+<p><strong>Why it matters.</strong> It removes the "which machine is this in the system?" step, which is where most floor-level CMMS data entry dies.</p>
+<hr />
+</section>
+<section id="sl-x9--coverage-heat-grid" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x9--coverage-heat-grid">SL-X9</a><span class="plate-name">Coverage Heat Grid</span></h3>
+<blockquote>
+<p><em>Native cannot: render an equipment × time coverage matrix. Also the Community fallback for SL-12.</em></p>
+</blockquote>
+<p>Rows = equipment, columns = months (rolling 24). Cell colour: green = under active contract, blue = under warranty, amber = expiring within alert window, red = <strong>uncovered</strong>, grey = out of service. Uncovered cells on high-value or low-availability assets get a hatch pattern and float to the top of the sort.</p>
+<p>Hovering a cell shows the contract and its annual value. Clicking a red cell opens a "create contract" flow pre-filled with that equipment.</p>
+<p><strong>Why it matters.</strong> Contract gaps are invisible in a list and glaring in a grid.</p>
+<hr />
+</section>
+<section id="sl-x10--landed-cost-waterfall-simulator" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x10--landed-cost-waterfall-simulator">SL-X10</a><span class="plate-name">Landed Cost Waterfall Simulator</span></h3>
+<blockquote>
+<p><em>Upgrades SL-17 from a static table to an interactive model.</em></p>
+</blockquote>
+<p>Slider-driven interactive waterfall. Drag freight from 8 % to 11 % and watch the landed cost bar and the final number move in real time. Compare two templates side by side. Feed in an actual PO value from a picker rather than a hypothetical base. Export the comparison as a PDF for a vendor negotiation.</p>
+<hr />
+</section>
+<section id="sl-x11--3pl-load-board" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x11--3pl-load-board">SL-X11</a><span class="plate-name">3PL Load Board</span></h3>
+<blockquote>
+<p><em>Native cannot: render a carrier × time swimlane with oversize/permit lanes.</em></p>
+</blockquote>
+<p>A timeline/swimlane board of ASNs: one lane per carrier, plus a dedicated <strong>Oversize</strong> lane at the top. Blocks positioned by ship date, length by transit estimate, colour by state. Permit-required loads carry jurisdiction chips and a permit-status traffic light. Drag a block to reschedule; the underlying <code>stock.picking</code> date follows.</p>
+<p>Above it, a small <strong>capacity strip</strong> showing loads per day against a configurable dock capacity — the classic 3PL question "can we physically ship all of this on Thursday" answered visually.</p>
+<hr />
+</section>
+<section id="sl-x12--reliability-ticker" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x12--reliability-ticker">SL-X12</a><span class="plate-name">Reliability Ticker</span></h3>
+<blockquote>
+<p><em>Native cannot: put persistent live status in the systray.</em></p>
+</blockquote>
+<p>A systray widget, visible on every screen in Odoo for CMMS groups: <code>⚙ 2 open · worst 47.8 %</code> — click for a popover listing open breakdowns and the worst-performing assets, each a link. Turns red and pulses on a new critical alert. <code>bus.bus</code>-driven.</p>
+<p><strong>Why it matters.</strong> A breakdown that nobody notices for two hours is a two-hour breakdown regardless of how good the alerts screen is.</p>
+<hr />
+</section>
+<section id="sl-x13--downtime-cost-lens" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x13--downtime-cost-lens">SL-X13</a><span class="plate-name">Downtime Cost Lens</span></h3>
+<blockquote>
+<p><em>Native cannot: apply a global user-set economic parameter across every view.</em></p>
+</blockquote>
+<p>A single configurable <code>downtime_cost_per_hour</code> per work center (or per equipment). Once set, every downtime figure in the family gains a monetary companion: the reliability list shows "$14,400" next to "180 h", the Command Deck adds a "Downtime Cost (30d)" tile, the Blast Radius Graph sizes nodes by real dollars.</p>
+<p>A control-panel toggle switches the entire family between <strong>Hours</strong> and <strong>Dollars</strong> views. Same data, two audiences: the maintenance lead thinks in hours, the plant manager thinks in dollars, and neither should have to do the conversion.</p>
+<hr />
+</section>
+<section id="sl-x14--anomaly-spotlight" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x14--anomaly-spotlight">SL-X14</a><span class="plate-name">Anomaly Spotlight</span></h3>
+<blockquote>
+<p><em>Native cannot: proactively surface statistical outliers.</em></p>
+</blockquote>
+<p>A background job scanning each nightly snapshot for statistically notable movement — availability dropping more than 2σ from the asset's 30-day mean, MTTR doubling, a first-ever failure on a previously perfect asset, a breakdown pattern clustering by shift or day-of-week.</p>
+<p>Findings render as a <strong>dismissible banner strip</strong> at the top of the Command Deck and the Reliability list:</p>
+<blockquote>
+<p><em>"CNC-001 availability fell 12.2 pts over 6 days — steepest decline in 90 days. 3 of 4 failures occurred on second shift."</em></p>
+</blockquote>
+<p>Each finding links to the evidence and can be dismissed, snoozed, or converted into a maintenance request. Keep the language descriptive, not diagnostic — the system reports a pattern, the human decides what it means.</p>
+<hr />
+</section>
+<section id="sl-x15--shift-handover-digest" class="level3 plate">
+<h3><a class="plate-id" href="#sl-x15--shift-handover-digest">SL-X15</a><span class="plate-name">Shift Handover Digest</span></h3>
+<blockquote>
+<p><em>Native cannot: compose a cross-model narrative artifact.</em></p>
+</blockquote>
+<p>An auto-generated end-of-shift page and PDF: what broke, what got fixed, what is still open and who owns it, which assets degraded, which MOs are blocked, what the next shift must pick up first. One tap to send to the incoming lead.</p>
+<p><strong>Why it matters.</strong> Handover is where maintenance context is lost, every single day. This is a low-glamour, high-value artifact that no standard CMMS view produces.</p>
+<hr />
+</section>
+</section>
+<section id="3--cross-cutting-requirements" class="level1">
+<h1>3 · Cross-cutting requirements</h1>
+<section id="31-accessibility-non-negotiable" class="level3">
+<h3>3.1 Accessibility (non-negotiable)</h3>
+<ul>
+<li>Colour never sole carrier of meaning — every band, severity, and state pairs with icon + text (SL-F04).</li>
+<li>Contrast ≥ 4.5:1 for text, ≥ 3:1 for graphical objects, verified in light <strong>and</strong> dark mode.</li>
+<li>All custom OWL components keyboard-navigable with visible focus rings; the floorplan and graph views need arrow-key node traversal and a <strong>tabular alternative view</strong> for screen readers.</li>
+<li><code>aria-live="polite"</code> on the Ticker and any auto-refreshing tile.</li>
+<li>Respect <code>prefers-reduced-motion</code> — kill the breakdown pulse animation when set.</li>
+</ul>
+</section>
+<section id="32-keyboard" class="level3">
+<h3>3.2 Keyboard</h3>
+<ul>
+<li><code>g</code> <code>r</code> → Reliability, <code>g</code> <code>b</code> → Breakdowns, <code>g</code> <code>d</code> → Command Deck, <code>g</code> <code>c</code> → Contracts.</li>
+<li><code>n</code> → new breakdown alert from anywhere in the family.</li>
+<li><code>/</code> → focus search.</li>
+<li><code>?</code> → shortcut overlay.</li>
+</ul>
+</section>
+<section id="33-mobile--responsive" class="level3">
+<h3>3.3 Mobile / responsive</h3>
+<ul>
+<li>Every Phase 1 list gets a mobile card fallback below 768 px (Odoo does some of this; verify each).</li>
+<li>Tech Mode (SL-X7) is the mobile experience for technicians — do not try to make the desktop list work on a phone.</li>
+<li>Test at 360 px (phone), 768 px (tablet portrait), 1024 px (tablet landscape).</li>
+</ul>
+</section>
+<section id="34-notifications" class="level3">
+<h3>3.4 Notifications</h3>
+<ul>
+<li>Critical breakdown → immediate push to the maintenance team channel.</li>
+<li>SLA breach → escalation activity (SL-08).</li>
+<li>Contract crossing its alert threshold → activity on the contract owner.</li>
+<li>ASN unacknowledged &gt; 24 h → activity on logistics.</li>
+<li>All routed through <code>mail.activity</code> / <code>mail.thread</code> so they land in Odoo's existing inbox rather than a bespoke system.</li>
+</ul>
+</section>
+<section id="35-what-not-to-do" class="level3">
+<h3>3.5 What NOT to do</h3>
+<ul>
+<li>Do not patch Odoo core <code>maintenance</code> or <code>stock</code> views. Extend via inheritance in the new module only.</li>
+<li>Do not load charting libraries from a CDN — bundle them.</li>
+<li>Do not use <code>localStorage</code> for anything the server should own; user preferences go on <code>res.users</code>.</li>
+<li>Do not add a field to a model where a computed related field on an existing model will do.</li>
+<li>Do not build SL-X1 or SL-X7 before Phase 0 ships. The foundation carries them.</li>
+</ul>
+<hr />
+</section>
+</section>
+<section id="4--module-structure-for-implementation" class="level1">
+<h1>4 · Module structure for implementation</h1>
+<pre class="text"><code>southbrook_cmms_ux/
+├── __manifest__.py                 # depends: maintenance, mrp, stock, delivery,
+│                                   #          southbrook_cmms, southbrook_integrations
+├── models/
+│   ├── mtbf_mttr_report.py         # SL-01: availability_delta, mtbf_vs_expected_pct,
+│   │                               #        is_below_expected_mtbf
+│   ├── breakdown_alert.py          # SL-08: age_hours, sla_band; SL-10: production_value_at_risk
+│   ├── service_contract.py         # SL-13/14: cost_per_equipment, action_renew
+│   ├── landed_cost_template.py     # SL-16/17: total_pct, sample_* simulator fields
+│   ├── mi_tiles.py                 # SL-20: history append + delta computes
+│   ├── asn_3pl.py                  # SL-24: date_sent/acked/shipped/delivered
+│   ├── maintenance_equipment.py    # SL-X1: floor_x, floor_y; SL-X13: downtime_cost_per_hour
+│   ├── permit_jurisdiction.py      # SL-22: new model
+│   └── res_users.py                # SL-F06 density pref, SL-X6 tile layout pref
+├── views/
+│   ├── cmms_menus.xml              # SL-F02 labels, SL-F03 groups=
+│   ├── mtbf_views.xml              # SL-01..SL-06
+│   ├── breakdown_views.xml         # SL-07..SL-11
+│   ├── contract_views.xml          # SL-12..SL-15
+│   ├── landed_cost_views.xml       # SL-16..SL-18
+│   ├── command_deck_views.xml      # SL-19, SL-20
+│   ├── asn_views.xml               # SL-21..SL-24
+│   └── search_views.xml            # SL-F01 — all six
+├── security/
+│   ├── cmms_ux_groups.xml          # tech / lead / manager (§2.1)
+│   └── ir.model.access.csv         # SL-F03 sweep
+├── data/
+│   ├── ir_cron.xml                 # SL-08 escalation, SL-F08 rollup, SL-X14 anomaly scan
+│   └── nocontent_help.xml          # SL-F07
+├── report/
+│   ├── asset_passport_qr.xml       # SL-X8
+│   └── shift_handover.xml          # SL-X15
+└── static/src/
+    ├── scss/
+    │   ├── cmms_tokens.scss        # SL-F04
+    │   └── density.scss            # SL-F06
+    ├── components/
+    │   ├── health_meter/           # availability meter
+    │   ├── delta_badge/            # SL-01 trend arrows
+    │   ├── sparkline/              # SL-20
+    │   ├── json_inspector/         # SL-23
+    │   ├── state_timeline/         # SL-24
+    │   └── reliability_ticker/     # SL-X12 (systray)
+    ├── views/
+    │   ├── floorplan/              # SL-X1 custom view type
+    │   ├── blast_radius/           # SL-X5
+    │   ├── heat_grid/              # SL-X9
+    │   └── load_board/             # SL-X11
+    ├── client_actions/
+    │   ├── command_deck/           # SL-X6
+    │   └── tech_mode/              # SL-X7
+    └── xml/                        # OWL templates</code></pre>
+<hr />
+</section>
+<section id="5--delivery-sequence" class="level1">
+<h1>5 · Delivery sequence</h1>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th style="text-align: left;">Wave</th>
+<th style="text-align: left;">Contents</th>
+<th style="text-align: left;">Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>W1 — Foundation</strong></td>
+<td style="text-align: left;">SL-F01 · SL-F02 · SL-F03 · SL-F04 · SL-F05 · SL-F07 · SL-F08</td>
+<td style="text-align: left;">Fixes the two critical defects (no search, buried signal) and the trust-breaking access error. Everything else assumes these.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>W2 — Reliability</strong></td>
+<td style="text-align: left;">SL-01 · SL-02 · SL-03 · SL-04 · SL-06</td>
+<td style="text-align: left;">The screen with 241 rows and the least information density. Biggest visible improvement per hour spent.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>W3 — Response</strong></td>
+<td style="text-align: left;">SL-07 · SL-08 · SL-09 · SL-10 · SL-11 · SL-F06</td>
+<td style="text-align: left;">Makes breakdowns actionable and starts the floor-ergonomics work.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>W4 — Command &amp; Coverage</strong></td>
+<td style="text-align: left;">SL-19 · SL-20 · SL-12 · SL-13 · SL-14 · SL-15</td>
+<td style="text-align: left;">Manager layer: dashboard, trends, contract exposure.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>W5 — Cost &amp; Logistics</strong></td>
+<td style="text-align: left;">SL-16 · SL-17 · SL-18 · SL-21 · SL-22 · SL-23 · SL-24</td>
+<td style="text-align: left;">Completes native coverage of the family.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>W6 — Floor</strong></td>
+<td style="text-align: left;">SL-X7 · SL-X8 · SL-X12</td>
+<td style="text-align: left;">Highest-payoff custom work. Data quality lives here.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>W7 — Insight</strong></td>
+<td style="text-align: left;">SL-X6 · SL-X1 · SL-X4 · SL-X3 · SL-X13 · SL-X14</td>
+<td style="text-align: left;">The screens that make the system worth looking at.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>W8 — Depth</strong></td>
+<td style="text-align: left;">SL-X2 · SL-X5 · SL-X9 · SL-X10 · SL-X11 · SL-X15</td>
+<td style="text-align: left;">Specialist views, built once the base is proven.</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+</section>
+<section id="6--acceptance-criteria" class="level1">
+<h1>6 · Acceptance criteria</h1>
+<p><strong>Foundation</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox" />Every one of the six models has a working search view with ≥ 4 filters and ≥ 3 group-bys.</label></li>
+<li><label><input type="checkbox" />No user in any group receives an access error from a visible CMMS/3PL menu item.</label></li>
+<li><label><input type="checkbox" />No reference string contains a repeated token.</label></li>
+<li><label><input type="checkbox" />No screen displays the default "Create new document" empty state.</label></li>
+<li><label><input type="checkbox" />Zero hardcoded hex values in CMMS views or components.</label></li>
+<li><label><input type="checkbox" />Reliability list first paint &lt; 800 ms at 10,000 records.</label></li>
+</ul>
+<p><strong>Screens</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox" />Opening Reliability surfaces the worst-performing asset without user input.</label></li>
+<li><label><input type="checkbox" />Every KPI, badge, and aggregate in the family is clickable and drills to its records.</label></li>
+<li><label><input type="checkbox" />Command Deck is never rendered as a table.</label></li>
+<li><label><input type="checkbox" />Every numeric list column has an aggregate; every hour field uses a time widget.</label></li>
+<li><label><input type="checkbox" />Breakdown cards show elapsed time since report.</label></li>
+<li><label><input type="checkbox" />Contract screen can answer "what equipment is uncovered" in one click.</label></li>
+</ul>
+<p><strong>Cross-cutting</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox" />Contrast ≥ 4.5:1 verified in light and dark mode across all custom components.</label></li>
+<li><label><input type="checkbox" />No status conveyed by colour alone anywhere in the family.</label></li>
+<li><label><input type="checkbox" />Every custom view has a keyboard path and a tabular screen-reader alternative.</label></li>
+<li><label><input type="checkbox" />All interactive controls ≥ 48 px in Tech density.</label></li>
+<li><label><input type="checkbox" /><code>prefers-reduced-motion</code> respected.</label></li>
+</ul>
+<p><strong>Phase 2</strong></p>
+<ul class="task-list">
+<li><label><input type="checkbox" />Tech Mode completes "log a breakdown" in ≤ 3 taps from cold start.</label></li>
+<li><label><input type="checkbox" />Tech Mode queues and syncs actions taken offline.</label></li>
+<li><label><input type="checkbox" />Floorplan reflects a new breakdown within 2 s via bus.</label></li>
+<li><label><input type="checkbox" />Every predictive figure is labelled as an estimate and shows its sample size.</label></li>
+</ul>
+<hr />
+<section id="appendix-a--enhancement-index" class="level2">
+<h2>Appendix A — Enhancement index</h2>
+<p class="chipcount">Foundation (8)</p><div class="chipgrid"><a class="chip" href="#sl-f01--ground-truth--search-views-for-all-six-models"><b>SL-F01</b>Ground Truth</a><a class="chip" href="#sl-f02--nameplate--reference-sequence-and-label-hygiene"><b>SL-F02</b>Nameplate</a><a class="chip" href="#sl-f03--doorman--menu-visibility-follows-access-rights"><b>SL-F03</b>Doorman</a><a class="chip" href="#sl-f04--signal-palette--the-cmms-design-token-layer"><b>SL-F04</b>Signal Palette</a><a class="chip" href="#sl-f05--column-discipline--list-ergonomics-pass"><b>SL-F05</b>Column Discipline</a><a class="chip" href="#sl-f06--density-switch--comfortable--compact--tech"><b>SL-F06</b>Density Switch</a><a class="chip" href="#sl-f07--empty-states-that-teach"><b>SL-F07</b>Empty States That Teach</a><a class="chip" href="#sl-f08--load-bearing--performance-and-growth-guards"><b>SL-F08</b>Load Bearing</a></div>
+<p class="chipcount">Screen upgrades (24)</p><div class="chipgrid"><a class="chip" href="#sl-01--reliability-ledger--the-rebuilt-list"><b>SL-01</b>Reliability Ledger</a><a class="chip" href="#sl-02--fleet-health-board--new-kanban"><b>SL-02</b>Fleet Health Board</a><a class="chip" href="#sl-03--reliability-pivot"><b>SL-03</b>Reliability Pivot</a><a class="chip" href="#sl-04--trend-wall--upgraded-graph"><b>SL-04</b>Trend Wall</a><a class="chip" href="#sl-05--failure-cohort"><b>SL-05</b>Failure Cohort</a><a class="chip" href="#sl-06--equipment-reliability-card--form-redesign"><b>SL-06</b>Equipment Reliability Card</a><a class="chip" href="#sl-07--triage-board--kanban-rework"><b>SL-07</b>Triage Board</a><a class="chip" href="#sl-08--escalation-ladder--sla-ageing"><b>SL-08</b>Escalation Ladder</a><a class="chip" href="#sl-09--one-tap-dispatch--form-for-the-floor"><b>SL-09</b>One-Tap Dispatch</a><a class="chip" href="#sl-10--blast-radius-panel"><b>SL-10</b>Blast Radius Panel</a><a class="chip" href="#sl-11--alert-calendar--map"><b>SL-11</b>Alert Calendar &amp;amp; Map</a><a class="chip" href="#sl-12--coverage-timeline--gantt"><b>SL-12</b>Coverage Timeline</a><a class="chip" href="#sl-13--expiry-runway--list-rework"><b>SL-13</b>Expiry Runway</a><a class="chip" href="#sl-14--coverage-sheet--form-rework"><b>SL-14</b>Coverage Sheet</a><a class="chip" href="#sl-15--uncovered-equipment-radar"><b>SL-15</b>Uncovered Equipment Radar</a><a class="chip" href="#sl-16--rate-card--list-rework"><b>SL-16</b>Rate Card</a><a class="chip" href="#sl-17--cost-stack-simulator--form"><b>SL-17</b>Cost Stack Simulator</a><a class="chip" href="#sl-18--vendor-mapping-matrix"><b>SL-18</b>Vendor Mapping Matrix</a><a class="chip" href="#sl-19--command-deck--kill-the-list-build-the-dashboard"><b>SL-19</b>Command Deck</a><a class="chip" href="#sl-20--snapshot-history"><b>SL-20</b>Snapshot History</a><a class="chip" href="#sl-21--shipment-pipeline--kanban"><b>SL-21</b>Shipment Pipeline</a><a class="chip" href="#sl-22--permit-corridor"><b>SL-22</b>Permit Corridor</a><a class="chip" href="#sl-23--payload-inspector"><b>SL-23</b>Payload Inspector</a><a class="chip" href="#sl-24--asn-timeline"><b>SL-24</b>ASN Timeline</a></div>
+<p class="chipcount">Beyond standard Odoo (15)</p><div class="chipgrid"><a class="chip" href="#sl-x1--plant-floor-live-map"><b>SL-X1</b>Plant Floor Live Map</a><a class="chip" href="#sl-x2--reliability-bathtub-curve"><b>SL-X2</b>Reliability Bathtub Curve</a><a class="chip" href="#sl-x3--downtime-pareto--waterfall"><b>SL-X3</b>Downtime Pareto &amp;amp; Waterfall</a><a class="chip" href="#sl-x4--failure-runway"><b>SL-X4</b>Failure Runway</a><a class="chip" href="#sl-x5--blast-radius-graph"><b>SL-X5</b>Blast Radius Graph</a><a class="chip" href="#sl-x6--command-deck-owl"><b>SL-X6</b>Command Deck (OWL)</a><a class="chip" href="#sl-x7--tech-mode"><b>SL-X7</b>Tech Mode</a><a class="chip" href="#sl-x8--asset-passport"><b>SL-X8</b>Asset Passport</a><a class="chip" href="#sl-x9--coverage-heat-grid"><b>SL-X9</b>Coverage Heat Grid</a><a class="chip" href="#sl-x10--landed-cost-waterfall-simulator"><b>SL-X10</b>Landed Cost Waterfall Simulator</a><a class="chip" href="#sl-x11--3pl-load-board"><b>SL-X11</b>3PL Load Board</a><a class="chip" href="#sl-x12--reliability-ticker"><b>SL-X12</b>Reliability Ticker</a><a class="chip" href="#sl-x13--downtime-cost-lens"><b>SL-X13</b>Downtime Cost Lens</a><a class="chip" href="#sl-x14--anomaly-spotlight"><b>SL-X14</b>Anomaly Spotlight</a><a class="chip" href="#sl-x15--shift-handover-digest"><b>SL-X15</b>Shift Handover Digest</a></div>
+<p><strong>Total: 47 named enhancements.</strong></p>
+</section>
+<section id="appendix-b--verification-notes" class="level2">
+<h2>Appendix B — Verification notes</h2>
+<p>Everything in §1 was read from the live database via <code>call_kw</code> against <code>ir.ui.menu</code>, <code>ir.actions.act_window</code>, <code>ir.model.fields</code>, and <code>ir.ui.view</code>, and cross-checked against screenshots of actions 1401, 1402, 1403, 1405, and 1370. Two items to re-confirm before building:</p>
+<ol type="1">
+<li><strong>Enterprise vs Community.</strong> SL-05 (cohort) and SL-12 (gantt) require Enterprise. Fallbacks are specified inline. Confirm the licence before scheduling W4.</li>
+<li><strong><code>service_contract.vendor_id</code></strong> — the field name was inferred from the list header "Vendor"; confirm whether it is <code>vendor_id</code> or <code>partner_id</code> before writing views.</li>
+</ol>
+<p>One assumption worth flagging: the <code>mi_tiles</code> nightly job is currently assumed to overwrite a single record (the screen shows exactly one row). SL-20 depends on changing it to append. Verify the cron's behaviour before building the sparklines.</p>
+</section>
+  </article>
+
+  <p class="colophon">Project SIGHTLINE · UX/UI enhancement specification for the
+  Southbrook CMMS &amp; 3PL screen family.<br>
+  Rendered from SOUTHBROOK_CMMS_3PL_UXUI_SPEC.md — content unaltered; defect and
+  enhancement IDs cross-linked for navigation.</p>
+</main>
+</div>
+
+<script>
+(function () {
+  var rail = document.getElementById('rail-nav');
+  if (!rail) return;
+  var links = Array.prototype.slice.call(rail.querySelectorAll('a'));
+  /* Sections nest, so "topmost visible section" would always resolve to the
+     parent. Track the headings instead and take the last one scrolled past. */
+  var marks = links.map(function (a) {
+    var sec = document.getElementById(a.dataset.target);
+    var h = sec && sec.querySelector('h1, h2, h3');
+    return h ? { link: a, el: h } : null;
+  }).filter(Boolean);
+  if (!marks.length) return;
+
+  var active = null, queued = false;
+  function sync() {
+    queued = false;
+    var current = marks[0];
+    for (var i = 0; i < marks.length; i++) {
+      if (marks[i].el.getBoundingClientRect().top <= 110) current = marks[i]; else break;
+    }
+    if (current === active) return;
+    if (active) active.link.classList.remove('here');
+    current.link.classList.add('here');
+    active = current;
+    var r = current.link.getBoundingClientRect(), rr = rail.getBoundingClientRect();
+    if (r.top < rr.top || r.bottom > rr.bottom) {
+      current.link.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function onScroll() {
+    if (!queued) { queued = true; requestAnimationFrame(sync); }
+  }
+  addEventListener('scroll', onScroll, { passive: true });
+  addEventListener('resize', onScroll);
+  sync();
+})();
+</script>
