@@ -390,3 +390,28 @@ class TestSouthbrookCmmsWms(TransactionCase):
 
         fresh = Tiles.create({"as_of": fields.Datetime.now()})
         self.assertGreater(fresh.mtbf_avg_30d, 0.0)
+
+    def test_dispatched_breakdown_still_counts_as_unresolved(self):
+        """Dispatching tells somebody; it does not fix the machine.
+
+        Regression: the tile counted state='open' only, so a breakdown that had
+        been dispatched and never fixed vanished from the KPI. Production had a
+        machine down 48 days behind a tile reading zero.
+        """
+        Tiles = self.env["southbrook.cmms.mi_tiles"]
+        alert = self._make_alert(hours_ago=4.0)
+        alert.action_dispatch()
+        self.assertEqual(alert.state, "dispatched")
+
+        snap = Tiles.create({"as_of": fields.Datetime.now()})
+        self.assertGreaterEqual(
+            snap.open_breakdowns_count, 1,
+            "a dispatched, unfixed breakdown must still be counted")
+
+        alert.failure_cause_id = self._cause()
+        alert.action_fix()
+        fixed_snap = Tiles.create({"as_of": fields.Datetime.now()})
+        self.assertEqual(
+            fixed_snap.open_breakdowns_count,
+            snap.open_breakdowns_count - 1,
+            "fixing it must remove it from the count")

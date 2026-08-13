@@ -34,7 +34,12 @@ class SouthbrookCmmsMiTiles(models.Model):
     mtbf_avg_30d = fields.Float(string="MTBF avg (30d)", compute="_compute_tiles", store=True)
     mttr_avg_30d = fields.Float(string="MTTR avg (30d)", compute="_compute_tiles", store=True)
     open_breakdowns_count = fields.Integer(
-        string="Open Breakdowns", compute="_compute_tiles", store=True)
+        string="Unresolved Breakdowns",
+        compute="_compute_tiles",
+        store=True,
+        help="Reported or dispatched — every breakdown short of fixed. "
+             "A dispatched breakdown is still a machine that is down.",
+    )
     service_contracts_expiring_60d_count = fields.Integer(
         string="Contracts expiring (60d)", compute="_compute_tiles", store=True)
     oversize_pickings_pending_count = fields.Integer(
@@ -93,7 +98,14 @@ class SouthbrookCmmsMiTiles(models.Model):
             rec.mttr_avg_30d = (
                 sum(recents.mapped("mttr_hours")) / len(recents)
                 if recents else 0.0)
-            rec.open_breakdowns_count = Alert.search_count([("state", "=", "open")])
+            # NOT ("state", "=", "open"). Dispatching a breakdown does not fix
+            # the machine — it only means somebody was told. Counting the first
+            # state alone hid a Biesse Rover that had been down 48 days in
+            # `dispatched` behind a tile reading zero. Count everything short of
+            # the terminal state.
+            rec.open_breakdowns_count = Alert.search_count([
+                ("state", "!=", "fixed"),
+            ])
             rec.service_contracts_expiring_60d_count = Contract.search_count([
                 ("days_to_expiry", ">", 0),
                 ("days_to_expiry", "<=", 60),
