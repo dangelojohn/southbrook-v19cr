@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from odoo import fields
 from odoo.exceptions import UserError, ValidationError
@@ -332,3 +332,61 @@ class TestSouthbrookCmmsWms(TransactionCase):
         self.assertEqual(cause.name, "Dull cutter")
         with self.assertRaises(ValidationError):
             Cause.create({"name": "dull cutter", "category": "tooling"})
+
+    # ---- 19.0.4.0.0: window boundaries ----
+    def test_window_start_respects_user_timezone(self):
+        """The discriminating region is the first UTC-offset hours of the window.
+
+        Naive math opened the window at period_start 00:00 UTC; the correct
+        window opens at period_start 00:00 LOCAL, which in Toronto is 04:00 UTC.
+        An alert in between belongs to the day BEFORE the window and must not
+        be counted. A 30-day window hides this — only the boundary shows it.
+        """
+        self.env.user.tz = "America/Toronto"
+        today = fields.Date.context_today(self.env.user)
+        period_days = 30
+        period_start = today - timedelta(days=period_days)
+        # 02:00 UTC on the first day of the window == 22:00 local the day before
+        self._make_alert(reported_at=datetime.combine(
+            period_start, time(2, 0, 0)))
+
+        rep = self.env["southbrook.cmms.mtbf_mttr_report"].create({
+            "equipment_id": self.equipment.id,
+            "as_of_date": today,
+            "period_days": period_days,
+        })
+        self.assertEqual(
+            rep.breakdown_count, 0,
+            "an outage at 22:00 local the day before the window opens must "
+            "not be counted inside it")
+
+    def test_unknown_timezone_falls_back_to_utc(self):
+        """A bad tz must degrade, not raise — this runs inside a nightly cron."""
+        Report = self.env["southbrook.cmms.mtbf_mttr_report"]
+        day = fields.Date.context_today(self.env.user)
+        out = Report.with_context(tz="Not/AZone")._sb_local_day_to_utc(
+            day, time.min)
+        self.assertEqual(out, datetime.combine(day, time.min))
+
+    def test_kpi_snapshot_windows_off_its_own_as_of(self):
+        """A stored snapshot must describe the moment it claims to.
+
+        Regression: tiles were computed against 'today' whatever as_of said, so
+        the install-seeded row carried figures from weeks later and the first
+        point of any trend line was wrong. The 30-day lookback also had no
+        upper bound, so an old row pulled in everything recorded after it.
+        """
+        Tiles = self.env["southbrook.cmms.mi_tiles"]
+        today = fields.Date.context_today(self.env.user)
+        self.env["southbrook.cmms.mtbf_mttr_report"].create({
+            "equipment_id": self.equipment.id,
+            "as_of_date": today,
+            "period_days": 30,
+        })
+        old = Tiles.create({"as_of": fields.Datetime.now() - timedelta(days=60)})
+        self.assertEqual(
+            old.mtbf_avg_30d, 0.0,
+            "a 60-day-old snapshot must not average reports written since")
+
+        fresh = Tiles.create({"as_of": fields.Datetime.now()})
+        self.assertGreater(fresh.mtbf_avg_30d, 0.0)

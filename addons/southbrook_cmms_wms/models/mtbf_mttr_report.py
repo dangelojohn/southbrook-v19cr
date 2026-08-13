@@ -2,6 +2,8 @@
 import logging
 from datetime import datetime, time, timedelta
 
+import pytz
+
 from odoo import api, fields, models
 
 _logger = logging.getLogger(__name__)
@@ -71,6 +73,20 @@ class SouthbrookCmmsMtbfMttrReport(models.Model):
         store=True,
     )
 
+    def _sb_local_day_to_utc(self, day, at_time):
+        """Turn a calendar day boundary in the user's timezone into naive UTC.
+
+        Odoo stores Datetimes in UTC and compares them as naive values, so the
+        conversion has to happen here rather than in the domain.
+        """
+        tz_name = self.env.context.get("tz") or self.env.user.tz or "UTC"
+        try:
+            tz = pytz.timezone(tz_name)
+        except pytz.UnknownTimeZoneError:  # a bad user tz must not break a cron
+            tz = pytz.UTC
+        local = tz.localize(datetime.combine(day, at_time))
+        return local.astimezone(pytz.UTC).replace(tzinfo=None)
+
     @api.model
     def _default_name(self):
         seq = self.env["ir.sequence"].next_by_code("southbrook.cmms.mtbf") or "0001"
@@ -111,8 +127,12 @@ class SouthbrookCmmsMtbfMttrReport(models.Model):
                 continue
             period_start = rec.as_of_date - timedelta(days=rec.period_days)
             period_hours = float(rec.period_days) * 24.0
-            window_start = datetime.combine(period_start, time.min)
-            window_end = datetime.combine(rec.as_of_date, time.max)
+            # as_of_date is a calendar Date in the user's timezone; reported_at
+            # and fixed_at are stored in UTC. Combining the two naively shifted
+            # every window boundary by the UTC offset (4-5 h in Toronto), which
+            # binned outages logged near midnight into the wrong day.
+            window_start = rec._sb_local_day_to_utc(period_start, time.min)
+            window_end = rec._sb_local_day_to_utc(rec.as_of_date, time.max)
 
             alerts = Alert.search([
                 ("equipment_id", "=", rec.equipment_id.id),

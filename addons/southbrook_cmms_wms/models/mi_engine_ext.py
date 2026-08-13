@@ -59,14 +59,34 @@ class SouthbrookCmmsMiTiles(models.Model):
 
     @api.depends("as_of")
     def _compute_tiles(self):
-        today = fields.Date.context_today(self)
-        cutoff = today - timedelta(days=30)
+        """Window off the row's OWN as_of, never off 'now'.
+
+        These are stored snapshots. Computing them against the current date
+        meant a row could carry figures that were true long after the moment it
+        claims to describe — the seeded row proved it, stamped 2026-06-26 and
+        holding values computed at the 2026-08-13 upgrade. A trend line built
+        from rows like that is wrong at its first point and looks fine.
+
+        The 30-day window also had no upper bound, so recomputing an old row
+        pulled in every snapshot recorded *after* it.
+
+        Note the count fields (open breakdowns, contracts expiring, oversize
+        pickings) are point-of-capture values: there is no history to
+        reconstruct them from for a past date, so they describe the moment the
+        row was written. The averages are genuinely windowed.
+        """
         Report = self.env["southbrook.cmms.mtbf_mttr_report"].sudo()
         Alert = self.env["southbrook.cmms.breakdown_alert"].sudo()
         Contract = self.env["southbrook.cmms.service_contract"].sudo()
         Picking = self.env["stock.picking"].sudo()
         for rec in self:
-            recents = Report.search([("as_of_date", ">=", cutoff)])
+            ref_dt = rec.as_of or fields.Datetime.now()
+            ref_date = fields.Datetime.context_timestamp(rec, ref_dt).date()
+            cutoff = ref_date - timedelta(days=30)
+            recents = Report.search([
+                ("as_of_date", ">=", cutoff),
+                ("as_of_date", "<=", ref_date),
+            ])
             rec.mtbf_avg_30d = (
                 sum(recents.mapped("mtbf_hours")) / len(recents)
                 if recents else 0.0)

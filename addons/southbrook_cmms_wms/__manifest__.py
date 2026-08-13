@@ -2,7 +2,7 @@
 {
     "name": "Southbrook CMMS & Inventory WMS",
     "summary": "MTBF/MTTR + breakdown-MO block + service-contract expiry + oversize-permit on picking + landed-cost templates",
-    "version": "19.0.3.0.0",
+    "version": "19.0.4.0.0",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry / OdooIQ",
     "category": "Manufacturing/Maintenance",
