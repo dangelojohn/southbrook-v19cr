@@ -415,3 +415,17 @@ class TestSouthbrookCmmsWms(TransactionCase):
             fixed_snap.open_breakdowns_count,
             snap.open_breakdowns_count - 1,
             "fixing it must remove it from the count")
+
+    def test_kpi_history_has_no_seeded_placeholder(self):
+        """History must start at a real snapshot, not an install seed.
+
+        The seed was renamed "Smoke" during June testing and noupdate kept it,
+        so a test record sat at the head of every trend.
+        """
+        seed = self.env.ref(
+            "southbrook_cmms_wms.mi_tiles_default", raise_if_not_found=False)
+        self.assertFalse(seed, "the install seed must no longer exist")
+        Tiles = self.env["southbrook.cmms.mi_tiles"]
+        self.assertFalse(
+            Tiles.search([("label", "=", "Smoke")]),
+            "no smoke-test row may remain in KPI history")
