@@ -8,27 +8,54 @@ _logger = logging.getLogger(__name__)
 
 
 class SouthbrookCmmsMiTiles(models.Model):
+    """A KPI snapshot — one row per day, kept.
+
+    These six figures used to be `store=False` computes on a single seeded
+    record, so no value was ever written down. That made every trend, delta and
+    sparkline downstream impossible to build: there was nothing to compare
+    today against. The fields are stored now and a nightly cron appends a row,
+    so history starts accumulating from the day this ships (and only from then
+    — a 30-day trend is empty for its first 30 days).
+    """
+
     _name = "southbrook.cmms.mi_tiles"
     _description = "CMMS Manufacturing-Intelligence Snapshot Tiles"
+    _order = "as_of desc, id desc"
 
     label = fields.Char(string="Label", default="Maintenance & Logistics Snapshot")
     as_of = fields.Datetime(string="As Of", default=fields.Datetime.now)
-    mtbf_avg_30d = fields.Float(string="MTBF avg (30d)", compute="_compute_tiles", store=False)
-    mttr_avg_30d = fields.Float(string="MTTR avg (30d)", compute="_compute_tiles", store=False)
+    snapshot_date = fields.Date(
+        string="Day",
+        compute="_compute_snapshot_date",
+        store=True,
+        index=True,
+        help="Day bucket for trending; one snapshot is kept per day.",
+    )
+    mtbf_avg_30d = fields.Float(string="MTBF avg (30d)", compute="_compute_tiles", store=True)
+    mttr_avg_30d = fields.Float(string="MTTR avg (30d)", compute="_compute_tiles", store=True)
     open_breakdowns_count = fields.Integer(
-        string="Open Breakdowns", compute="_compute_tiles", store=False)
+        string="Open Breakdowns", compute="_compute_tiles", store=True)
     service_contracts_expiring_60d_count = fields.Integer(
-        string="Contracts expiring (60d)", compute="_compute_tiles", store=False)
+        string="Contracts expiring (60d)", compute="_compute_tiles", store=True)
     oversize_pickings_pending_count = fields.Integer(
-        string="Oversize pickings pending", compute="_compute_tiles", store=False)
+        string="Oversize pickings pending", compute="_compute_tiles", store=True)
     landed_cost_value_30d = fields.Monetary(
         string="Landed cost (30d)",
         currency_field="currency_id",
         compute="_compute_tiles",
-        store=False,
+        store=True,
     )
     currency_id = fields.Many2one(
         "res.currency", default=lambda self: self.env.company.currency_id)
+
+    @api.depends("as_of")
+    def _compute_snapshot_date(self):
+        for rec in self:
+            if rec.as_of:
+                rec.snapshot_date = fields.Datetime.context_timestamp(
+                    rec, rec.as_of).date()
+            else:
+                rec.snapshot_date = False
 
     @api.depends("as_of")
     def _compute_tiles(self):
@@ -70,12 +97,25 @@ class SouthbrookCmmsMiTiles(models.Model):
             rec.landed_cost_value_30d = value_30d
 
     def action_refresh(self):
-        self.invalidate_recordset([
-            "mtbf_avg_30d", "mttr_avg_30d", "open_breakdowns_count",
-            "service_contracts_expiring_60d_count",
-            "oversize_pickings_pending_count", "landed_cost_value_30d",
-        ])
+        # Touching as_of re-triggers the compute, which is what writes the new
+        # values down. Invalidating alone would only clear the cache.
+        for rec in self:
+            rec.as_of = fields.Datetime.now()
         return {
             "type": "ir.actions.client",
             "tag": "reload",
         }
+
+    @api.model
+    def _cron_snapshot(self):
+        """Append today's KPI row, or refresh it if the cron runs twice."""
+        today = fields.Date.context_today(self)
+        rec = self.sudo().search([("snapshot_date", "=", today)], limit=1)
+        if rec:
+            rec.as_of = fields.Datetime.now()
+        else:
+            rec = self.sudo().create({"as_of": fields.Datetime.now()})
+        _logger.info(
+            "CMMS KPI snapshot for %s: %d open breakdowns, MTBF avg %.1f h",
+            today, rec.open_breakdowns_count, rec.mtbf_avg_30d)
+        return rec.id

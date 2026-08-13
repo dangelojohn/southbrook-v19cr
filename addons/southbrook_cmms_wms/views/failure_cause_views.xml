@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_southbrook_cmms_failure_cause_list" model="ir.ui.view">
+        <field name="name">southbrook.cmms.failure_cause.list</field>
+        <field name="model">southbrook.cmms.failure_cause</field>
+        <field name="arch" type="xml">
+            <list string="Failure Causes" editable="bottom" multi_edit="1"
+                  default_order="category, sequence, name">
+                <field name="sequence" widget="handle"/>
+                <field name="name"/>
+                <field name="code" optional="show"/>
+                <field name="category"/>
+                <field name="is_preventable" widget="boolean_toggle"/>
+                <field name="alert_count" string="Breakdowns"/>
+                <field name="active" column_invisible="1"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_southbrook_cmms_failure_cause_form" model="ir.ui.view">
+        <field name="name">southbrook.cmms.failure_cause.form</field>
+        <field name="model">southbrook.cmms.failure_cause</field>
+        <field name="arch" type="xml">
+            <form string="Failure Cause">
+                <sheet>
+                    <field name="active" invisible="1"/>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_alerts" type="object"
+                                class="oe_stat_button" icon="fa-wrench">
+                            <field name="alert_count" widget="statinfo"
+                                   string="Breakdowns"/>
+                        </button>
+                    </div>
+                    <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger"
+                            invisible="active"/>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="e.g. Bearing / bushing wear"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="category"/>
+                            <field name="code" placeholder="MECH-BEAR"/>
+                        </group>
+                        <group>
+                            <field name="is_preventable"/>
+                            <field name="sequence"/>
+                        </group>
+                    </group>
+                    <group string="Notes">
+                        <field name="description" nolabel="1"
+                               placeholder="When to pick this cause rather than a neighbouring one."/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_southbrook_cmms_failure_cause" model="ir.actions.act_window">
+        <field name="name">Failure Causes</field>
+        <field name="res_model">southbrook.cmms.failure_cause</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Name the ways your machines fail</p>
+            <p>A cause is recorded when a breakdown is closed, not when it is reported —
+               the person reporting it rarely knows yet. Once causes accumulate, they
+               answer the question downtime alone cannot: whether to change the routine,
+               the tooling, or the machine.</p>
+        </field>
+    </record>
+
+</odoo>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="res_config_settings_view_form_cmms" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.southbrook.cmms</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app data-string="CMMS &amp; 3PL" string="CMMS &amp; 3PL"
+                     name="southbrook_cmms_wms"
+                     groups="southbrook_cmms_wms.group_southbrook_cmms_manager">
+                    <block title="Reliability targets" name="cmms_reliability_block">
+                        <setting id="cmms_default_expected_mtbf"
+                                 string="Default expected MTBF"
+                                 help="Fallback target for machines with none of their own. Leave at zero and untargeted machines read 'Not set' instead of showing a percentage nobody measured.">
+                            <div class="content-group">
+                                <div class="mt16">
+                                    <field name="sb_default_expected_mtbf"
+                                           class="o_light_label"/>
+                                    <span class="ms-2">hours</span>
+                                </div>
+                            </div>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

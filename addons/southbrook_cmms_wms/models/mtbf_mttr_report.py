@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 import logging
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from odoo import api, fields, models
 
@@ -79,7 +79,27 @@ class SouthbrookCmmsMtbfMttrReport(models.Model):
 
     @api.depends("equipment_id", "as_of_date", "period_days")
     def _compute_metrics(self):
-        Request = self.env["maintenance.request"]
+        """Count failures from breakdown alerts first, requests second.
+
+        This model used to read `maintenance.request` alone, which had two
+        consequences worth stating plainly:
+
+        1. An alert only reached these numbers if somebody pressed Dispatch,
+           because that is the sole code path creating a request. An alert
+           logged and closed on the floor was invisible to MTBF, MTTR and
+           availability.
+        2. Request dates are Dates, so downtime was `(days) * 24` — a repair
+           opened and closed the same day scored ZERO downtime and 100%
+           availability, indistinguishable from no failure at all.
+
+        Alerts carry `reported_at` / `fixed_at` Datetimes, so outages are now
+        measured to the second. Corrective requests raised directly in the
+        Maintenance app still count, at the Date precision they carry, unless
+        an alert already accounts for them.
+        """
+        Alert = self.env["southbrook.cmms.breakdown_alert"].sudo()
+        Request = self.env["maintenance.request"].sudo()
+        now = fields.Datetime.now()
         for rec in self:
             if not rec.equipment_id or not rec.as_of_date or not rec.period_days:
                 rec.breakdown_count = 0
@@ -91,15 +111,35 @@ class SouthbrookCmmsMtbfMttrReport(models.Model):
                 continue
             period_start = rec.as_of_date - timedelta(days=rec.period_days)
             period_hours = float(rec.period_days) * 24.0
-            domain = [
+            window_start = datetime.combine(period_start, time.min)
+            window_end = datetime.combine(rec.as_of_date, time.max)
+
+            alerts = Alert.search([
+                ("equipment_id", "=", rec.equipment_id.id),
+                ("reported_at", ">=", window_start),
+                ("reported_at", "<=", window_end),
+            ])
+            downtime_h = 0.0
+            for alert in alerts:
+                if not alert.reported_at:
+                    continue
+                start = max(alert.reported_at, window_start)
+                # An unfixed alert is still down: accrue to now, clamped to the
+                # window so a back-dated report never counts future downtime.
+                end = min(alert.fixed_at or now, window_end)
+                if end > start:
+                    downtime_h += (end - start).total_seconds() / 3600.0
+
+            # Requests raised straight in the Maintenance app, with no alert.
+            linked = [r for r in alerts.mapped("maintenance_request_id").ids if r]
+            orphans = Request.search([
                 ("equipment_id", "=", rec.equipment_id.id),
                 ("maintenance_type", "=", "corrective"),
                 ("request_date", ">=", period_start),
                 ("request_date", "<=", rec.as_of_date),
-            ]
-            requests = Request.search(domain)
-            downtime_h = 0.0
-            for req in requests:
+                ("id", "not in", linked),
+            ])
+            for req in orphans:
                 start = req.request_date
                 end = req.close_date or fields.Date.context_today(rec)
                 if start and end:
@@ -113,7 +153,10 @@ class SouthbrookCmmsMtbfMttrReport(models.Model):
                         # request_date / close_date are Date in v19; days * 24 h.
                         delta_days = (end - start).days
                         downtime_h += max(0.0, delta_days) * 24.0
-            rec.breakdown_count = len(requests)
+
+            # Downtime cannot exceed the window it is measured in.
+            downtime_h = min(downtime_h, period_hours)
+            rec.breakdown_count = len(alerts) + len(orphans)
             rec.total_downtime_hours = downtime_h
             rec.total_runtime_hours = max(0.0, period_hours - downtime_h)
             denom = max(1, rec.breakdown_count)

@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A starter taxonomy, not a fixed one. These are the standard maintenance
+  failure classes; they exist so the field is usable on day one rather than
+  presenting an empty dropdown to a technician holding a wrench.
+
+  noupdate="1" so renames, deletions and additions made in the UI survive
+  every subsequent module upgrade. Edit them to match how the floor actually
+  talks about failures — the vocabulary is more useful when it is theirs.
+-->
+<odoo>
+    <data noupdate="1">
+
+        <record id="failure_cause_bearing_wear" model="southbrook.cmms.failure_cause">
+            <field name="name">Bearing / bushing wear</field>
+            <field name="code">MECH-BEAR</field>
+            <field name="category">mechanical</field>
+            <field name="sequence">10</field>
+            <field name="is_preventable" eval="True"/>
+        </record>
+
+        <record id="failure_cause_belt_drive" model="southbrook.cmms.failure_cause">
+            <field name="name">Belt / drive slip or break</field>
+            <field name="code">MECH-BELT</field>
+            <field name="category">mechanical</field>
+            <field name="sequence">20</field>
+            <field name="is_preventable" eval="True"/>
+        </record>
+
+        <record id="failure_cause_alignment" model="southbrook.cmms.failure_cause">
+            <field name="name">Alignment / calibration drift</field>
+            <field name="code">MECH-ALIGN</field>
+            <field name="category">mechanical</field>
+            <field name="sequence">30</field>
+            <field name="is_preventable" eval="True"/>
+        </record>
+
+        <record id="failure_cause_motor" model="southbrook.cmms.failure_cause">
+            <field name="name">Motor or drive fault</field>
+            <field name="code">ELEC-MOTOR</field>
+            <field name="category">electrical</field>
+            <field name="sequence">10</field>
+        </record>
+
+        <record id="failure_cause_sensor" model="southbrook.cmms.failure_cause">
+            <field name="name">Sensor or switch failure</field>
+            <field name="code">ELEC-SENS</field>
+            <field name="category">electrical</field>
+            <field name="sequence">20</field>
+        </record>
+
+        <record id="failure_cause_power" model="southbrook.cmms.failure_cause">
+            <field name="name">Power supply / supply interruption</field>
+            <field name="code">ELEC-PWR</field>
+            <field name="category">electrical</field>
+            <field name="sequence">30</field>
+        </record>
+
+        <record id="failure_cause_air_leak" model="southbrook.cmms.failure_cause">
+            <field name="name">Air leak or pressure loss</field>
+            <field name="code">PNEU-AIR</field>
+            <field name="category">hydraulic_pneumatic</field>
+            <field name="sequence">10</field>
+            <field name="is_preventable" eval="True"/>
+        </record>
+
+        <record id="failure_cause_hydraulic" model="southbrook.cmms.failure_cause">
+            <field name="name">Hydraulic leak or pump fault</field>
+            <field name="code">HYD-PUMP</field>
+            <field name="category">hydraulic_pneumatic</field>
+            <field name="sequence">20</field>
+        </record>
+
+        <record id="failure_cause_controller" model="southbrook.cmms.failure_cause">
+            <field name="name">Controller fault or lockup</field>
+            <field name="code">CTRL-FAULT</field>
+            <field name="category">control_software</field>
+            <field name="sequence">10</field>
+        </record>
+
+        <record id="failure_cause_program" model="southbrook.cmms.failure_cause">
+            <field name="name">Program / post error</field>
+            <field name="code">CTRL-PROG</field>
+            <field name="category">control_software</field>
+            <field name="sequence">20</field>
+        </record>
+
+        <record id="failure_cause_tool_break" model="southbrook.cmms.failure_cause">
+            <field name="name">Tool breakage</field>
+            <field name="code">TOOL-BREAK</field>
+            <field name="category">tooling</field>
+            <field name="sequence">10</field>
+        </record>
+
+        <record id="failure_cause_tool_wear" model="southbrook.cmms.failure_cause">
+            <field name="name">Tool wear / dull cutter</field>
+            <field name="code">TOOL-WEAR</field>
+            <field name="category">tooling</field>
+            <field name="sequence">20</field>
+            <field name="is_preventable" eval="True"/>
+        </record>
+
+        <record id="failure_cause_setup" model="southbrook.cmms.failure_cause">
+            <field name="name">Setup or changeover error</field>
+            <field name="code">OPS-SETUP</field>
+            <field name="category">operator</field>
+            <field name="sequence">10</field>
+            <field name="is_preventable" eval="True"/>
+        </record>
+
+        <record id="failure_cause_collision" model="southbrook.cmms.failure_cause">
+            <field name="name">Collision or crash</field>
+            <field name="code">OPS-CRASH</field>
+            <field name="category">operator</field>
+            <field name="sequence">20</field>
+        </record>
+
+        <record id="failure_cause_material" model="southbrook.cmms.failure_cause">
+            <field name="name">Material defect or jam</field>
+            <field name="code">MAT-JAM</field>
+            <field name="category">material</field>
+            <field name="sequence">10</field>
+        </record>
+
+        <record id="failure_cause_dust" model="southbrook.cmms.failure_cause">
+            <field name="name">Dust extraction / swarf build-up</field>
+            <field name="code">MAT-DUST</field>
+            <field name="category">material</field>
+            <field name="sequence">20</field>
+            <field name="is_preventable" eval="True"/>
+        </record>
+
+        <record id="failure_cause_utility" model="southbrook.cmms.failure_cause">
+            <field name="name">Utility outage (power, air, network)</field>
+            <field name="code">EXT-UTIL</field>
+            <field name="category">external</field>
+            <field name="sequence">10</field>
+        </record>
+
+        <record id="failure_cause_unknown" model="southbrook.cmms.failure_cause">
+            <field name="name">Not determined</field>
+            <field name="code">UNK</field>
+            <field name="category">unknown</field>
+            <field name="sequence">99</field>
+            <field name="description">Use sparingly. A high share of this cause is
+itself the finding — it means outages are being closed without diagnosis.</field>
+        </record>
+
+    </data>
+</odoo>

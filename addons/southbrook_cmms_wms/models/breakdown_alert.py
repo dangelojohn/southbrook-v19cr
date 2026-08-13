@@ -2,6 +2,7 @@
 import logging
 
 from odoo import api, fields, models
+from odoo.exceptions import UserError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -88,6 +89,79 @@ class SouthbrookCmmsBreakdownAlert(models.Model):
         string="Maintenance Request",
         readonly=True,
     )
+    fixed_at = fields.Datetime(
+        string="Fixed At",
+        readonly=True,
+        copy=False,
+        tracking=True,
+        help="Stamped when the alert reaches Fixed. Paired with Reported At "
+             "this is the only sub-day outage measurement in the system — the "
+             "maintenance request carries Dates, so it cannot express a repair "
+             "shorter than 24 hours.",
+    )
+    failure_cause_id = fields.Many2one(
+        "southbrook.cmms.failure_cause",
+        string="Failure Cause",
+        ondelete="restrict",
+        tracking=True,
+        help="Required to close an alert. Asked at the end, not at the start — "
+             "the person reporting a breakdown rarely knows the cause yet.",
+    )
+    downtime_hours = fields.Float(
+        string="Downtime (h)",
+        compute="_compute_downtime_hours",
+        help="Elapsed since reported, stopping at Fixed At. Live for an open "
+             "alert, which is why it is not stored.",
+    )
+
+    @api.depends("reported_at", "fixed_at")
+    def _compute_downtime_hours(self):
+        now = fields.Datetime.now()
+        for rec in self:
+            if not rec.reported_at:
+                rec.downtime_hours = 0.0
+                continue
+            end = rec.fixed_at or now
+            rec.downtime_hours = max(
+                0.0, (end - rec.reported_at).total_seconds() / 3600.0)
+
+    @api.constrains("state", "failure_cause_id")
+    def _check_cause_on_fixed(self):
+        for rec in self:
+            if rec.state == "fixed" and not rec.failure_cause_id:
+                raise ValidationError(self.env._(
+                    "Record a failure cause before closing %s. Downtime tells "
+                    "you a machine stopped; only the cause tells you whether "
+                    "to change the routine, the tooling or the machine.",
+                    rec.name))
+
+    def write(self, vals):
+        # Stamp fixed_at on ANY route into 'fixed' — button, statusbar, import
+        # or automation — so the outage measurement cannot be bypassed.
+        if "state" in vals and "fixed_at" not in vals:
+            if vals["state"] == "fixed":
+                vals = dict(vals, fixed_at=fields.Datetime.now())
+            else:
+                vals = dict(vals, fixed_at=False)
+        return super().write(vals)
+
+    def action_fix(self):
+        for rec in self:
+            if not rec.failure_cause_id:
+                raise UserError(self.env._(
+                    "Set the failure cause on %s before marking it fixed.",
+                    rec.name))
+            rec.state = "fixed"
+            rec.message_post(body=self.env._(
+                "Fixed after %(hours).1f h — cause: %(cause)s",
+                hours=rec.downtime_hours, cause=rec.failure_cause_id.name))
+        return True
+
+    def action_reopen(self):
+        for rec in self:
+            rec.state = "open"
+            rec.message_post(body=self.env._("Reopened; the outage clock restarts."))
+        return True
 
     @api.depends("workcenter_id")
     def _compute_affected_mos(self):

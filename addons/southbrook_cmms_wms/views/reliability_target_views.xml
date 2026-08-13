@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The data-entry surface for reliability targets.
+
+  expected_mtbf and warranty_date are empty on every machine, and everything
+  that compares against them ("vs Expected", "% of target", below-target
+  filters) is therefore comparing against nothing. Rather than seeding numbers
+  nobody measured, this screen is where the real ones get typed in when they
+  are known — inline, all machines on one page, no developer involved.
+-->
+<odoo>
+
+    <record id="view_maintenance_equipment_reliability_target_list" model="ir.ui.view">
+        <field name="name">maintenance.equipment.reliability.target.list</field>
+        <field name="model">maintenance.equipment</field>
+        <field name="arch" type="xml">
+            <list string="Reliability Targets" editable="bottom" multi_edit="1"
+                  decoration-muted="sb_reliability_target_missing">
+                <field name="name" readonly="1"/>
+                <field name="serial_no" optional="show" readonly="1"/>
+                <field name="category_id" optional="show" readonly="1"/>
+                <!-- deliberately NOT workcenter_id: that field comes from
+                     mrp_maintenance, which this module does not depend on, and
+                     a view referencing an absent field fails validation. -->
+                <field name="expected_mtbf" string="Expected MTBF (h)"/>
+                <field name="sb_expected_mtbf_source" string="Target source"/>
+                <field name="warranty_date" string="Warranty until"/>
+                <field name="effective_date" optional="hide" readonly="1"/>
+                <field name="sb_reliability_target_missing" column_invisible="1"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_southbrook_cmms_reliability_targets" model="ir.actions.act_window">
+        <field name="name">Reliability Targets</field>
+        <field name="res_model">maintenance.equipment</field>
+        <field name="view_mode">list,form</field>
+        <field name="view_id" ref="view_maintenance_equipment_reliability_target_list"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No equipment yet</p>
+            <p>Add machines in Maintenance, then set each one's expected MTBF here.
+               Until a target is set, every "vs Expected" figure reads <b>Not set</b>
+               rather than a percentage — a made-up target looks exactly like a
+               measured one once it is on a screen.</p>
+        </field>
+    </record>
+
+</odoo>

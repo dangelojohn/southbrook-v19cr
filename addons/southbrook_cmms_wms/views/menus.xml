@@ -36,4 +36,18 @@
               action="action_southbrook_cmms_mi_tiles"
               sequence="50"/>
 
+    <menuitem id="menu_southbrook_cmms_failure_cause"
+              name="Failure Causes"
+              parent="menu_southbrook_cmms_wms_root"
+              action="action_southbrook_cmms_failure_cause"
+              groups="group_southbrook_cmms_manager"
+              sequence="60"/>
+
+    <menuitem id="menu_southbrook_cmms_reliability_targets"
+              name="Reliability Targets"
+              parent="menu_southbrook_cmms_wms_root"
+              action="action_southbrook_cmms_reliability_targets"
+              groups="group_southbrook_cmms_manager"
+              sequence="70"/>
+
 </odoo>

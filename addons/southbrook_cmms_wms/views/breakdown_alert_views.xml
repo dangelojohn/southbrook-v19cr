@@ -13,6 +13,9 @@
                 <field name="workcenter_id"/>
                 <field name="severity"/>
                 <field name="reported_at"/>
+                <field name="downtime_hours" string="Down (h)" widget="float_time"/>
+                <field name="failure_cause_id" optional="show"/>
+                <field name="fixed_at" optional="hide"/>
                 <field name="state"/>
             </list>
         </field>
@@ -29,10 +32,20 @@
                             type="object"
                             class="btn-primary"
                             invisible="state != 'open'"/>
+                    <button name="action_fix"
+                            string="Mark Fixed"
+                            type="object"
+                            class="btn-primary"
+                            invisible="state == 'fixed'"/>
                     <button name="action_block_affected_mos"
                             string="Block Affected MOs"
                             type="object"
                             class="btn-secondary"/>
+                    <button name="action_reopen"
+                            string="Reopen"
+                            type="object"
+                            class="btn-secondary"
+                            invisible="state != 'fixed'"/>
                     <field name="state" widget="statusbar"
                            statusbar_visible="open,dispatched,fixed"/>
                 </header>
@@ -50,6 +63,20 @@
                             <field name="reported_at"/>
                             <field name="reported_by"/>
                             <field name="maintenance_request_id" readonly="1"/>
+                        </group>
+                    </group>
+                    <group string="Outage">
+                        <group>
+                            <field name="downtime_hours" widget="float_time"
+                                   string="Down for"/>
+                            <field name="fixed_at" readonly="1"
+                                   invisible="state != 'fixed'"/>
+                        </group>
+                        <group>
+                            <field name="failure_cause_id"
+                                   required="state == 'fixed'"
+                                   options="{'no_quick_create': True}"
+                                   placeholder="Recorded when the outage is closed"/>
                         </group>
                     </group>
                     <group string="Description">

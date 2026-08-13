@@ -2,7 +2,7 @@
 from datetime import timedelta
 
 from odoo import fields
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
 
@@ -216,3 +216,119 @@ class TestSouthbrookCmmsWms(TransactionCase):
             self.skipTest("Landed cost setup incomplete in this DB: %s" % exc)
         self.assertTrue(lc)
         self.assertEqual(len(lc), 1)
+
+    # ---- W0: outages measured in hours, sourced from alerts ----
+    def _make_alert(self, hours_ago=3.0, **vals):
+        base = {
+            "equipment_id": self.equipment.id,
+            "severity": "high",
+            "reported_at": fields.Datetime.now() - timedelta(hours=hours_ago),
+        }
+        base.update(vals)
+        return self.env["southbrook.cmms.breakdown_alert"].create(base)
+
+    def _cause(self):
+        return self.env.ref("southbrook_cmms_wms.failure_cause_tool_wear")
+
+    def _report(self, period_days=30):
+        return self.env["southbrook.cmms.mtbf_mttr_report"].create({
+            "equipment_id": self.equipment.id,
+            "as_of_date": fields.Date.context_today(self.env.user),
+            "period_days": period_days,
+        })
+
+    def test_downtime_reads_in_hours_not_whole_days(self):
+        """Regression: request Dates made every outage a multiple of 24 h."""
+        alert = self._make_alert(hours_ago=3.0)
+        self.assertAlmostEqual(alert.downtime_hours, 3.0, delta=0.1)
+        alert.failure_cause_id = self._cause()
+        alert.action_fix()
+        self.assertTrue(alert.fixed_at)
+        self.assertAlmostEqual(alert.downtime_hours, 3.0, delta=0.1)
+
+    def test_same_day_repair_is_not_invisible(self):
+        """A 5 h outage opened and closed today must dent availability.
+
+        Under request-sourced Date math it scored zero downtime and 100%
+        availability — a fast repair looked exactly like no failure.
+        """
+        alert = self._make_alert(hours_ago=5.0)
+        alert.failure_cause_id = self._cause()
+        alert.action_fix()
+        rep = self._report()
+        self.assertEqual(rep.breakdown_count, 1)
+        self.assertAlmostEqual(rep.total_downtime_hours, 5.0, delta=0.3)
+        self.assertLess(rep.availability_pct, 100.0)
+
+    def test_alert_counts_without_anyone_pressing_dispatch(self):
+        """Regression: only dispatched alerts reached the reliability numbers."""
+        alert = self._make_alert(hours_ago=2.0)
+        self.assertFalse(alert.maintenance_request_id)
+        self.assertEqual(self._report().breakdown_count, 1)
+
+    def test_dispatched_alert_is_not_double_counted(self):
+        alert = self._make_alert(hours_ago=2.0)
+        alert.action_dispatch()
+        self.assertTrue(alert.maintenance_request_id)
+        self.assertEqual(self._report().breakdown_count, 1)
+
+    def test_cannot_close_an_outage_without_naming_the_cause(self):
+        alert = self._make_alert()
+        with self.assertRaises(UserError):
+            alert.action_fix()
+
+    def test_fixed_at_is_stamped_on_any_route_into_fixed(self):
+        alert = self._make_alert()
+        alert.failure_cause_id = self._cause()
+        alert.state = "fixed"          # statusbar / import / automation path
+        self.assertTrue(alert.fixed_at)
+        alert.action_reopen()
+        self.assertFalse(alert.fixed_at)
+
+    # ---- W0: KPI history actually persists ----
+    def test_kpi_snapshot_keeps_one_row_per_day(self):
+        Tiles = self.env["southbrook.cmms.mi_tiles"]
+        today = fields.Date.context_today(self.env.user)
+        Tiles._cron_snapshot()
+        self.assertEqual(Tiles.search_count([("snapshot_date", "=", today)]), 1)
+        Tiles._cron_snapshot()
+        self.assertEqual(Tiles.search_count([("snapshot_date", "=", today)]), 1)
+
+    def test_kpi_values_are_written_to_the_column(self):
+        """Regression: tiles were store=False, so no history could exist."""
+        Tiles = self.env["southbrook.cmms.mi_tiles"]
+        self._make_alert(hours_ago=1.0)          # leaves an open breakdown
+        rec = Tiles.browse(Tiles._cron_snapshot())
+        self.assertGreaterEqual(rec.open_breakdowns_count, 1)
+        self.env.flush_all()
+        self.env.cr.execute(
+            "SELECT open_breakdowns_count FROM southbrook_cmms_mi_tiles "
+            "WHERE id = %s", (rec.id,))
+        self.assertGreaterEqual(self.env.cr.fetchone()[0], 1)
+
+    # ---- W0: reliability targets say where they came from ----
+    def test_expected_mtbf_never_invents_a_target(self):
+        eq = self.Equipment.create({"name": "Target Test Machine"})
+        self.assertEqual(eq.sb_expected_mtbf_source, "none")
+        self.assertTrue(eq.sb_reliability_target_missing)
+        self.assertEqual(eq.sb_effective_expected_mtbf, 0.0)
+
+        self.env["ir.config_parameter"].sudo().set_param(
+            "southbrook_cmms_wms.default_expected_mtbf", "1500")
+        eq.invalidate_recordset()
+        self.assertEqual(eq.sb_expected_mtbf_source, "default")
+        self.assertAlmostEqual(eq.sb_effective_expected_mtbf, 1500.0, places=1)
+
+        eq.expected_mtbf = 2000
+        self.assertEqual(eq.sb_expected_mtbf_source, "equipment")
+        self.assertAlmostEqual(eq.sb_effective_expected_mtbf, 2000.0, places=1)
+        self.assertFalse(eq.sb_reliability_target_missing)
+
+    def test_failure_causes_are_seeded_and_editable(self):
+        Cause = self.env["southbrook.cmms.failure_cause"]
+        self.assertGreaterEqual(Cause.search_count([]), 10)
+        cause = self._cause()
+        cause.name = "Dull cutter"          # renaming must not be blocked
+        self.assertEqual(cause.name, "Dull cutter")
+        with self.assertRaises(ValidationError):
+            Cause.create({"name": "dull cutter", "category": "tooling"})
