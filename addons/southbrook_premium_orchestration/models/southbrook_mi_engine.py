@@ -66,10 +66,17 @@ class SouthbrookMiEngineState(models.Model):
     # ------------------------------------------------------------------
     # Computes
     # ------------------------------------------------------------------
+    # to_close = manufacturing finished, administrative close pending. The MO
+    # is still in flight, and every other definition in this codebase says so
+    # — southbrook_mrp_pm uses this tuple in four places, and the MI module's
+    # own sweep docstring spells it out. Omitting it here under-reported the
+    # count against its siblings.
+    _IN_FLIGHT_MO_STATES = ("confirmed", "progress", "to_close")
+
     def _compute_mo_in_flight_count(self):
         Production = self.env["mrp.production"]
         count = Production.search_count(
-            [("state", "in", ("confirmed", "progress"))]
+            [("state", "in", self._IN_FLIGHT_MO_STATES)]
         )
         for rec in self:
             rec.mo_in_flight_count = count

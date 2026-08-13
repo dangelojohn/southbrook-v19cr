@@ -5,7 +5,7 @@
     # branch shipped to prod: production currently runs 4.10.0, so 5.1.0 lets
     # the 19.0.5.0.0 migration run on the way past. Reusing 5.0.0 would make
     # Odoo no-op whichever content landed second.
-    'version': '19.0.5.2.0',
+    'version': '19.0.5.3.0',
     'summary': 'Closes the loop: cron-driven readiness/MI/analytics, always-on project-task spine, '
                'practical-intelligence telemetry, generative + planning activation.',
     'description': """
