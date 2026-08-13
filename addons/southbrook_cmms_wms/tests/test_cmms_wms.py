@@ -429,3 +429,22 @@ class TestSouthbrookCmmsWms(TransactionCase):
         self.assertFalse(
             Tiles.search([("label", "=", "Smoke")]),
             "no smoke-test row may remain in KPI history")
+
+    def test_administrator_can_see_the_manager_screens(self):
+        """A guarded menu nobody holds the group for looks like a failed deploy.
+
+        CMMS / Manager had zero members in production, so Failure Causes and
+        Reliability Targets rendered for no one — including the administrator.
+        """
+        manager = self.env.ref(
+            "southbrook_cmms_wms.group_southbrook_cmms_manager")
+        admin = self.env.ref("base.user_admin")
+        self.assertIn(
+            manager, admin.all_group_ids,
+            "a Settings administrator must hold CMMS / Manager")
+        for xmlid in ("menu_southbrook_cmms_failure_cause",
+                      "menu_southbrook_cmms_reliability_targets"):
+            menu = self.env.ref("southbrook_cmms_wms.%s" % xmlid)
+            self.assertTrue(
+                menu.group_ids & admin.all_group_ids,
+                "%s must be visible to the administrator" % xmlid)

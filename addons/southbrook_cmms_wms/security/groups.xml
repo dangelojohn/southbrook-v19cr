@@ -41,4 +41,22 @@
         </record>
 
     </data>
+
+    <!--
+      CMMS / Manager had ZERO members — not even the administrator. Menus
+      guarded by it (Failure Causes, Reliability Targets) were therefore
+      invisible to every user in the database, which reads as "the feature did
+      not deploy" rather than as an access decision.
+
+      Settings administrators now imply it. This is the same rule the SIGHTLINE
+      spec states for the 3PL menu (SL-F03): an admin who cannot open a screen
+      in their own database is a configuration bug, not a security posture.
+
+      Deliberately NOT inside <data noupdate="1"> — this must apply on upgrade
+      to the existing production database, not only at install.
+    -->
+    <record id="base.group_system" model="res.groups">
+        <field name="implied_ids"
+               eval="[(4, ref('southbrook_cmms_wms.group_southbrook_cmms_manager'))]"/>
+    </record>
 </odoo>
