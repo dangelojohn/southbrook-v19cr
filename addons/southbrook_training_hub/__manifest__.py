@@ -63,7 +63,7 @@ Re-running ``odoo -u southbrook_training_hub`` after new courses ship
 refreshes the index. There is no destructive sync — manual entries
 are preserved.
 """,
-    "version": "19.0.2.0.0",
+    "version": "19.0.2.0.1",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry",
     "website": "https://southbrookcabinetry.space",

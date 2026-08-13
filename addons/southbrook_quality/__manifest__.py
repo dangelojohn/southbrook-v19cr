@@ -3,7 +3,7 @@
     "name": "Southbrook Quality",
     "summary": "NCR + SPC + Cpk + Supplier-defect quality module for Southbrook "
                "(CE-native, no Odoo Enterprise quality_control dep)",
-    "version": "19.0.2.0.0",
+    "version": "19.0.2.0.1",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry / OdooIQ",
     "category": "Manufacturing/Quality",

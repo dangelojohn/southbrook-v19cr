@@ -23,4 +23,22 @@
             <field name="comment">Full quality access including dimension master data and Cpk view refresh.</field>
         </record>
     </data>
+
+    <!--
+      ADMIN BOOTSTRAP. The groups above imply DOWNWARD (manager -> user ->
+      base.group_user), which grants rights to whoever holds them — but nothing
+      granted the group to anyone, so it had zero members in production and the
+      menus it guards rendered for no user at all. The comment at the top of
+      this file noted the missing admin bootstrap and it was never added.
+
+      Same rule the SIGHTLINE spec states in SL-F03: an admin who cannot open a
+      screen in their own database is a configuration bug, not a security
+      posture. Fixed the same way in southbrook_cmms_wms 19.0.7.0.0.
+
+      Deliberately OUTSIDE <data noupdate="1"> — inside it this would apply to
+      fresh installs only and never reach the database that has the problem.
+    -->
+    <record id="base.group_system" model="res.groups">
+        <field name="implied_ids" eval="[(4, ref('southbrook_quality.group_southbrook_quality_manager'))]"/>
+    </record>
 </odoo>

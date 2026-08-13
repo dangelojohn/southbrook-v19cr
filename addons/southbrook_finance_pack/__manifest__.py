@@ -5,7 +5,7 @@
         "CCA depreciation + budget + HST return + WIP report + finance MI "
         "tiles, Odoo 19 CE-native (no Enterprise account_accountant)"
     ),
-    "version": "19.0.2.0.0",
+    "version": "19.0.2.0.1",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry / OdooIQ",
     "category": "Accounting/Localizations",

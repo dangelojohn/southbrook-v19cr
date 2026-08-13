@@ -3,7 +3,7 @@
     "name": "Southbrook Integrations",
     "summary": "Homag simulator + 3PL ASN + MCP-into-Odoo scaffold + "
                "IoT label printers (no EDI, no SSO - descoped to v2)",
-    "version": "19.0.2.0.0",
+    "version": "19.0.2.0.1",
     "license": "LGPL-3",
     "author": "Southbrook Cabinetry / OdooIQ",
     "category": "Manufacturing/Integrations",
